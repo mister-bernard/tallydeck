@@ -130,6 +130,8 @@ def run(link, surface, view: View, poll_every: float = 2.0,
                    TALLY_GROUP=sig.group, TALLY_STATE=sig.state,
                    TALLY_PROJECT=str(sig.meta.get("project", "")),
                    TALLY_SESSION=str(sig.meta.get("session", "")),
+                   TALLY_TMUX=str(sig.meta.get("tmux", "")),
+                   TALLY_ACCOUNT=str(sig.meta.get("account", "")),
                    TALLY_LONG="1" if long else "0")
         try:
             subprocess.Popen(on_press_cmd, env=env,

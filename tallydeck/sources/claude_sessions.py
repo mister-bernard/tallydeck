@@ -71,13 +71,15 @@ def _assistant_wants_input(lines: list[str]) -> bool:
         if not isinstance(rec, dict) or rec.get("type") != "assistant":
             continue
         msg = rec.get("message") or {}
-        if msg.get("stop_reason") == "tool_use":
-            return False
         content = msg.get("content", [])
         if isinstance(content, list) and content:
             last = content[-1]
             if isinstance(last, dict) and last.get("type") == "tool_use":
-                return False
+                # Most tool_use tails mean "a tool is running" — but some
+                # tools ARE the question: they block on the human by design.
+                return last.get("name") in ("AskUserQuestion", "ExitPlanMode")
+        if msg.get("stop_reason") == "tool_use":
+            return False
         return True
     return True
 
@@ -224,9 +226,18 @@ class ClaudeSessionsSource(Source):
                 flash = None
                 if state == ATTENTION and (now - mtime) > self.flash_for:
                     flash = False
+                # Exact pane via the session's own pid — unique even when many
+                # sessions share a cwd. The directory-match fallback is only a
+                # ROUTING hint: it may be shared by several sessions, so it
+                # must never name the key or serve as a dedup identity
+                # (it briefly relabeled half the fleet 'tmp').
+                exact = self._session_panes().get(fp.stem)
+                pane = exact or self._pane_for(full)
+                label = exact.split(":", 1)[0] if exact \
+                    else (os.path.basename(full) or full)
                 signals.append(Signal(
                     id=f"{self.group}/{fp.stem[:8]}",
-                    label=(os.path.basename(full) or full)[:24],
+                    label=label[:24],
                     sublabel=sub,
                     flash=flash,
                     detail=_snippet(lines),
@@ -237,19 +248,30 @@ class ClaudeSessionsSource(Source):
                     priority=int(min(rate, 1_000_000)),
                     group=self.group,
                     meta={"project": full, "session": fp.stem,
-                          "account": acct,
+                          "account": acct, "exact_pane": bool(exact),
                           # Resolved hub-side because only the hub can see
                           # tmux. Without it the deck machine would have to
                           # re-derive the pane over ssh on every press.
-                          "tmux": self._pane_for(full)},
+                          "tmux": pane},
                 ))
-        # One key per project: keep the most recent session of each label.
-        best: dict[str, Signal] = {}
+        # Dedup: distinct panes are distinct keys; paneless sessions collapse
+        # per project to the most recent. Sessions that NEED THE HUMAN are
+        # never deduped away — a batch job's question was shadowed for exactly
+        # that reason (half the fleet shares cwd /home/me, and the
+        # noisiest session was the only one shown).
+        keep: list[Signal] = []
+        best: dict[tuple, Signal] = {}
         for s in signals:
-            k = s.meta["project"]
+            if s.state in (ATTENTION,):
+                keep.append(s)
+                continue
+            # Exact panes are identities; fallback panes are not — two
+            # sessions sharing a guessed pane are still two sessions.
+            k = ("pane", s.meta["tmux"]) if s.meta.get("exact_pane") \
+                else ("proj", s.meta["project"])
             if k not in best or s.updated > best[k].updated:
                 best[k] = s
-        return list(best.values())
+        return keep + list(best.values())
 
 
     # ── tmux resolution ──────────────────────────────────────────────────────
@@ -258,6 +280,51 @@ class ClaudeSessionsSource(Source):
 
     def _tmux(self, *args) -> list[str]:
         return ["tmux", "-S", self.socket, *args]
+
+    def _session_panes(self) -> dict[str, str]:
+        """{session_uuid: pane target} — EXACT identity, via CLAUDE_SESSION_ID
+        in each pane's process tree. Directory matching alone collapses every
+        /home cwd session onto one pane; this is how 'batch job' gets its own
+        key with its own name."""
+        now = time.time()
+        if now - getattr(self, "_sp_ts", 0.0) < self._PANE_TTL:
+            return getattr(self, "_sp_cache", {})
+        out: dict[str, str] = {}
+        try:
+            r = subprocess.run(
+                self._tmux("list-panes", "-a", "-F",
+                           "#{session_name}:#{window_index}.#{pane_index} "
+                           "#{pane_pid}"),
+                capture_output=True, text=True, timeout=3)
+            ps = subprocess.run(["ps", "-eo", "pid=,ppid="],
+                                capture_output=True, text=True, timeout=3)
+            kids: dict[int, list[int]] = {}
+            for ln in ps.stdout.splitlines():
+                parts = ln.split()
+                if len(parts) == 2:
+                    kids.setdefault(int(parts[1]), []).append(int(parts[0]))
+            for ln in (r.stdout or "").strip().splitlines():
+                target, _, pid_s = ln.rpartition(" ")
+                stack = [int(pid_s)] if pid_s.isdigit() else []
+                seen = 0
+                while stack and seen < 64:
+                    pid = stack.pop()
+                    seen += 1
+                    try:
+                        env = Path(f"/proc/{pid}/environ").read_bytes()
+                    except OSError:
+                        env = b""
+                    i = env.find(b"CLAUDE_SESSION_ID=")
+                    if i >= 0:
+                        sid = env[i + 18:env.find(b"\0", i)].decode(
+                            "ascii", "ignore")
+                        if sid:
+                            out.setdefault(sid, target)
+                    stack.extend(kids.get(pid, []))
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            pass
+        self._sp_cache, self._sp_ts = out, now
+        return out
 
     def _panes(self) -> dict[str, str]:
         """{realpath(cwd): target} for every pane, cached briefly."""

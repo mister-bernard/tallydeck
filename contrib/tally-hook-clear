@@ -1,0 +1,10 @@
+#!/usr/bin/python3
+"""Clear the deck's BLOCKED signal once the session got its answer."""
+import json, sys, os
+try:
+    sid = (json.load(sys.stdin).get("session_id") or "")[:8]
+    if sid:
+        os.unlink(os.path.expanduser(f"~/.tallydeck/signals/ask-{sid}.json"))
+except Exception:
+    pass
+sys.exit(0)
