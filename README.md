@@ -112,12 +112,24 @@ tally deck --demo          # first light (quit the Elgato app first)
 tally deck                 # the real fleet, via [client] connect in config
 ```
 
-Config lives in `config/tallydeck.toml` (tracked, ships with pulls) with
-machine-private overrides in `~/.config/tallydeck/config.toml`. Add this to
-the Mac's `~/.ssh/config` for instant presses (connection reuse):
+### Config, in two layers
+
+`config/tallydeck.toml` is tracked, so shared settings arrive with a `git
+pull`. Anything machine-specific — real paths, extra account roots, a task
+hook, your timezone — goes in `~/.config/tallydeck/config.toml`, which is
+not in the repo and wins over the tracked layer. Keep hosts and secrets out
+of the tracked file: see `examples/config.example.toml` for the shape.
+
+The hub is reached by an **ssh alias**, never an address, so nothing
+host-specific lives in the repo. Name it whatever you like in the Mac's
+`~/.ssh/config` (the default the scripts expect is `claw`), then point
+`[client] connect` at that alias — or export `TALLY_SSH_HOST` to override
+it for `contrib/tally-open-mac.sh`. `ControlMaster` makes presses instant:
 
 ```
-Host <your-server>
+Host claw
+  HostName your-server.example.com
+  User you
   ControlMaster auto
   ControlPath ~/.ssh/cm-%r@%h:%p
   ControlPersist 10m
@@ -152,4 +164,4 @@ under the hardware surface. Marbling math: Lu et al., *Mathematical
 Marbling*, IEEE CG&A 2012. Type: [Inter](https://rsms.me/inter/) (OFL).
 Named for broadcast tally lights: one lamp, one glance, no reading.
 
-MIT.
+[MIT](LICENSE).

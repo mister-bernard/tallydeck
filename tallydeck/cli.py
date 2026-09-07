@@ -83,8 +83,8 @@ def _on_press_cmd(cfg) -> list[str] | None:
         return None
     # Expand ~ here: this argv is executed LOCALLY, so an unexpanded tilde is a
     # path that does not exist rather than a shell that will resolve it. The
-    # tracked config uses ~ deliberately, since /Users/you and /home/me are
-    # different on the two machines that read the same file.
+    # tracked config uses ~ deliberately, since a Mac's /Users/<you> and a
+    # server's /home/<you> differ on the two machines reading the same file.
     return [str(Path(a).expanduser()) for a in cmd]
 
 
@@ -151,8 +151,10 @@ def cmd_brief(cfg, args):
                 roots.append(Path(str(r.get("path", ""))).expanduser())
             if spec.get("root"):
                 roots.append(Path(str(spec["root"])).expanduser())
+    tasks_cmd = cfg.get("brief", {}).get("tasks_cmd") or None
     print(build_cached(args.session or "", args.project or "",
-                       args.label or "", roots or None, args.state or ""))
+                       args.label or "", roots or None, args.state or "",
+                       tasks_cmd))
 
 
 def cmd_clear(cfg, args):

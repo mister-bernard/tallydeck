@@ -8,8 +8,11 @@ try:
     if sid:
         cwd = d.get("cwd") or ""
         home = os.environ.get("HOME", "")
-        acct = "B" if ".claude-b" in (os.environ.get("CLAUDE_CONFIG_DIR", "")
-                                      or home) else "A"
+        # Second account = a session running under its own CLAUDE_CONFIG_DIR.
+        # Set TALLY_ACCT_B_MARKER to whatever substring names yours.
+        marker = os.environ.get("TALLY_ACCT_B_MARKER", ".claude-b")
+        acct = "B" if marker in (os.environ.get("CLAUDE_CONFIG_DIR", "")
+                                 or home) else "A"
         # The hook runs inside the session's process tree — if it lives in a
         # tmux pane, the pane's session name is the name the operator uses.
         label = ""

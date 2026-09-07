@@ -152,7 +152,7 @@ def draw_meter(size: tuple[int, int], frac: float, left: str = "",
     # for callers that do not supply lanes.
     lane_list = [l for l in (lanes or []) if isinstance(l, dict)]
     if len(lane_list) >= 2:
-        # Full-width stacked lanes (the operator's spec): every pixel of the strip is
+        # Full-width stacked lanes: every pixel of the strip is
         # bar. Text is ENGRAVED on the lanes with a dark stroke — badge on
         # the left cap, useful info in the middle, the countdown embedded at
         # the right end of its own bar.

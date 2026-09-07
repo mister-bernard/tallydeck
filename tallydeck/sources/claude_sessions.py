@@ -61,8 +61,8 @@ def _assistant_wants_input(lines: list[str]) -> bool:
 
     A tail whose last assistant record carries tool_use (or stop_reason
     "tool_use") is a session waiting on a TOOL — e.g. a long test run — and
-    flagging it flashed autonomous workers as needing the human (the operator hit this:
-    'running the fork suite' shown as attention)."""
+    flagging it flashed autonomous workers as needing the human (seen in
+    practice: 'running the fork suite' shown as attention)."""
     for ln in reversed(lines):
         try:
             rec = json.loads(ln)
@@ -106,8 +106,8 @@ def _snippet(lines: list[str], limit: int = 300) -> str:
 def _last_cwd(lines: list[str]) -> str:
     """The session's own records carry its real cwd — authoritative, unlike
     the munged directory name, which is lossy: '-a-b-c' cannot distinguish
-    'a/b/c' from 'a/b-c', and pressing a key for my-web-app once
-    ssh'd into the nonexistent my/web/app."""
+    'a/b/c' from 'a/b-c', and pressing a key for my-web-app once ssh'd into
+    the nonexistent my/web/app."""
     for ln in reversed(lines):
         try:
             rec = json.loads(ln)
@@ -272,9 +272,9 @@ class ClaudeSessionsSource(Source):
                 # must never name the key or serve as a dedup identity
                 # (it briefly relabeled half the fleet 'tmp').
                 # A GUESS MUST NEVER ROUTE. Directory matching sends every
-                # session whose cwd is /home/me to whichever pane
+                # session whose cwd is the home directory to whichever pane
                 # happens to sit there — that is how every key ended up
-                # opening `zephyr`. No exact identity → no pane → the router
+                # opening the same one. No exact identity → no pane → the router
                 # offers to resume instead of teleporting you somewhere
                 # wrong.
                 pane = exact or ""
@@ -311,9 +311,9 @@ class ClaudeSessionsSource(Source):
                 ))
         # Dedup: distinct panes are distinct keys; paneless sessions collapse
         # per project to the most recent. Sessions that NEED THE HUMAN are
-        # never deduped away — a batch job's question was shadowed for exactly
-        # that reason (half the fleet shares cwd /home/me, and the
-        # noisiest session was the only one shown).
+        # never deduped away — a session's question was shadowed for exactly
+        # that reason (half the fleet shares the home directory as cwd, and
+        # the noisiest session was the only one shown).
         keep: list[Signal] = []
         best: dict[tuple, Signal] = {}
         for s in signals:
@@ -377,7 +377,7 @@ class ClaudeSessionsSource(Source):
     def _session_panes(self) -> dict[str, str]:
         """{session_uuid: pane target} — EXACT identity, via CLAUDE_SESSION_ID
         in each pane's process tree. Directory matching alone collapses every
-        /home cwd session onto one pane; this is how 'batch job' gets its own
+        home-cwd session onto one pane; this is how each session gets its own
         key with its own name."""
         now = time.time()
         if now - getattr(self, "_sp_ts", 0.0) < self._PANE_TTL:

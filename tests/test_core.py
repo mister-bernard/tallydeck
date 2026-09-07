@@ -492,7 +492,7 @@ def test_marble_cache_reuses_by_heat_bucket():
 
 def test_tool_use_tail_is_working_not_attention(tmp_path):
     """A quiet assistant tail that ends in tool_use = a tool still running
-    (long test suite, bake) — NOT 'your move'. The operator hit this: an autonomous
+    (long test suite, bake) — NOT 'your move'. Seen in practice: an autonomous
     worker flashing attention while running its fork suite."""
     import os
     proj = tmp_path / "-home-me-projects-widget"
@@ -521,14 +521,15 @@ def test_tool_use_tail_is_working_not_attention(tmp_path):
 
 def test_guessed_pane_never_routes(tmp_path, monkeypatch):
     """Directory matching sent every cwd=/home session to whichever pane sat
-    there — that is how every key opened `zephyr`. Only exact identity routes."""
+    there — that is how every key opened the same pane. Only exact identity
+    routes."""
     proj = tmp_path / "-home-me"
     proj.mkdir()
     _write_jsonl(proj, "sess0001", [
         {"type": "user", "cwd": "/home/me", "message": {"content": []}}])
     src = ClaudeSessionsSource(root=str(tmp_path))
     monkeypatch.setattr(src, "_panes",
-                        lambda: {"/home/me": "zephyr:1.1"})   # the trap
+                        lambda: {"/home/me": "other:1.1"})   # the trap
     monkeypatch.setattr(src, "_session_panes", lambda: {})        # no identity
     assert src.poll()[0].meta["tmux"] == ""
 
@@ -551,7 +552,8 @@ def test_exact_pane_is_sticky_until_the_pane_dies(monkeypatch):
 
 def test_session_backed_signal_does_not_ack_on_short_press(tmp_path):
     """Pressing a hook-raised ask must ROUTE, not silently clear the flash —
-    The operator pressed two flashing keys, saw nothing, and the alarms vanished."""
+    the operator pressed two flashing keys, saw nothing, and the alarms
+    vanished."""
     src = WatchDirSource(path=str(tmp_path))
     (tmp_path / "ask-abc.json").write_text(json.dumps(
         {"label": "batch job", "state": "blocked",

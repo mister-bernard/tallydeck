@@ -17,7 +17,7 @@ TTY="${1:-}"; CUR="${2:-}"; TARGET="${3:-}"; UUID="${4:-}"
 PROJ="${5:-}"; LABEL="${6:-}"; STATE="${7:-}"; ACCT="${8:-}"
 SOCKET="${TALLY_TMUX_SOCKET:-/tmp/tmux-1000/cc}"
 T() { tmux -S "$SOCKET" "$@"; }
-export PYTHONPATH="$HOME/projects/tallydeck${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="${TALLYDECK_HOME:-$HOME/projects/tallydeck}${PYTHONPATH:+:$PYTHONPATH}"
 
 # The Mac's CUR is a snapshot; the client may have switched since. Resolve
 # fresh, from in here, where the server is one call away.

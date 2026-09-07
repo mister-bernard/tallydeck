@@ -1,4 +1,9 @@
-# ~/.config/tallydeck/config.toml
+# ~/.config/tallydeck/config.toml — the machine-private layer.
+#
+# Loaded on top of the repo's config/tallydeck.toml and wins over it. Real
+# paths, extra account roots, hostnames and hooks belong here, never in the
+# tracked file. Note the merge is shallow: if you define [[sources]] here it
+# replaces the tracked list entirely, so list every source you want.
 [view]
 device = "neo"
 hide_idle = false
@@ -16,7 +21,22 @@ kind = "watchdir"
 # argv = ["~/bin/service-signals.sh"]
 # every = 30
 
-# On the deck machine, point at the server hub:
+# A second Claude account lives under its own CLAUDE_CONFIG_DIR; the label
+# becomes the badge on the key:
+# [[sources]]
+# kind = "claude-sessions"
+# roots = [
+#   { label = "A", path = "~/.claude/projects" },
+#   { label = "B", path = "~/.config/claude-b/.claude/projects" },
+# ]
+
+# Optional hook: any argv that prints your task list on stdout. Lines
+# mentioning the project show up in the landing brief. Unset → section omitted.
+# [brief]
+# tasks_cmd = ["python3", "~/bin/my-task-queue.py", "list"]
+
+# On the deck machine, point at the server hub. "yourserver" is an ssh ALIAS
+# from ~/.ssh/config — keep addresses out of config files you might share:
 # [client]
 # connect = ["ssh", "yourserver", "tallyd"]
 

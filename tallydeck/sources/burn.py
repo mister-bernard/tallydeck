@@ -40,7 +40,9 @@ class TokenBurnSource(Source):
         self.url = opts.get("url", DEFAULT_URL)
         self.config = Path(opts.get("config", DEFAULT_CONFIG))
         self.every = float(opts.get("every", 20))
-        self.tz = opts.get("tz", "America/Los_Angeles")
+        # Unset → this machine's local zone; set `tz` when the deck sits in a
+        # different one from the hub.
+        self.tz = opts.get("tz") or ""
         self._last_run = 0.0
         self._cache: list[Signal] = []
         # Window-% history per account, for "which account is burning NOW":
@@ -182,6 +184,7 @@ class TokenBurnSource(Source):
     def _fmt_reset(self, iso: str) -> str:
         try:
             dt = datetime.fromisoformat(iso)
-            return dt.astimezone(ZoneInfo(self.tz)).strftime("%H:%M")
+            local = dt.astimezone(ZoneInfo(self.tz) if self.tz else None)
+            return local.strftime("%H:%M")
         except (ValueError, KeyError):
             return ""

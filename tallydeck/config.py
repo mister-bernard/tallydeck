@@ -19,8 +19,11 @@ Example:
   argv = ["~/bin/service-signals.sh"]
   every = 30
 
+  [brief]
+  tasks_cmd = ["python3", "~/bin/my-task-queue.py", "list"]  # optional
+
   [client]
-  connect = ["ssh", "vps", "tallyd"]   # omit for local mode
+  connect = ["ssh", "myhub", "tallyd"]   # an ssh alias; omit for local mode
 """
 
 from __future__ import annotations

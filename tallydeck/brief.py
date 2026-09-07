@@ -2,8 +2,9 @@
 
 Rendered into a tmux popup when a deck key is pressed, so landing in a
 session starts with context instead of a bare prompt. Everything is read
-from artifacts that already exist — the session log, git, the task queue —
-so a brief costs nothing to keep current and lies only when those do.
+from artifacts that already exist — the session log, git, and (optionally)
+whatever task list you point it at — so a brief costs nothing to keep
+current and lies only when those do.
 
 Cached per session keyed on the log's (mtime, size): the brief is a pure
 function of the log, so that key is correctness, not a staleness gamble.
@@ -14,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import time
 from pathlib import Path
@@ -114,12 +116,25 @@ def _git(project: str) -> str:
     return "  ·  ".join(parts)
 
 
-def _tasks(project: str, limit: int = 3) -> list[str]:
+def _tasks(project: str, tasks_cmd: list[str] | None = None,
+           limit: int = 3) -> list[str]:
     """Open queue items mentioning this project — via a 60s global cache,
-    because spawning the runner is the slowest thing a brief does."""
+    because spawning the command is the slowest thing a brief does.
+
+    Optional hook: `tasks_cmd` is any argv that prints your task list on
+    stdout (config `[brief] tasks_cmd`, or $TALLY_TASKS_CMD). Unset, the
+    brief simply omits the section — nothing external is required.
+    """
     name = os.path.basename(project.rstrip("/"))
     if not name:
         return []
+    argv = list(tasks_cmd or [])
+    if not argv:
+        argv = shlex.split(os.environ.get("TALLY_TASKS_CMD", ""))
+    if not argv:
+        return []
+    argv = [str(Path(a).expanduser()) if a.startswith("~") else a
+            for a in argv]
     cache = CACHE_DIR / "tasks.txt"
     text = ""
     try:
@@ -128,11 +143,8 @@ def _tasks(project: str, limit: int = 3) -> list[str]:
     except OSError:
         pass
     if not text:
-        runner = Path.home() / "bin" / "my-task-queue.py"
-        if not runner.is_file():
-            return []
         try:
-            r = subprocess.run(["python3", str(runner), "list"],
+            r = subprocess.run(argv,
                                capture_output=True, text=True, timeout=8)
             text = r.stdout
             CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -164,7 +176,8 @@ def _age(seconds: float) -> str:
 # ── rendering ────────────────────────────────────────────────────────────────
 
 def build(session: str, project: str, label: str = "",
-          roots: list[Path] | None = None, state: str = "") -> str:
+          roots: list[Path] | None = None, state: str = "",
+          tasks_cmd: list[str] | None = None) -> str:
     roots = roots or [Path.home() / ".claude" / "projects"]
     title = label or os.path.basename(project.rstrip("/")) or project
     sc, dot = STATE_C.get(state, STATE_C["idle"])
@@ -198,7 +211,7 @@ def build(session: str, project: str, label: str = "",
         L.append("")
 
     git = _git(project)
-    tasks = _tasks(project)
+    tasks = _tasks(project, tasks_cmd)
     if git or tasks:
         L.append(rule)
     if git:
@@ -212,17 +225,18 @@ def build(session: str, project: str, label: str = "",
 
 
 def build_cached(session: str, project: str, label: str = "",
-                 roots: list[Path] | None = None, state: str = "") -> str:
+                 roots: list[Path] | None = None, state: str = "",
+                 tasks_cmd: list[str] | None = None) -> str:
     """Cache keyed on the session log's identity — same log, same brief."""
     roots = roots or [Path.home() / ".claude" / "projects"]
     fp = _session_file(session, roots) if session else None
     if fp is None:
-        return build(session, project, label, roots, state)
+        return build(session, project, label, roots, state, tasks_cmd)
     try:
         st = fp.stat()
         stamp = f"{st.st_mtime_ns}:{st.st_size}:{state}"
     except OSError:
-        return build(session, project, label, roots, state)
+        return build(session, project, label, roots, state, tasks_cmd)
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache = CACHE_DIR / f"brief-{session[:8]}.ans"
     try:
@@ -231,7 +245,7 @@ def build_cached(session: str, project: str, label: str = "",
             return body
     except OSError:
         pass
-    out = build(session, project, label, roots, state)
+    out = build(session, project, label, roots, state, tasks_cmd)
     try:
         cache.write_text(stamp + "\n" + out)
     except OSError:

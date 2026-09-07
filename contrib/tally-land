@@ -3,7 +3,7 @@
 #   r      → resume the Claude session right here (respond directly)
 #   enter  → shell in the project directory
 # Used by the deck's fresh-window fallback when no live tmux pane exists.
-export PYTHONPATH="$HOME/projects/tallydeck${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="${TALLYDECK_HOME:-$HOME/projects/tallydeck}${PYTHONPATH:+:$PYTHONPATH}"
 PROJECT="${1:-$HOME}"; SESSION="${2:-}"; LABEL="${3:-}"; STATE="${4:-}"; ACCT="${5:-}"
 BIN="claude"; [ "$ACCT" = "B" ] && BIN="$HOME/.local/bin/claude-b"
 /usr/bin/python3 -m tallydeck.cli brief \

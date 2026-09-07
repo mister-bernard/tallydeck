@@ -14,8 +14,12 @@ device = "neo"          # neo 2x4 · mk2 3x5 · mini 2x3 · xl 4x8
 hide_idle = false
 
 [client]
-# The hub runs on the VPS; the deck is wherever you are. Both ends read this
-# same file, and each ignores what does not apply to it.
+# The hub runs on your server; the deck is wherever you are. Both ends read
+# this same file, and each ignores what does not apply to it.
+#
+# "claw" here is an ssh alias, not a hostname — put the real host in your
+# ~/.ssh/config (see the README) so no address ever lands in the repo. Change
+# it to whatever you named yours, or export TALLY_SSH_HOST.
 connect = ["ssh", "claw", "~/.local/bin/tallyd"]
 
 # Run on the machine holding the deck when a key is pressed. Absent on the hub,
@@ -35,9 +39,10 @@ kind = "claude-sessions"
 oneshot_sessions = ["oneshot"]
 # One entry per Claude account. The label lands on the key as a badge, so you
 # can see WHICH quota a working session is draining rather than guessing.
+# Second and later accounts live under their own CLAUDE_CONFIG_DIR, so their
+# path is machine-specific — put those in the user layer, not here.
 roots = [
   { label = "A", path = "~/.claude/projects" },
-  { label = "B", path = "~/.config/claude-b/.claude/projects" },
 ]
 
 [[sources]]
@@ -45,3 +50,10 @@ kind = "watchdir"
 
 [[sources]]
 kind = "tokenburn"      # meter simply vanishes if the API is not up
+# tz = "America/New_York"   # window-reset clock; default is this machine's
+
+# Optional: where the brief looks up open task-queue items for a project.
+# argv, run with the project name matched against its stdout. Left unset the
+# brief simply omits the section — no external tool is required.
+# [brief]
+# tasks_cmd = ["python3", "~/bin/my-task-queue.py", "list"]

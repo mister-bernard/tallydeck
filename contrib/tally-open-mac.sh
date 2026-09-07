@@ -10,8 +10,8 @@
 # environment: TALLY_ID, TALLY_LABEL, TALLY_GROUP, TALLY_STATE, TALLY_PROJECT,
 # TALLY_SESSION, TALLY_TMUX, TALLY_LONG.
 #
-# THE MODEL (the operator's design)
-# ----------------------
+# THE MODEL
+# ---------
 # A press never hijacks your view. It finds the tmux client you are actually
 # looking at and drops a floating popup (80% x 70%) over it — the router:
 #
@@ -34,6 +34,8 @@
 # First run triggers macOS Automation permission prompts — grant them once.
 set -u
 
+# An ssh ALIAS from your ~/.ssh/config — never a hostname or address here.
+# Override with TALLY_SSH_HOST if yours is named something else.
 HOST="${TALLY_SSH_HOST:-claw}"
 SOCKET="${TALLY_TMUX_SOCKET:-/tmp/tmux-1000/cc}"
 
@@ -51,8 +53,8 @@ fi
 TARGET="${TALLY_TMUX:-}"
 SESS="${TARGET%%:*}"
 
-# Single-quote for the remote shell. Paths like "Client Docs/Quarterly Design
-# Review 2025" are real here; unquoted they became `cd: too many arguments`.
+# Single-quote for the remote shell. Project paths with spaces in them are
+# real; unquoted they became `cd: too many arguments`.
 q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
 # ── local terminal app ───────────────────────────────────────────────────────
