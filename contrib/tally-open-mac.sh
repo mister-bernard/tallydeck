@@ -1,88 +1,183 @@
-#!/bin/zsh
+#!/bin/bash
 # tally-open-mac.sh — jump to the pressed session, on the Mac.
 #
 # Wire it up in the CLIENT's config.toml (the machine with the deck):
 #
 #   [client]
-#   on_press = ["/Users/you/bin/tally-open-mac.sh"]
+#   on_press = ["~/bin/tally-open-mac.sh"]
 #
 # tallydeck runs this on every short press and passes the signal as
 # environment: TALLY_ID, TALLY_LABEL, TALLY_GROUP, TALLY_STATE, TALLY_PROJECT,
 # TALLY_SESSION, TALLY_TMUX, TALLY_LONG.
 #
-# WHY A CLIENT-SIDE SCRIPT AT ALL
-# ------------------------------
-# The hub also handles presses, and its handler focuses the tmux pane — on the
-# VPS. That succeeds and is completely invisible to the person who pressed the
-# key, which is why the buttons appeared to do nothing. Anything the user is
-# meant to SEE has to run on the machine holding the deck.
+# HOW THIS WORKS (and why it is shaped this way)
+# ----------------------------------------------
+# tmux on the server cannot tell a real attachment from a mosh ghost — clients
+# whose Mac window closed weeks ago still report "attached", and switching one
+# succeeds invisibly. Only this machine knows which windows actually exist. So:
 #
-# The pane target is resolved hub-side and arrives as TALLY_TMUX, because only
-# the hub can see tmux. Re-deriving it here would mean an ssh round trip on
-# every press.
+#   1. Ask the hub (read-only) for every client: tty, session, activity.
+#   2. Enumerate local terminal windows. The server stamps each client's
+#      unique token into its title: TALLY[/dev/pts/NN] (tmux set-titles —
+#      see the hub's tmux.conf). A client is REAL iff its token is visible
+#      in some window here. Ghosts vanish at this step.
+#   3. A real window already on the target session → just focus it.
+#   4. Else retarget the least-recently-active real client (never the
+#      busiest window) with switch-client, then focus its window.
+#   5. No real windows at all → open a fresh one (the original behavior).
+#
+# First run will trigger macOS Automation permission prompts (and, for the
+# System Events fallback, Accessibility) — grant them once, interactively.
 set -u
 
 HOST="${TALLY_SSH_HOST:-claw}"
 SOCKET="${TALLY_TMUX_SOCKET:-/tmp/tmux-1000/cc}"
 
 # Nothing to open for the burn meter or any other non-session key.
-[[ "${TALLY_GROUP:-}" == "cc" ]] || exit 0
+[ "${TALLY_GROUP:-}" = "cc" ] || exit 0
 
-# Activate whichever terminal app is running (shared by both paths below).
-activate_terminal() {
-  local app
-  for app in Ghostty iTerm2 iTerm WezTerm kitty Alacritty Terminal; do
-    if [[ "$(/usr/bin/osascript -e "application \"$app\" is running" 2>/dev/null)" == "true" ]]; then
-      /usr/bin/osascript -e "tell application \"$app\" to activate"
-      return 0
-    fi
-  done
-  return 1
+TARGET="${TALLY_TMUX:-}"
+SESS="${TARGET%%:*}"
+
+# ── local terminal app ───────────────────────────────────────────────────────
+
+APP=""
+for app in Ghostty iTerm2 iTerm WezTerm kitty Alacritty Terminal; do
+  if [ "$(/usr/bin/osascript -e "application \"$app\" is running" 2>/dev/null)" = "true" ]; then
+    APP="$app"
+    break
+  fi
+done
+
+window_titles() {  # newline-separated titles of every window of $APP
+  [ -n "$APP" ] || return 1
+  /usr/bin/osascript -e "tell application \"System Events\" to get name of every window of process \"$APP\"" 2>/dev/null \
+    | /usr/bin/sed 's/, /\n/g'
 }
 
-if [[ -n "${TALLY_TMUX:-}" ]]; then
-  SESS="${TALLY_TMUX%%:*}"
+focus_by_token() {  # $1 = token; bring the window whose title contains it forward
+  local tok="$1"
+  case "$APP" in
+    Ghostty)
+      /usr/bin/osascript 2>/dev/null <<EOS
+tell application "Ghostty"
+  set hits to (every terminal whose name contains "$tok")
+  if hits is {} then error "miss"
+  focus (item 1 of hits)
+  activate
+end tell
+EOS
+      ;;
+    iTerm2|iTerm)
+      /usr/bin/osascript 2>/dev/null <<EOS
+tell application "$APP"
+  repeat with w in windows
+    repeat with t in tabs of w
+      repeat with s in sessions of t
+        if name of s contains "$tok" then
+          select s
+          select t
+          select w
+          activate
+          return
+        end if
+      end repeat
+    end repeat
+  end repeat
+  error "miss"
+end tell
+EOS
+      ;;
+    Terminal)
+      /usr/bin/osascript 2>/dev/null <<EOS
+tell application "Terminal"
+  repeat with w in windows
+    repeat with t in tabs of w
+      if name of t contains "$tok" then
+        set selected tab of w to t
+        set index of w to 1
+        set frontmost of w to true
+        activate
+        return
+      end if
+    end repeat
+  end repeat
+  error "miss"
+end tell
+EOS
+      ;;
+    *)  # universal AX fallback: window-level only, needs Accessibility
+      /usr/bin/osascript 2>/dev/null <<EOS
+tell application "System Events"
+  tell process "$APP"
+    set ws to (every window whose name contains "$tok")
+    if ws is {} then error "miss"
+    perform action "AXRaise" of (item 1 of ws)
+    set frontmost to true
+  end tell
+end tell
+EOS
+      ;;
+  esac
+}
 
-  # FIRST CHOICE: retarget an EXISTING attachment. If any tmux client is
-  # already attached to the socket (the usual case — a terminal window you
-  # keep open), flip the most recently active one to the pressed session and
-  # just bring the terminal app forward. No new windows, no new ssh logins.
-  if ssh -o BatchMode=yes "${HOST}" "
-        set -e
-        C=\$(tmux -S '${SOCKET}' list-clients -F '#{client_activity} #{client_name}' 2>/dev/null \
-            | sort -rn | awk 'NR==1{print \$2}')
-        [ -n \"\$C\" ] || exit 1
-        tmux -S '${SOCKET}' switch-client -c \"\$C\" -t '${SESS}'
-        tmux -S '${SOCKET}' select-window -t '${TALLY_TMUX%.*}'
-        tmux -S '${SOCKET}' select-pane -t '${TALLY_TMUX}'
-      " 2>/dev/null; then
-    activate_terminal
-    exit 0
+# ── hub truth + intersection ─────────────────────────────────────────────────
+
+if [ -n "$TARGET" ] && [ -n "$APP" ]; then
+  CLIENTS=$(ssh -o BatchMode=yes "$HOST" \
+    "tmux -S '$SOCKET' list-clients -F '#{client_tty}|#{client_session}|#{client_activity}'" \
+    2>/dev/null || true)
+  TITLES=$(window_titles || true)
+
+  if [ -n "$CLIENTS" ] && [ -n "$TITLES" ]; then
+    BEST_TTY=""; BEST_ACT=""
+    while IFS='|' read -r tty sess act; do
+      [ -n "$tty" ] || continue
+      case "$TITLES" in *"TALLY[$tty]"*) ;; *) continue ;; esac   # ghost → skip
+      if [ "$sess" = "$SESS" ]; then
+        # A real window is already on the target session: focus it, and only
+        # nudge window/pane (this moves every viewer of that session — tmux
+        # windows are session-scoped; that is the data model, not a bug).
+        ssh -o BatchMode=yes "$HOST" \
+          "tmux -S '$SOCKET' switch-client -c '$tty' -t '$TARGET'" 2>/dev/null
+        focus_by_token "TALLY[$tty]" && exit 0
+      fi
+      if [ -z "$BEST_ACT" ] || [ "$act" -lt "$BEST_ACT" ]; then
+        BEST_TTY="$tty"; BEST_ACT="$act"
+      fi
+    done <<EOF
+$CLIENTS
+EOF
+    if [ -n "$BEST_TTY" ]; then
+      # Least-recently-active real window: the one whose current view you
+      # will miss least. switch-client takes the full pane target directly.
+      if ssh -o BatchMode=yes "$HOST" \
+           "tmux -S '$SOCKET' switch-client -c '$BEST_TTY' -t '$TARGET'"; then
+        focus_by_token "TALLY[$BEST_TTY]" && exit 0
+      fi
+    fi
   fi
+fi
 
-  # No attached client anywhere: fall through and open a fresh window
-  # attached to the session, exact pane selected.
-  REMOTE="tmux -S ${SOCKET} attach -t ${SESS} \\; select-pane -t ${TALLY_TMUX}"
-elif [[ -n "${TALLY_PROJECT:-}" ]]; then
+# ── fallback: fresh window ───────────────────────────────────────────────────
+
+if [ -n "$TARGET" ]; then
+  REMOTE="tmux -S ${SOCKET} attach -t ${SESS} \\; select-pane -t ${TARGET}"
+elif [ -n "${TALLY_PROJECT:-}" ]; then
   # No live pane: drop into the project directory instead of failing silently.
-  # No variable at all — bash is guaranteed present on the hub, and a
-  # literal cannot be eaten by an intermediate shell.
+  # Literal bash — the hub has no zsh, and a literal cannot be eaten by an
+  # intermediate shell the way \$SHELL was.
   REMOTE="cd ${TALLY_PROJECT} && exec bash -l"
 else
   REMOTE="exec bash -l"
 fi
 
 CMD="ssh -t ${HOST} \"${REMOTE}\""
-
-# osascript is the only reliable way to get a NEW Terminal window running a
-# command; `open -a Terminal` can only open a file. Escaping matters: the
-# command is embedded in an AppleScript string literal, so backslashes and
-# double quotes have to survive two levels of quoting.
 esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 
-if [[ -d "/Applications/iTerm.app" ]]; then
+if [ "$APP" = "iTerm2" ] || [ "$APP" = "iTerm" ]; then
   /usr/bin/osascript <<APPLESCRIPT
-tell application "iTerm"
+tell application "$APP"
   activate
   create window with default profile command "$(esc "$CMD")"
 end tell
