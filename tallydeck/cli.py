@@ -144,11 +144,19 @@ def _parser() -> argparse.ArgumentParser:
                    help="use the built-in demo fleet instead of real sources")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("serve", help="run the hub on stdio (for ssh)")
-    sub.add_parser("ls", help="print the signal table")
+    # --demo is accepted both before and after the subcommand; argparse only
+    # applies a subparser default when the attribute is missing, so the
+    # main-parser value survives via default=SUPPRESS on the sub flag.
+    sp = sub.add_parser("serve", help="run the hub on stdio (for ssh)")
+    sp.add_argument("--demo", action="store_true", default=argparse.SUPPRESS)
+    sp = sub.add_parser("ls", help="print the signal table")
+    sp.add_argument("--demo", action="store_true", default=argparse.SUPPRESS)
 
     for name in ("term", "png", "deck"):
         sp = sub.add_parser(name)
+        sp.add_argument("--demo", action="store_true",
+                        default=argparse.SUPPRESS,
+                        help="use the built-in demo fleet")
         sp.add_argument("--connect", metavar="CMD",
                         help="hub command, e.g. 'ssh vps tallyd'")
         sp.add_argument("--device", choices=list(PROFILES),
