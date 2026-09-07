@@ -1,0 +1,63 @@
+"""PNG renderer: draws the whole deck as a contact sheet.
+
+Used headless — for development without hardware, for CI snapshots, and
+for sending the operator a picture of what the deck looks like right now.
+"""
+
+from __future__ import annotations
+
+from PIL import Image, ImageDraw
+
+from ..devices import DeviceProfile
+from ..view import Layout
+from . import theme
+from .keycard import draw_key, draw_screen
+
+GAP = 14          # px between keys
+BEZEL = 26        # px around the key field
+CORNER = 22
+
+
+def render_png(profile: DeviceProfile, layout: Layout,
+               lit: dict[str, bool] | None = None,
+               scale: int = 2) -> Image.Image:
+    """Render the deck face. `lit` maps signal id → flash frame on/off."""
+    lit = lit or {}
+    kp = profile.key_px * scale
+    gap, bez = GAP * scale, BEZEL * scale
+
+    field_w = profile.cols * kp + (profile.cols - 1) * gap
+    field_h = profile.rows * kp + (profile.rows - 1) * gap
+    screen_h = 0
+    if profile.screen_px:
+        screen_h = profile.screen_px[1] * scale + gap
+
+    W = field_w + 2 * bez
+    H = field_h + 2 * bez + screen_h
+    img = Image.new("RGB", (W, H), "#000000")
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle([0, 0, W - 1, H - 1], radius=CORNER * scale,
+                        fill="#16171B", outline="#26282E", width=scale)
+
+    for i, sig in enumerate(layout.keys):
+        r, c = divmod(i, profile.cols)
+        x = bez + c * (kp + gap)
+        y = bez + r * (kp + gap)
+        face = draw_key(sig, profile.key_px,
+                        lit=bool(sig and lit.get(sig.id))).resize((kp, kp))
+        img.paste(face, (x, y))
+        d.rounded_rectangle([x - 1, y - 1, x + kp, y + kp],
+                            radius=6 * scale, outline="#000000", width=scale)
+
+    if profile.screen_px:
+        sw = profile.screen_px[0] * scale
+        sh = profile.screen_px[1] * scale
+        sx = (W - sw) // 2
+        sy = bez + field_h + gap
+        scr = draw_screen(profile.screen_px, layout.summary,
+                          layout.page, layout.pages).resize((sw, sh))
+        img.paste(scr, (sx, sy))
+        d.rounded_rectangle([sx - 1, sy - 1, sx + sw, sy + sh],
+                            radius=4 * scale, outline="#000000", width=scale)
+
+    return img

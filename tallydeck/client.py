@@ -1,0 +1,165 @@
+"""Client: connect a surface (deck / terminal / PNG) to a hub and run.
+
+Two links:
+  LocalLink — hub runs in-process (deck and agents on the same machine).
+  PipeLink  — hub runs at the end of any command's stdio, canonically
+              `ssh yourserver tallyd`. The deck machine needs no state,
+              no credentials beyond SSH, no open ports.
+
+The loop is event-ish: re-render on snapshot change; while any key is
+flashing, tick at FRAME_INTERVAL so blinks animate; otherwise sleep.
+Long-press (≥ 0.5 s) sends `long: true` — sources may treat that as
+"dismiss" vs a short "ack / focus".
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import threading
+import time
+
+from .hub import Hub
+from .signal import Signal
+from .view import View
+from .render import theme
+
+LONG_PRESS = 0.5
+
+
+# ── links ────────────────────────────────────────────────────────────────────
+
+class LocalLink:
+    def __init__(self, hub: Hub):
+        self.hub = hub
+
+    def poll(self) -> list[Signal]:
+        return self.hub.poll()
+
+    def press(self, sid: str, long: bool = False) -> None:
+        self.hub.press(sid, long)
+
+    def close(self) -> None:
+        pass
+
+
+class PipeLink:
+    """Speak the hub protocol over a spawned command's stdio."""
+
+    def __init__(self, argv: list[str], log=lambda m: None):
+        self.proc = subprocess.Popen(
+            argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+            bufsize=1)
+        self.log = log
+        self._signals: list[Signal] = []
+        self._lock = threading.Lock()
+        self._alive = True
+        threading.Thread(target=self._reader, daemon=True).start()
+
+    def _reader(self) -> None:
+        assert self.proc.stdout is not None
+        for line in self.proc.stdout:
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if msg.get("type") == "snapshot":
+                sigs = []
+                for d in msg.get("signals", []):
+                    try:
+                        sigs.append(Signal.from_dict(d))
+                    except ValueError:
+                        continue
+                with self._lock:
+                    self._signals = sigs
+            elif msg.get("type") == "hello":
+                self.log(f"[link] connected to {msg.get('name')}")
+        self._alive = False
+
+    def poll(self) -> list[Signal]:
+        with self._lock:
+            return list(self._signals)
+
+    def press(self, sid: str, long: bool = False) -> None:
+        self._send({"type": "press", "id": sid, "long": long})
+
+    def _send(self, obj: dict) -> None:
+        try:
+            assert self.proc.stdin is not None
+            self.proc.stdin.write(json.dumps(obj) + "\n")
+            self.proc.stdin.flush()
+        except (BrokenPipeError, OSError):
+            self._alive = False
+
+    @property
+    def alive(self) -> bool:
+        return self._alive and self.proc.poll() is None
+
+    def close(self) -> None:
+        try:
+            self.proc.terminate()
+        except OSError:
+            pass
+
+
+# ── run loop ─────────────────────────────────────────────────────────────────
+
+def run(link, surface, view: View, poll_every: float = 2.0,
+        once: bool = False) -> None:
+    """Drive `surface` from `link` until interrupted (or one frame if once)."""
+    pressed_at: dict[int, float] = {}
+    key_map: list[Signal | None] = []
+
+    def on_key(index: int, down: bool) -> None:
+        if down:
+            pressed_at[index] = time.monotonic()
+            return
+        t0 = pressed_at.pop(index, None)
+        if t0 is None or index >= len(key_map):
+            return
+        sig = key_map[index]
+        if sig is not None:
+            link.press(sig.id, long=(time.monotonic() - t0) >= LONG_PRESS)
+
+    def on_touch(direction: int) -> None:
+        if direction > 0:
+            view.page_next()
+        else:
+            view.page_prev()
+
+    if hasattr(surface, "set_callbacks"):
+        surface.set_callbacks(on_key=on_key, on_touch=on_touch)
+
+    last_poll = 0.0
+    signals: list[Signal] = []
+    prev_frame = None
+    try:
+        while True:
+            now = time.monotonic()
+            if now - last_poll >= poll_every or not signals:
+                signals = link.poll()
+                last_poll = now
+
+            layout = view.layout(signals)
+            key_map = layout.keys
+            flashing = [s for s in layout.keys if s and s.wants_flash]
+            lit = {s.id: theme.flash_lit(s.state, now) for s in flashing}
+
+            frame = ([(s.id, s.state, s.label, s.sublabel, s.progress)
+                      if s else None for s in layout.keys],
+                     tuple(sorted(lit.items())), layout.summary,
+                     layout.page, layout.pages)
+            if frame != prev_frame:
+                surface.show(layout, lit)
+                prev_frame = frame
+
+            if once:
+                return
+            time.sleep(theme.FRAME_INTERVAL if flashing
+                       else min(0.25, poll_every / 4))
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if hasattr(surface, "close"):
+            surface.close()
+        link.close()

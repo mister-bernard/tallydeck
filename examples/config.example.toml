@@ -1,0 +1,21 @@
+# ~/.config/tallydeck/config.toml
+[view]
+device = "neo"
+hide_idle = false
+pinned = []
+
+[[sources]]
+kind = "claude-sessions"
+
+[[sources]]
+kind = "watchdir"
+
+# [[sources]]
+# kind = "exec"
+# group = "svc"
+# argv = ["~/bin/service-signals.sh"]
+# every = 30
+
+# On the deck machine, point at the server hub:
+# [client]
+# connect = ["ssh", "yourserver", "tallyd"]
