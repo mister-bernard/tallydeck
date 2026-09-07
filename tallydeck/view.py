@@ -21,6 +21,7 @@ class Layout:
     page: int
     pages: int
     summary: str
+    meter: Signal | None = None      # meta.meter signal → info bar, not a key
 
 
 @dataclass
@@ -31,6 +32,8 @@ class View:
     page: int = 0
 
     def layout(self, signals: list[Signal]) -> Layout:
+        meters = [s for s in signals if s.meta.get("meter")]
+        signals = [s for s in signals if not s.meta.get("meter")]
         if self.hide_idle:
             signals = [s for s in signals if s.state not in ("idle", "offline")]
 
@@ -46,7 +49,8 @@ class View:
         keys: list[Signal | None] = list(window) + \
             [None] * (per_page - len(window))
         return Layout(keys=keys, page=self.page, pages=pages,
-                      summary=summarize(signals))
+                      summary=summarize(signals),
+                      meter=meters[0] if meters else None)
 
     def page_next(self) -> None:
         self.page += 1     # clamped on next layout()

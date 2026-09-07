@@ -35,4 +35,9 @@ class DemoSource(Source):
                    state=IDLE, group=self.group),
             Signal(id="demo/miner", label="miner", sublabel="lost link",
                    state=OFFLINE, group=self.group),
+            Signal(id="demo/burn", label="burn", state=WORKING, flash=False,
+                   progress=min(1.0, 0.15 + crawl * 0.8), group=self.group,
+                   meta={"meter": True, "frac": 0.15 + crawl * 1.2,
+                         "left": f"{round((0.15 + crawl * 1.2) * 100)}%",
+                         "mid": "A 15 · B 10", "right": "→ 01:00"}),
         ]

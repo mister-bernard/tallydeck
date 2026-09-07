@@ -16,7 +16,8 @@ class TermSurface:
     def __init__(self, profile: DeviceProfile):
         self.profile = profile
 
-    def show(self, layout: Layout, lit: dict[str, bool]) -> None:
+    def show(self, layout: Layout, lit: dict[str, bool],
+             t: float = 0.0) -> None:
         sys.stdout.write("\033[2J\033[H")   # clear + home
         sys.stdout.write(render_term(self.profile, layout, lit) + "\n")
         sys.stdout.flush()
@@ -33,8 +34,9 @@ class PngSurface:
         self.path = Path(path)
         self.scale = scale
 
-    def show(self, layout: Layout, lit: dict[str, bool]) -> None:
-        img = render_png(self.profile, layout, lit, scale=self.scale)
+    def show(self, layout: Layout, lit: dict[str, bool],
+             t: float = 0.0) -> None:
+        img = render_png(self.profile, layout, lit, scale=self.scale, t=t)
         tmp = self.path.with_suffix(".tmp.png")
         img.save(tmp)
         tmp.replace(self.path)

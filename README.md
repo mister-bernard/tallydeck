@@ -123,6 +123,19 @@ echo '{"label":"backup","state":"success","ttl":600}' \
 Flashing keys alternate with a **flood frame** — the whole key fills with its
 state color — which is what makes them readable in peripheral vision.
 
+### The burn meter
+
+The Neo's info bar can carry a **session burn meter** instead of the fleet
+summary — a demoscene-style bar tracking token usage across your accounts
+against this 5-hour window's burn *target*, with the window's end time. Fill
+is progress toward the target; past 100% the bar refills in molten colors
+over the dimmed base. Enable with a `tokenburn` source pointed at a
+[tokenburn](https://github.com/mister-bernard) accounts API; if the API is
+unreachable the meter simply yields back to the summary. More generally, any
+source can claim the info bar by emitting a signal with
+`meta: {"meter": true, "frac": …, "left": …, "mid": …, "right": …}` —
+meters are routed to the screen, never to keys.
+
 **Press** a key: the hub asks the signal's source to handle it (the Claude
 source focuses that project's tmux pane; the watchdir source acks the
 signal), falling back to the signal's own declared `action`. **Long-press**

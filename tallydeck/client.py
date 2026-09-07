@@ -146,12 +146,17 @@ def run(link, surface, view: View, poll_every: float = 2.0,
             wall = time.time()   # epoch, so all surfaces blink in phase
             lit = {s.id: theme.flash_lit(s.state, wall) for s in flashing}
 
+            m = layout.meter
             frame = ([(s.id, s.state, s.label, s.sublabel, s.progress)
                       if s else None for s in layout.keys],
                      tuple(sorted(lit.items())), layout.summary,
-                     layout.page, layout.pages)
+                     layout.page, layout.pages,
+                     None if m is None else tuple(sorted(
+                         (k, v) for k, v in m.meta.items()
+                         if isinstance(v, (str, int, float, bool)))),
+                     int(wall * 0.5) if m is not None else 0)  # meter hatch tick
             if frame != prev_frame:
-                surface.show(layout, lit)
+                surface.show(layout, lit, t=wall)
                 prev_frame = frame
 
             if once:

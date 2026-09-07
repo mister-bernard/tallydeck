@@ -52,5 +52,12 @@ def render_term(profile: DeviceProfile, layout: Layout,
             rows_out.append("  ".join(cell[line_i] for cell in cells))
         rows_out.append("")
     pager = f"  page {layout.page + 1}/{layout.pages}" if layout.pages > 1 else ""
+    if layout.meter is not None:
+        m = layout.meter.meta
+        frac = float(m.get("frac", 0))
+        filled = min(_W * 2, round(_W * 2 * frac))
+        bar = "▰" * filled + "▱" * max(0, _W * 2 - filled)
+        rows_out.append(f"\033[95m{bar}\033[0m {m.get('left', '')} "
+                        f"{m.get('mid', '')} {m.get('right', '')}")
     rows_out.append(f"\033[2m{layout.summary}{pager}\033[0m")
     return "\n".join(rows_out)

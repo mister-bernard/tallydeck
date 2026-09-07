@@ -16,7 +16,8 @@ import threading
 
 from ..devices import DeviceProfile, PROFILES
 from ..view import Layout
-from .keycard import draw_key, draw_screen
+from .keycard import draw_key
+from .png import _screen_face
 
 
 def _profile_for(deck) -> DeviceProfile:
@@ -98,7 +99,8 @@ class DeckSurface:
 
     # ── drawing ──────────────────────────────────────────────────────────────
 
-    def show(self, layout: Layout, lit: dict[str, bool]) -> None:
+    def show(self, layout: Layout, lit: dict[str, bool],
+             t: float = 0.0) -> None:
         with self._lock:
             for i, sig in enumerate(layout.keys[:self.profile.keys]):
                 is_lit = bool(sig and lit.get(sig.id))
@@ -115,10 +117,14 @@ class DeckSurface:
                 self.deck.set_key_image(i, native)
                 self._drawn[i] = print_key
             if self.profile.screen_px and hasattr(self.deck, "set_screen_image"):
-                bar = (layout.summary, layout.page, layout.pages)
+                m = layout.meter
+                bar = (layout.summary, layout.page, layout.pages,
+                       None if m is None else tuple(sorted(
+                           (k, v) for k, v in m.meta.items()
+                           if isinstance(v, (str, int, float, bool)))),
+                       int(t * 0.5) if m is not None else 0)  # 2 s hatch tick
                 if self._drawn.get(-1) != bar:
-                    scr = draw_screen(self.profile.screen_px, layout.summary,
-                                      layout.page, layout.pages)
+                    scr = _screen_face(self.profile, layout, t)
                     try:
                         self.deck.set_screen_image(
                             self._pil.to_native_screen_format(self.deck, scr))

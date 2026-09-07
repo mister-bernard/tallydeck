@@ -35,7 +35,8 @@ DEFAULT_PATH = Path(os.environ.get(
 
 DEFAULTS: dict = {
     "view": {"device": "neo", "hide_idle": False, "pinned": []},
-    "sources": [{"kind": "claude-sessions"}, {"kind": "watchdir"}],
+    "sources": [{"kind": "claude-sessions"}, {"kind": "watchdir"},
+                {"kind": "tokenburn"}],   # meter vanishes if API absent
     "client": {},
 }
 

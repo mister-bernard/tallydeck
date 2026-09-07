@@ -5,12 +5,14 @@ from .claude_sessions import ClaudeSessionsSource
 from .watchdir import WatchDirSource
 from .execsrc import ExecSource
 from .demo import DemoSource
+from .burn import TokenBurnSource
 
 REGISTRY: dict[str, type[Source]] = {
     "claude-sessions": ClaudeSessionsSource,
     "watchdir": WatchDirSource,
     "exec": ExecSource,
     "demo": DemoSource,
+    "tokenburn": TokenBurnSource,
 }
 
 

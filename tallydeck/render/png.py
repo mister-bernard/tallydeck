@@ -12,15 +12,27 @@ from ..devices import DeviceProfile
 from ..view import Layout
 from . import theme
 from .keycard import draw_key, draw_screen
+from .meter import draw_meter
 
 GAP = 14          # px between keys
 BEZEL = 26        # px around the key field
 CORNER = 22
 
 
+def _screen_face(profile: DeviceProfile, layout: Layout, t: float):
+    if layout.meter is not None:
+        m = layout.meter.meta
+        return draw_meter(profile.screen_px,
+                          float(m.get("frac", layout.meter.progress or 0.0)),
+                          m.get("left", ""), m.get("mid", ""),
+                          m.get("right", ""), t=t)
+    return draw_screen(profile.screen_px, layout.summary,
+                       layout.page, layout.pages)
+
+
 def render_png(profile: DeviceProfile, layout: Layout,
                lit: dict[str, bool] | None = None,
-               scale: int = 2) -> Image.Image:
+               scale: int = 2, t: float = 0.0) -> Image.Image:
     """Render the deck face. `lit` maps signal id → flash frame on/off."""
     lit = lit or {}
     kp = profile.key_px * scale
@@ -54,8 +66,7 @@ def render_png(profile: DeviceProfile, layout: Layout,
         sh = profile.screen_px[1] * scale
         sx = (W - sw) // 2
         sy = bez + field_h + gap
-        scr = draw_screen(profile.screen_px, layout.summary,
-                          layout.page, layout.pages).resize((sw, sh))
+        scr = _screen_face(profile, layout, t).resize((sw, sh))
         img.paste(scr, (sx, sy))
         d.rounded_rectangle([sx - 1, sy - 1, sx + sw, sy + sh],
                             radius=4 * scale, outline="#000000", width=scale)

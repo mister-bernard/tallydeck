@@ -97,7 +97,7 @@ def test_hub_merges_and_survives_broken_source():
 
     hub = Hub([DemoSource(), Broken()], log=lambda m: None)
     sigs = hub.poll()
-    assert len(sigs) == 7
+    assert len(sigs) == 8
     assert sigs[0].state == BLOCKED        # ranked output
 
 
@@ -186,6 +186,59 @@ def test_claude_sessions_one_key_per_project(tmp_path):
     assert len(sigs) == 1
     assert sigs[0].meta["session"] == "new00000"
     assert old.exists()                    # scanner never mutates sessions
+
+
+# ── tokenburn source ─────────────────────────────────────────────────────────
+
+def _burn_fixture():
+    payload = {"accounts": [
+        {"id": "A", "provider": "anthropic", "enabled": True,
+         "session_pct": 15, "session_reset": "2026-09-07T08:00:00+00:00"},
+        {"id": "B", "provider": "anthropic", "enabled": True,
+         "session_pct": 10, "session_reset": "2026-09-07T08:00:00+00:00"},
+        {"id": "X", "provider": "grok", "enabled": True, "session_pct": 50},
+    ]}
+    targets = {
+        "A": {"window_5h_limit": 9_000_000, "target_pct_5h": 40},
+        "B": {"window_5h_limit": 9_000_000, "target_pct_5h": 70},
+    }
+    return payload, targets
+
+
+def test_burn_aggregates_anthropic_accounts_only():
+    from tallydeck.sources.burn import TokenBurnSource
+    payload, targets = _burn_fixture()
+    sigs = TokenBurnSource(tz="UTC").signals_from(payload, targets)
+    assert len(sigs) == 1
+    m = sigs[0].meta
+    # (15% + 10%) of 9M each = 2.25M burned; (40% + 70%) of 9M = 9.9M target
+    assert abs(m["frac"] - 2.25 / 9.9) < 1e-9
+    assert m["meter"] is True
+    assert m["left"] == "23%"
+    assert m["mid"] == "A 15 · B 10"          # grok account excluded
+    assert m["right"] == "→ 08:00"
+    assert not sigs[0].wants_flash
+
+
+def test_burn_over_target_and_empty():
+    from tallydeck.sources.burn import TokenBurnSource
+    payload, targets = _burn_fixture()
+    payload["accounts"][0]["session_pct"] = 80
+    payload["accounts"][1]["session_pct"] = 60
+    sigs = TokenBurnSource(tz="UTC").signals_from(payload, targets)
+    assert sigs[0].meta["frac"] > 1.0          # renderer goes molten
+    assert sigs[0].progress == 1.0             # wire progress stays clamped
+    assert TokenBurnSource().signals_from({"accounts": []}, {}) == []
+
+
+def test_view_routes_meter_to_info_bar_not_keys():
+    sigs = [Signal(id="a", label="a", state=WORKING),
+            Signal(id="burn/session", label="burn", state=WORKING,
+                   meta={"meter": True, "frac": 0.5})]
+    lay = View(profile=NEO).layout(sigs)
+    assert lay.meter is not None and lay.meter.id == "burn/session"
+    assert all(k is None or k.id != "burn/session" for k in lay.keys)
+    assert "working" in lay.summary            # summary counts real keys only
 
 
 # ── renderers stay import-light and draw without hardware ────────────────────
