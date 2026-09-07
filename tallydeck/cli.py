@@ -141,6 +141,20 @@ def cmd_raise(cfg, args):
     print(fp)
 
 
+def cmd_brief(cfg, args):
+    """Print the landing brief for a session (hub-side; shown in a popup)."""
+    from .brief import build
+    roots = []
+    for spec in cfg["sources"]:
+        if spec.get("kind") == "claude-sessions":
+            for r in spec.get("roots", []) or []:
+                roots.append(Path(str(r.get("path", ""))).expanduser())
+            if spec.get("root"):
+                roots.append(Path(str(spec["root"])).expanduser())
+    print(build(args.session or "", args.project or "", args.label or "",
+                roots or None, args.state or ""))
+
+
 def cmd_clear(cfg, args):
     fp = DEFAULT_DIR / f"{args.id}.json"
     if fp.is_file():
@@ -198,6 +212,12 @@ def _parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("clear", help="remove a raised signal")
     sp.add_argument("id")
+
+    sp = sub.add_parser("brief", help="print a session's landing brief")
+    sp.add_argument("--session", help="claude session uuid")
+    sp.add_argument("--project", help="project path")
+    sp.add_argument("--label")
+    sp.add_argument("--state")
     return p
 
 
@@ -207,7 +227,7 @@ def main(argv: list[str] | None = None) -> None:
     {
         "serve": cmd_serve, "ls": cmd_ls, "term": cmd_term,
         "png": cmd_png, "deck": cmd_deck,
-        "raise": cmd_raise, "clear": cmd_clear,
+        "raise": cmd_raise, "clear": cmd_clear, "brief": cmd_brief,
     }[args.cmd](cfg, args)
 
 

@@ -138,6 +138,10 @@ class ClaudeSessionsSource(Source):
         # steady amber after flash_for seconds. Still ranked as attention —
         # it just stops shouting.
         self.flash_for = float(opts.get("flash_for", 300))
+        # tmux socket. Sessions live on a named socket; a bare
+        # `tmux list-panes` queries the DEFAULT one and finds nothing,
+        # so every key fell back to "open a shell in the project dir".
+        self.socket = str(opts.get("socket", "/tmp/tmux-1000/cc"))
         # Burn-rate window: bytes appended to a session log are a faithful,
         # already-on-disk proxy for tokens spent. Sampled per poll, rated
         # over this window, and fed into Signal.priority so the hottest
@@ -225,6 +229,9 @@ class ClaudeSessionsSource(Source):
 
     _PANE_TTL = 15.0   # panes move rarely; a press must not wait on a scan
 
+    def _tmux(self, *args) -> list[str]:
+        return ["tmux", "-S", self.socket, *args]
+
     def _panes(self) -> dict[str, str]:
         """{realpath(cwd): target} for every pane, cached briefly."""
         now = time.time()
@@ -233,8 +240,9 @@ class ClaudeSessionsSource(Source):
         out_map: dict[str, str] = {}
         try:
             r = subprocess.run(
-                ["tmux", "list-panes", "-a", "-F",
-                 "#{session_name}:#{window_index}.#{pane_index} #{pane_current_path}"],
+                self._tmux("list-panes", "-a", "-F",
+                           "#{session_name}:#{window_index}.#{pane_index} "
+                           "#{pane_current_path}"),
                 capture_output=True, text=True, timeout=3)
             if r.returncode == 0:
                 for line in r.stdout.strip().splitlines():
@@ -248,7 +256,19 @@ class ClaudeSessionsSource(Source):
 
     def _pane_for(self, project: str) -> str:
         key = os.path.realpath(project) if os.path.exists(project) else project
-        return self._panes().get(key, "")
+        panes = self._panes()
+        hit = panes.get(key)
+        if hit:
+            return hit
+        # A pane sitting in a parent (or child) of the session's cwd is still
+        # that session's window — exact-match alone left most keys paneless.
+        best = ""
+        best_len = -1
+        for cwd, target in panes.items():
+            if key.startswith(cwd + "/") or cwd.startswith(key + "/"):
+                if len(cwd) > best_len:      # deepest match wins
+                    best, best_len = target, len(cwd)
+        return best
 
     def on_press(self, sig: Signal, long: bool = False) -> bool:
         """Focus the tmux pane working in this project, if one exists."""
@@ -257,8 +277,9 @@ class ClaudeSessionsSource(Source):
             return False
         try:
             out = subprocess.run(
-                ["tmux", "list-panes", "-a", "-F",
-                 "#{session_name}:#{window_index}.#{pane_index} #{pane_current_path}"],
+                self._tmux("list-panes", "-a", "-F",
+                           "#{session_name}:#{window_index}.#{pane_index} "
+                           "#{pane_current_path}"),
                 capture_output=True, text=True, timeout=3,
             )
         except (OSError, subprocess.TimeoutExpired):
@@ -271,9 +292,7 @@ class ClaudeSessionsSource(Source):
             cwd_real = os.path.realpath(cwd) if os.path.exists(cwd) else cwd
             if cwd_real == proj_real or cwd_real.startswith(proj_real + "/") \
                or proj_real.startswith(cwd_real + "/"):
-                subprocess.run(["tmux", "switch-client", "-t", target],
-                               capture_output=True, timeout=3)
-                subprocess.run(["tmux", "select-window", "-t", target],
+                subprocess.run(self._tmux("switch-client", "-t", target),
                                capture_output=True, timeout=3)
                 return True
         return False

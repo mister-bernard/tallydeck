@@ -425,3 +425,32 @@ def test_burn_lane_fill_matches_window_pct():
     a = [l for l in lanes if l["id"] == "A"][0]
     assert a["frac"] == 0.15         # 15% of the WINDOW — matches the label
     assert a["target"] == 0.40       # target rides the bar as a notch
+
+
+def test_pane_matching_uses_socket_and_prefixes(monkeypatch):
+    """Sessions live on a NAMED socket; a bare `tmux list-panes` queries the
+    default one and finds nothing — every key then fell back to a bare shell.
+    And a pane in a parent dir is still that session's window."""
+    src = ClaudeSessionsSource(socket="/tmp/tmux-1000/cc")
+    assert src._tmux("list-panes")[:3] == ["tmux", "-S", "/tmp/tmux-1000/cc"]
+    src._pane_cache = {"/home/me/projects": "main:1.1",
+                       "/home/me/projects/widget": "work:2.0"}
+    src._pane_ts = time.time()
+    assert src._pane_for("/home/me/projects/widget") == "work:2.0"   # exact
+    assert src._pane_for("/home/me/projects/widget/sub") == "work:2.0"  # deepest
+    assert src._pane_for("/home/me/other") == ""
+
+
+def test_brief_reports_session_and_repo(tmp_path):
+    from tallydeck.brief import build
+    proj = tmp_path / "-home-me-projects-widget"
+    proj.mkdir()
+    _write_jsonl(proj, "sess1234", [
+        {"type": "assistant", "cwd": str(tmp_path), "message": {"content": [
+            {"type": "text", "text": "Ran the migration; next step is to "
+             "verify the row counts against staging before deploying."}]}}])
+    out = build("sess1234", str(tmp_path), "widget", roots=[tmp_path],
+                state="attention")
+    assert "widget" in out and "attention" in out
+    assert "verify the row counts" in out
+    assert "WHERE IT LEFT OFF" in out

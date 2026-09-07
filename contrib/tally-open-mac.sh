@@ -39,6 +39,20 @@ SOCKET="${TALLY_TMUX_SOCKET:-/tmp/tmux-1000/cc}"
 TARGET="${TALLY_TMUX:-}"
 SESS="${TARGET%%:*}"
 
+# Single-quote for the remote shell. Paths like "Client Docs/Quarterly Design
+# Review 2025" are real here; unquoted they became `cd: too many arguments`.
+q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+
+# The landing brief: where the session left off, repo state, matching open
+# tasks. Shown as a tmux popup over the session you land in, so a press
+# arrives with context instead of a bare prompt. Any key dismisses it.
+BRIEF_CMD="~/.local/bin/tally-brief $(q "${TALLY_SESSION:-}") $(q "${TALLY_PROJECT:-}") $(q "${TALLY_LABEL:-}") $(q "${TALLY_STATE:-}")"
+popup() {  # $1 = tmux target session
+  ssh -o BatchMode=yes "$HOST" \
+    "tmux -S '$SOCKET' display-popup -t $(q "$1") -w 80% -h 70% -E $(q "$BRIEF_CMD")" \
+    >/dev/null 2>&1 &
+}
+
 # ── local terminal app ───────────────────────────────────────────────────────
 
 APP=""
@@ -140,7 +154,7 @@ if [ -n "$TARGET" ] && [ -n "$APP" ]; then
         # windows are session-scoped; that is the data model, not a bug).
         ssh -o BatchMode=yes "$HOST" \
           "tmux -S '$SOCKET' switch-client -c '$tty' -t '$TARGET'" 2>/dev/null
-        focus_by_token "TALLY[$tty]" && exit 0
+        if focus_by_token "TALLY[$tty]"; then popup "$SESS"; exit 0; fi
       fi
       if [ -z "$BEST_ACT" ] || [ "$act" -lt "$BEST_ACT" ]; then
         BEST_TTY="$tty"; BEST_ACT="$act"
@@ -153,7 +167,7 @@ EOF
       # will miss least. switch-client takes the full pane target directly.
       if ssh -o BatchMode=yes "$HOST" \
            "tmux -S '$SOCKET' switch-client -c '$BEST_TTY' -t '$TARGET'"; then
-        focus_by_token "TALLY[$BEST_TTY]" && exit 0
+        if focus_by_token "TALLY[$BEST_TTY]"; then popup "$SESS"; exit 0; fi
       fi
     fi
   fi
@@ -162,12 +176,13 @@ fi
 # ── fallback: fresh window ───────────────────────────────────────────────────
 
 if [ -n "$TARGET" ]; then
-  REMOTE="tmux -S ${SOCKET} attach -t ${SESS} \\; select-pane -t ${TARGET}"
+  # Brief first, then attach to the live pane — not a fresh shell beside it.
+  REMOTE="${BRIEF_CMD}; tmux -S ${SOCKET} attach -t $(q "$SESS") \\; select-pane -t $(q "$TARGET")"
 elif [ -n "${TALLY_PROJECT:-}" ]; then
   # No live pane: drop into the project directory instead of failing silently.
   # Literal bash — the hub has no zsh, and a literal cannot be eaten by an
   # intermediate shell the way \$SHELL was.
-  REMOTE="cd ${TALLY_PROJECT} && exec bash -l"
+  REMOTE="${BRIEF_CMD}; cd $(q "$TALLY_PROJECT") && exec bash -l"
 else
   REMOTE="exec bash -l"
 fi
