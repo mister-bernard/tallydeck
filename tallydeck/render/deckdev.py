@@ -109,7 +109,9 @@ class DeckSurface:
                 # should cost 2 updates per frame, not 8.
                 print_key = (None if sig is None else
                              (sig.id, sig.state, sig.label, sig.sublabel,
-                              sig.progress, sig.color), is_lit, is_pressed)
+                              sig.progress, sig.color,
+                              round(float(sig.meta.get('heat', 0) or 0), 2)),
+                             is_lit, is_pressed)
                 if self._drawn.get(i) == print_key:
                     continue
                 img = draw_key(sig, self.profile.key_px, lit=is_lit,

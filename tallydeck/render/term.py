@@ -65,7 +65,7 @@ def render_term(profile: DeviceProfile, layout: Layout,
                 frac = float(l.get("frac", 0))
                 filled = min(_W * 2, round(_W * 2 * frac))
                 bar = "▰" * filled + "▱" * max(0, _W * 2 - filled)
-                soon = "*" if l.get("id") == m.get("soonest") else " "
+                soon = "*" if l.get("id") == m.get("hot") else " "
                 rows_out.append(
                     f"\033[95m{l.get('id', '?')} {bar}\033[0m "
                     f"{l.get('mid', '')}  {l.get('clock', '')}{soon}")

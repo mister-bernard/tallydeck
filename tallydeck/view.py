@@ -47,6 +47,13 @@ class View:
         pages = max(1, -(-len(ordered) // per_page))
         self.page = max(0, min(self.page, pages - 1))
         window = ordered[self.page * per_page:(self.page + 1) * per_page]
+        # Relative heat: each key's burn priority against the hottest visible
+        # one. Renderers tint backgrounds with it; recomputed every layout so
+        # it tracks the fleet, not an absolute scale nobody calibrated.
+        hottest = max((s.priority for s in window if s.priority > 0),
+                      default=0)
+        for s in window:
+            s.meta["heat"] = (s.priority / hottest) if hottest else 0.0
         keys: list[Signal | None] = [None] * per_page
         if self.fill == "columns":
             # Rank #1 top-left, #2 below it, #3 top of the next column — the

@@ -43,6 +43,10 @@ class TokenBurnSource(Source):
         self.tz = opts.get("tz", "America/Los_Angeles")
         self._last_run = 0.0
         self._cache: list[Signal] = []
+        # Window-% history per account, for "which account is burning NOW":
+        # the lane whose countdown gets the underline.
+        self.hot_window = float(opts.get("hot_window", 300))
+        self._pct_hist: dict[str, list[tuple[float, float]]] = {}
 
     # ── polling ──────────────────────────────────────────────────────────────
 
@@ -112,9 +116,11 @@ class TokenBurnSource(Source):
         if not parts or target <= 0:
             return []
         frac = burned / target
-        # The soonest lane with a real countdown is the one that constrains you.
-        timed = [l for l in lanes if l["remaining_s"] is not None]
-        soon = min(timed, key=lambda l: l["remaining_s"])["id"] if timed else ""
+        # Underline the account that is actually burning right now — the max
+        # window-% growth over the hot window. Nothing moving → no underline.
+        rates = {l["id"]: self._pct_rate(l["id"], now, l["pct"]) for l in lanes}
+        hot = max(rates, key=rates.get) if rates and max(rates.values()) > 0 \
+            else ""
         return [Signal(
             id="burn/session",
             label="burn",
@@ -135,9 +141,20 @@ class TokenBurnSource(Source):
                     for l in lanes if l["remaining_s"] is not None
                 ),
                 "lanes": lanes,
-                "soonest": soon,
+                "hot": hot,
             },
         )]
+
+    def _pct_rate(self, acct: str, now: float, pct: float) -> float:
+        """Window-% growth per second over the hot window (≥ 0)."""
+        hist = self._pct_hist.setdefault(acct, [])
+        hist.append((now, pct))
+        while hist and now - hist[0][0] > self.hot_window:
+            hist.pop(0)
+        if len(hist) < 2:
+            return 0.0
+        dt = hist[-1][0] - hist[0][0]
+        return max(0.0, (hist[-1][1] - hist[0][1]) / max(dt, 1.0))
 
     @staticmethod
     def _remaining(iso: str | None, now: float) -> float | None:

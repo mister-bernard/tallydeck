@@ -121,7 +121,7 @@ def _draw_band(img, d, x0: int, x1: int, y0: int, y1: int,
 def draw_meter(size: tuple[int, int], frac: float, left: str = "",
                mid: str = "", right: str = "", t: float = 0.0,
                lanes: list[dict] | None = None,
-               soonest: str = "") -> Image.Image:
+               hot: str = "") -> Image.Image:
     """One bar per account when `lanes` is given, otherwise a single aggregate.
 
     The aggregate hid the only thing worth knowing: a combined 20% is fine, a
@@ -190,12 +190,12 @@ def draw_meter(size: tuple[int, int], frac: float, left: str = "",
                        fill="#E8ECF8", **kw)
             clock = str(lane.get("clock", ""))
             if clock:
-                is_soon = soonest and lane.get("id") == soonest
+                is_hot = hot and lane.get("id") == hot
                 cw = d.textlength(clock, font=f_info)
                 cx = x1 - pad_s - cw
                 d.text((cx, cy_i), clock, font=f_info,
-                       fill="#00E5FF" if is_soon else "#D7DEF2", **kw)
-                if is_soon:  # the window that lifts first is the one that binds
+                       fill="#00E5FF" if is_hot else "#D7DEF2", **kw)
+                if is_hot:   # underline = the account burning right now
                     uy = cy_i + f_info.size + SS
                     d.line([(cx, uy), (cx + cw, uy)],
                            fill="#00E5FF", width=max(1, SS))
@@ -209,7 +209,7 @@ def draw_meter(size: tuple[int, int], frac: float, left: str = "",
     lw = rw = 0.0
     if lane_list and len(lane_list) >= 2:
         left = mid = right = ""   # the lanes carry all of it now — badge,
-        soonest = ""              # info, and their own embedded countdowns
+        hot = ""                  # info, and their own embedded countdowns
     if left:
         lw = d.textlength(left, font=f_big)
         d.text((x0 + pad, ty), left, font=f_big, fill="#F2F6FF", **kw)
@@ -220,8 +220,8 @@ def draw_meter(size: tuple[int, int], frac: float, left: str = "",
         # Underline the account that resets FIRST — with two countdowns side by
         # side, which one binds is the whole question, and colour alone would be
         # lost on a 248x58 strip.
-        if soonest:
-            tok = f"{soonest} "
+        if hot:
+            tok = f"{hot} "
             i = right.find(tok)
             if i >= 0:
                 seg_x = rx + d.textlength(right[:i], font=f_big)

@@ -191,7 +191,8 @@ def run(link, surface, view: View, poll_every: float = 2.0,
 
             m = layout.meter
             pressed = frozenset(held)
-            frame = ([(s.id, s.state, s.label, s.sublabel, s.progress)
+            frame = ([(s.id, s.state, s.label, s.sublabel, s.progress,
+                       round(float(s.meta.get('heat', 0) or 0), 2))
                       if s else None for s in layout.keys],
                      tuple(sorted(lit.items())), pressed, layout.summary,
                      layout.page, layout.pages,

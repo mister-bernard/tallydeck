@@ -36,6 +36,24 @@ def _truncate(draw: ImageDraw.ImageDraw, text: str, font, max_w: int) -> str:
     return text + "…"
 
 
+def _wrap2(draw: ImageDraw.ImageDraw, text: str, font, max_w: int) -> list[str]:
+    """Wrap onto up to two lines, breaking at - or space where possible.
+    Ellipsis only when even two lines cannot hold it."""
+    if not text or draw.textlength(text, font=font) <= max_w:
+        return [text]
+    cut = len(text)
+    while cut > 1 and draw.textlength(text[:cut], font=font) > max_w:
+        cut -= 1
+    nice = max(text.rfind("-", 1, cut + 1), text.rfind(" ", 1, cut + 1))
+    if nice >= max(2, cut // 2):          # break at a boundary if it's not tiny
+        head, rest = text[:nice + 1].rstrip(), text[nice + 1:]
+        if text[nice] == "-":
+            head = text[:nice + 1]         # keep the hyphen visible
+    else:
+        head, rest = text[:cut], text[cut:]
+    return [head, _truncate(draw, rest, font, max_w)]
+
+
 def draw_key(sig: Signal | None, px: int, lit: bool = False,
              pressed: bool = False) -> Image.Image:
     """Render one key face at px × px. `lit` = flash flood frame,
@@ -55,13 +73,17 @@ def draw_key(sig: Signal | None, px: int, lit: bool = False,
     color = sig.color or theme.STATE_COLOR.get(sig.state, theme.STATE_COLOR["idle"])
     muted = sig.state in theme.MUTED_STATES
 
+    heat = float((sig.meta or {}).get("heat", 0.0) or 0.0)
+
     if lit:
         bg, fg, sub = color, theme.FLOOD_TEXT, theme.FLOOD_TEXT
         bar = theme.mix(color, "#000000", 0.35)
         track = theme.mix(color, "#000000", 0.25)
         fill = theme.FLOOD_TEXT
     else:
-        bg = theme.BG
+        # Background carries relative burn heat: cold stays near-black,
+        # the hottest session glows ember. Levels must read apart at a glance.
+        bg = theme.heat_bg(heat)
         fg = theme.FG_DIM if muted else theme.FG
         sub = theme.FG_DIM
         bar = theme.mix(color, theme.BG, 0.55) if muted else color
@@ -78,9 +100,19 @@ def draw_key(sig: Signal | None, px: int, lit: bool = False,
     f_label = theme.font("display", round(s * 0.195))
     f_sub = theme.font("regular", round(s * 0.135))
 
-    label = _truncate(d, sig.label, f_label, s - 2 * pad)
+    # Wrap instead of amputate: a name that overflows drops to a slightly
+    # smaller face and takes two lines, which lets the break land on a
+    # hyphen/space instead of mid-word. Ellipsis only past two full lines.
     y = bar_h + round(s * 0.10)
-    d.text((pad, y), label, font=f_label, fill=fg)
+    if d.textlength(sig.label, font=f_label) <= s - 2 * pad:
+        d.text((pad, y), sig.label, font=f_label, fill=fg)
+    else:
+        f_label = theme.font("display", round(s * 0.155))
+        lines = _wrap2(d, sig.label, f_label, s - 2 * pad)
+        d.text((pad, y), lines[0], font=f_label, fill=fg)
+        if len(lines) > 1:
+            d.text((pad, y + round(s * 0.165)), lines[1], font=f_label, fill=fg)
+            y += round(s * 0.13)
 
     # Account badge, bottom-right. Which of the two quotas a session is
     # draining is invisible otherwise — you can watch it work with no idea

@@ -134,6 +134,10 @@ class ClaudeSessionsSource(Source):
         # QUIET for `dwell` seconds with an assistant tail is truly waiting
         # on the human; a fresh assistant tail is just Claude still working.
         self.dwell = float(opts.get("dwell", 15))
+        # A fresh "your move" flashes; one you've plainly seen and left goes
+        # steady amber after flash_for seconds. Still ranked as attention —
+        # it just stops shouting.
+        self.flash_for = float(opts.get("flash_for", 300))
         # Burn-rate window: bytes appended to a session log are a faithful,
         # already-on-disk proxy for tokens spent. Sampled per poll, rated
         # over this window, and fed into Signal.priority so the hottest
@@ -186,10 +190,14 @@ class ClaudeSessionsSource(Source):
                 sub = _age_str(now - mtime)
                 if rate >= 20:
                     sub += f" · {rate * 60 / 1024:.0f}k/m"
+                flash = None
+                if state == ATTENTION and (now - mtime) > self.flash_for:
+                    flash = False
                 signals.append(Signal(
                     id=f"{self.group}/{fp.stem[:8]}",
-                    label=(os.path.basename(full) or full)[:14],
+                    label=(os.path.basename(full) or full)[:24],
                     sublabel=sub,
+                    flash=flash,
                     detail=_snippet(lines),
                     state=state,
                     updated=mtime,

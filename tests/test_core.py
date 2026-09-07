@@ -244,7 +244,7 @@ def test_burn_aggregates_anthropic_accounts_only():
     assert abs(m["lanes"][1]["frac"] - 0.10) < 1e-9
     assert abs(m["lanes"][1]["target"] - 0.70) < 1e-9
     assert all(l["remaining_s"] == 7200 for l in m["lanes"])
-    assert m["soonest"] in ("A", "B")
+    assert m["hot"] == ""            # one sample — nothing provably burning yet
     assert not sigs[0].wants_flash
 
 
@@ -263,16 +263,19 @@ def test_burn_countdown_never_goes_negative():
     assert all(l["remaining_s"] == 0 for l in m["lanes"])
 
 
-def test_burn_soonest_is_the_binding_account():
-    """With staggered resets, `soonest` must name the window that closes first."""
+def test_burn_hot_is_the_account_burning_now():
+    """`hot` (the underlined lane) names the account whose window-% is
+    actually growing — the one currently burning — not the soonest reset."""
     from tallydeck.sources.burn import TokenBurnSource
+    src = TokenBurnSource(tz="UTC")
     payload, targets = _burn_fixture()
-    payload["accounts"][1]["session_reset"] = "2026-09-07T10:30:00+00:00"
-    import datetime
-    now = datetime.datetime.fromisoformat("2026-09-07T06:00:00+00:00").timestamp()
-    m = TokenBurnSource(tz="UTC").signals_from(payload, targets, now=now)[0].meta
-    assert m["soonest"] == "A"
-    assert m["right"] == "A 2:00  B 4:30"
+    src.signals_from(payload, targets, now=1000.0)
+    payload["accounts"][1]["session_pct"] = 14        # B grew 10 → 14
+    m = src.signals_from(payload, targets, now=1060.0)[0].meta
+    assert m["hot"] == "B"
+    payload["accounts"][0]["session_pct"] = 40        # now A grows faster
+    m = src.signals_from(payload, targets, now=1120.0)[0].meta
+    assert m["hot"] == "A"
 
 
 def test_burn_over_target_and_empty():
@@ -380,7 +383,7 @@ def test_claude_sessions_uses_real_cwd_from_records(tmp_path):
          "message": {"content": []}}])
     s = ClaudeSessionsSource(root=str(tmp_path)).poll()[0]
     assert s.meta["project"] == "/home/me/projects/my-web-app"
-    assert s.label == "my-web-app"          # basename, truncated
+    assert s.label == "my-web-app"    # full basename; renderer wraps
 
 
 def test_resolve_munged_checks_existence(tmp_path, monkeypatch):

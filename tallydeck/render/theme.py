@@ -98,6 +98,24 @@ def hex_rgb(h: str) -> tuple[int, int, int]:
     return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))  # type: ignore
 
 
+# Relative burn-rate heat ramp for key backgrounds: cold keys stay near-black,
+# warm ones glow indigo → violet → ember. Full spectrum so levels read apart.
+HEAT_RAMP = ("#16224E", "#5B2E9E", "#B33A1E")
+
+
+def heat_bg(h: float) -> tuple[int, int, int]:
+    """Background for a key with relative heat h in 0..1."""
+    h = min(1.0, max(0.0, h))
+    if h <= 0.0:
+        return hex_rgb(BG)
+    a, b, c = HEAT_RAMP
+    tint = mix(a, b, h * 2) if h < 0.5 else mix(b, c, (h - 0.5) * 2)
+    base = hex_rgb(BG)
+    # Blend strength grows with heat but stays dark enough for white text.
+    k = 0.25 + 0.45 * h
+    return tuple(round(base[i] + (tint[i] - base[i]) * k) for i in range(3))
+
+
 def mix(a: str, b: str, t: float) -> tuple[int, int, int]:
     """Linear blend of two hex colors, t in 0..1 toward b."""
     ra, ga, ba = hex_rgb(a)

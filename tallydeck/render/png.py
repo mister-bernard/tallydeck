@@ -26,7 +26,7 @@ def _screen_face(profile: DeviceProfile, layout: Layout, t: float):
                           float(m.get("frac", layout.meter.progress or 0.0)),
                           m.get("left", ""), m.get("mid", ""),
                           m.get("right", ""), t=t,
-                          lanes=m.get("lanes"), soonest=m.get("soonest", ""))
+                          lanes=m.get("lanes"), hot=m.get("hot", ""))
     return draw_screen(profile.screen_px, layout.summary,
                        layout.page, layout.pages)
 
