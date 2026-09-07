@@ -69,13 +69,14 @@ if [ -n "$TARGET" ]; then
         T link-window -a -s "$WID" -t "$CUR:" 2>/dev/null
       fi
       T select-window -t "$WID" 2>/dev/null
-      T select-pane -t "$TARGET" 2>/dev/null ;;
+      T select-pane -t "$TARGET" 2>/dev/null
+      T display-message -c "$TTY" "linked here — 'unlink-window' sends it back" 2>/dev/null ;;
   esac
 elif { [ "$key" = "r" ] || [ "$key" = "R" ]; } && [ -n "$UUID" ]; then
   NAME="fl-$(printf '%s' "${LABEL:-sess}" | tr -c 'a-zA-Z0-9_-' '-' | cut -c1-24)"
   if ! T has-session -t "=$NAME" 2>/dev/null; then
     T new-session -d -s "$NAME" -c "${PROJ:-$HOME}" \
-      "$BIN --resume '$UUID'; exec bash -l"
+      "$BIN --dangerously-skip-permissions --resume '$UUID'; exec bash -l"
   fi
   drain_input
   unset TMUX

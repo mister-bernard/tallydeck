@@ -142,13 +142,22 @@ if [ -n "$APP" ]; then
     2>/dev/null || true)
   TITLES=$(window_titles || true)
 
-  if [ -n "$CLIENTS" ] && [ -n "$TITLES" ]; then
+  if [ -n "$CLIENTS" ]; then
     FRONT=$(front_title || true)
+    # If window titles are unreadable (Accessibility permission not granted
+    # yet), fall back to a liveness window: a client active in the last 12h
+    # is real; mosh ghosts are weeks old. Popup-over-existing always beats
+    # opening yet another terminal window.
+    NOW=$(date +%s)
     PICK_TTY=""; PICK_SESS=""
     BEST_TTY=""; BEST_SESS=""; BEST_ACT=""
     while IFS='|' read -r tty sess act; do
       [ -n "$tty" ] || continue
-      case "$TITLES" in *"TALLY[$tty]"*) ;; *) continue ;; esac   # ghost → skip
+      if [ -n "$TITLES" ]; then
+        case "$TITLES" in *"TALLY[$tty]"*) ;; *) continue ;; esac # ghost → skip
+      else
+        [ $((NOW - act)) -lt 43200 ] || continue                  # stale → skip
+      fi
       case "$FRONT" in *"TALLY[$tty]"*) PICK_TTY="$tty"; PICK_SESS="$sess" ;; esac
       # otherwise: the most recently active real client is "current enough"
       if [ -z "$BEST_ACT" ] || [ "$act" -gt "$BEST_ACT" ]; then
@@ -161,10 +170,13 @@ EOF
       PICK_TTY="$BEST_TTY"; PICK_SESS="$BEST_SESS"
     fi
     if [ -n "$PICK_TTY" ]; then
-      focus_by_token "TALLY[$PICK_TTY]"
+      # Title-less fallback can't find the specific window; at least bring
+      # the app forward so the popup isn't born behind something.
+      focus_by_token "TALLY[$PICK_TTY]" \
+        || /usr/bin/osascript -e "tell application \"$APP\" to activate" 2>/dev/null
       ROUTE="~/.local/bin/tally-route $(q "$PICK_TTY") $(q "$PICK_SESS") $(q "$TARGET") $(q "${TALLY_SESSION:-}") $(q "${TALLY_PROJECT:-}") $(q "${TALLY_LABEL:-}") $(q "${TALLY_STATE:-}") $(q "${TALLY_ACCOUNT:-}")"
       ssh -o BatchMode=yes "$HOST" \
-        "tmux -S '$SOCKET' display-popup -c $(q "$PICK_TTY") -w 80% -h 70% -E $(q "$ROUTE")" \
+        "tmux -S '$SOCKET' display-popup -c $(q "$PICK_TTY") -w 95% -h 90% -E $(q "$ROUTE")" \
         >/dev/null 2>&1 &
       exit 0
     fi
