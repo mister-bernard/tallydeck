@@ -102,20 +102,24 @@ class DeckSurface:
     def show(self, layout: Layout, lit: dict[str, bool],
              t: float = 0.0, pressed: frozenset = frozenset()) -> None:
         with self._lock:
+            askpage = int(t / 3) % 2
             for i, sig in enumerate(layout.keys[:self.profile.keys]):
                 is_lit = bool(sig and lit.get(sig.id))
                 is_pressed = i in pressed
+                paged = bool(sig and sig.state in ("attention", "blocked")
+                             and len(sig.sublabel) > 30)
                 # Skip HID writes for unchanged keys — flashing 2 of 8 keys
                 # should cost 2 updates per frame, not 8.
                 print_key = (None if sig is None else
                              (sig.id, sig.state, sig.label, sig.sublabel,
                               sig.progress, sig.color,
                               round(float(sig.meta.get('heat', 0) or 0), 2)),
-                             is_lit, is_pressed)
+                             is_lit, is_pressed, askpage if paged else 0)
                 if self._drawn.get(i) == print_key:
                     continue
                 img = draw_key(sig, self.profile.key_px, lit=is_lit,
-                               pressed=is_pressed)
+                               pressed=is_pressed,
+                               askpage=askpage if paged else 0)
                 native = self._pil.to_native_key_format(
                     self.deck, self._pil.create_scaled_key_image(self.deck, img))
                 self.deck.set_key_image(i, native)

@@ -212,7 +212,11 @@ def run(link, surface, view: View, poll_every: float = 2.0,
                      None if m is None else tuple(sorted(
                          (k, v) for k, v in m.meta.items()
                          if isinstance(v, (str, int, float, bool)))),
-                     int(wall * 0.5) if m is not None else 0)  # meter hatch tick
+                     int(wall * 0.5) if m is not None else 0,  # meter hatch tick
+                     int(wall / 3) % 2 if any(
+                         s and s.state in ("attention", "blocked")
+                         and len(s.sublabel) > 30 for s in layout.keys)
+                     else 0)                                    # ask page tick
             if frame != prev_frame:
                 surface.show(layout, lit, t=wall, pressed=pressed)
                 prev_frame = frame

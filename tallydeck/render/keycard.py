@@ -54,8 +54,24 @@ def _wrap2(draw: ImageDraw.ImageDraw, text: str, font, max_w: int) -> list[str]:
     return [head, _truncate(draw, rest, font, max_w)]
 
 
+def _wrap_n(draw, text, font, max_w, max_lines):
+    words, lines, line = text.split(), [], ""
+    for w in words:
+        cand = f"{line} {w}".strip()
+        if draw.textlength(cand, font=font) > max_w and line:
+            lines.append(line)
+            line = w
+            if len(lines) == max_lines:
+                break
+        else:
+            line = cand
+    if line and len(lines) < max_lines:
+        lines.append(line)
+    return lines
+
+
 def draw_key(sig: Signal | None, px: int, lit: bool = False,
-             pressed: bool = False) -> Image.Image:
+             pressed: bool = False, askpage: int = 0) -> Image.Image:
     """Render one key face at px × px. `lit` = flash flood frame,
     `pressed` = finger currently down (bright ring, instant feedback)."""
     s = px * SS
@@ -141,8 +157,28 @@ def draw_key(sig: Signal | None, px: int, lit: bool = False,
 
     if sig.sublabel:
         y2 = y + round(s * 0.24)
-        d.text((pad, y2), _truncate(d, sig.sublabel, f_sub, s - 2 * pad),
-               font=f_sub, fill=sub)
+        if sig.state in ("attention", "blocked") and len(sig.sublabel) > 30:
+            # The ask gets the key's whole empty middle: up to 3 wrapped
+            # lines, and a long ask alternates between two text pages on a
+            # slow tick (the flash already draws the eye; the page flip
+            # lets the message finish its sentence).
+            lines = _wrap_n(d, sig.sublabel, f_sub, s - 2 * pad, 6)
+            per = 3
+            pages = max(1, (len(lines) + per - 1) // per)
+            pg = askpage % pages
+            for i, ln in enumerate(lines[pg * per:(pg + 1) * per]):
+                d.text((pad, y2 + i * round(s * 0.145)), ln,
+                       font=f_sub, fill=sub)
+            if pages > 1:      # tiny page dots, bottom-left
+                r_ = max(2, s // 40)
+                for pi in range(pages):
+                    x0d = pad + pi * r_ * 3
+                    y0d = s - round(s * 0.05) - r_
+                    d.ellipse([x0d, y0d, x0d + r_, y0d + r_],
+                              fill=fill if pi == pg else track)
+        else:
+            d.text((pad, y2), _truncate(d, sig.sublabel, f_sub, s - 2 * pad),
+                   font=f_sub, fill=sub)
 
     # progress
     if sig.progress is not None:

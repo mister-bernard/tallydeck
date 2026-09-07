@@ -21,8 +21,9 @@ into the exact session that's asking — briefed, focused, ready to type.
 | 🟢 **Green** | `success` | Finished well; expires off the deck on its own. | Nothing |
 | ⚫ **Gray / dark** | `idle` / `offline` | Alive but quiet, or gone stale. | Nothing |
 
-Hot attention keys show **the actual question** as their second line, so you
-often know your answer before you press.
+Hot attention keys show **the actual question**, wrapped across the key —
+long asks alternate between two pages of text (watch the little dots), so
+you often know your answer before you press.
 
 ### The line above each tile (the tally bar)
 
@@ -73,6 +74,7 @@ off, repo state, related queue tasks. Then one key routes it:
 | **⏎ Enter** | Open the session **floating in the popup** (resumes it first if it isn't running). Work in it; `Ctrl-b d` puts it back. |
 | **t** | Open it as a **tab** (window) of your current tmux session |
 | **s** | **Split** it into your current window, side by side |
+| **␣ space** | **Done** — mute the alert like archiving mail; it revives only if the session asks anew |
 | anything else | Dismiss — nothing anywhere changed |
 | **long-press the deck key** | Snooze that alarm 15 min (long-press again to wake) |
 

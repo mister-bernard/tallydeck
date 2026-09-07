@@ -252,7 +252,10 @@ class ClaudeSessionsSource(Source):
                 snip = _snippet(lines)
                 if state == ATTENTION and snip:
                     # 96px answers "what do I do?" — the ask beats a rate.
-                    sub = snip[:34]
+                    # Markdown chrome (**bold** etc.) is noise at this size;
+                    # the renderer wraps and pages the text itself.
+                    import re as _re
+                    sub = _re.sub(r"[*_`#]+", "", snip)[:160]
                 flash = None
                 if state == ATTENTION and (now - mtime) > self.flash_for:
                     flash = False
