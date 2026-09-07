@@ -11,7 +11,7 @@ BIN="claude"; [ "$ACCT" = "B" ] && BIN="$HOME/.local/bin/claude-b"
 cd "$PROJECT" 2>/dev/null || cd "$HOME"
 if [ -n "$SESSION" ]; then
   printf '  \033[1;38;2;0;229;255mr\033[0m resume here    \033[1;38;2;0;229;255m␣\033[0m done (mute alert)    \033[2many other key → shell\033[0m\n'
-  read -r -n 1 -s key 2>/dev/null || key=""
+  IFS= read -r -n 1 -s key 2>/dev/null || key=""
   if [ "$key" = "r" ] || [ "$key" = "R" ]; then
     exec "$BIN" --dangerously-skip-permissions --resume "$SESSION"
   fi

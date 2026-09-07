@@ -226,9 +226,16 @@ class ClaudeSessionsSource(Source):
                     state = WORKING
                 if state == ATTENTION and self._snooze.get(fp.stem, 0) > now:
                     state = IDLE               # snoozed: quiet, still listed
-                if state == ATTENTION and (Path.home() / ".tallydeck" /
-                        "signals" / f"ask-{fp.stem[:8]}.json").is_file():
-                    state = WORKING     # the hook's key owns this alarm
+                askf = (Path.home() / ".tallydeck" / "signals" /
+                        f"ask-{fp.stem[:8]}.json")
+                if askf.is_file():
+                    try:
+                        if mtime > askf.stat().st_mtime + 5:
+                            askf.unlink()   # session moved on: stale ask dies
+                        elif state == ATTENTION:
+                            state = WORKING  # the hook's key owns this alarm
+                    except OSError:
+                        pass
                 if state == ATTENTION:
                     # Inbox-done (space in the popup): quiet until the log
                     # MOVES again — a fresh ask revives the alert on its own.
@@ -271,8 +278,17 @@ class ClaudeSessionsSource(Source):
                 # offers to resume instead of teleporting you somewhere
                 # wrong.
                 pane = exact or ""
-                label = exact.split(":", 1)[0] if exact \
-                    else (os.path.basename(full) or full)
+                win_label = ""
+                if exact:
+                    wn, nw = getattr(self, "_sp_names", {}).get(
+                        fp.stem, ("", "1"))
+                    generic = ("bash", "zsh", "sh", "fish", "claude",
+                               "claude-b", "node", "python3", "ssh",
+                               "mosh", "")
+                    if str(nw) not in ("", "1") and wn not in generic:
+                        win_label = wn
+                label = win_label or (exact.split(":", 1)[0] if exact
+                                      else (os.path.basename(full) or full))
                 signals.append(Signal(
                     id=f"{self.group}/{acct or 'x'}-{fp.stem[:8]}",
                     label=label[:24],
@@ -371,7 +387,7 @@ class ClaudeSessionsSource(Source):
             r = subprocess.run(
                 self._tmux("list-panes", "-a", "-F",
                            "#{session_name}:#{window_index}.#{pane_index} "
-                           "#{pane_pid}"),
+                           "#{pane_pid} #{window_name} #{session_windows}"),
                 capture_output=True, text=True, timeout=3)
             ps = subprocess.run(["ps", "-eo", "pid=,ppid="],
                                 capture_output=True, text=True, timeout=3)
@@ -380,8 +396,13 @@ class ClaudeSessionsSource(Source):
                 parts = ln.split()
                 if len(parts) == 2:
                     kids.setdefault(int(parts[1]), []).append(int(parts[0]))
+            self._sp_names = getattr(self, "_sp_names", {})
             for ln in (r.stdout or "").strip().splitlines():
-                target, _, pid_s = ln.rpartition(" ")
+                parts = ln.split(" ")
+                if len(parts) < 4:
+                    continue
+                target, pid_s = parts[0], parts[1]
+                winname, nwin = " ".join(parts[2:-1]), parts[-1]
                 stack = [int(pid_s)] if pid_s.isdigit() else []
                 seen = 0
                 while stack and seen < 64:
@@ -397,6 +418,7 @@ class ClaudeSessionsSource(Source):
                             "ascii", "ignore")
                         if sid:
                             out.setdefault(sid, target)
+                            self._sp_names[sid] = (winname, nwin)
                     stack.extend(kids.get(pid, []))
         except (OSError, subprocess.TimeoutExpired, ValueError):
             pass

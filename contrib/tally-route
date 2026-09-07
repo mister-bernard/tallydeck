@@ -68,7 +68,7 @@ printf '  \033[38;2;44;48;62m%s\033[0m\n' "────────────�
 printf '  \033[1;38;2;0;229;255m⏎\033[0m open floating%s    \033[1;38;2;0;229;255mt\033[0m tab here    \033[1;38;2;0;229;255ms\033[0m split here    \033[1;38;2;0;229;255m␣\033[0m done (mute)    \033[2mother dismisses\033[0m\n' \
   "$([ -n "$LIVE" ] || printf '\033[2m (resumes)\033[0m')"
 drain_input
-read -r -n 1 -s -t 120 key 2>/dev/null || exit 0
+IFS= read -r -n 1 -s -t 120 key 2>/dev/null || exit 0
 
 SESS="${TARGET%%:*}"
 case "$key" in

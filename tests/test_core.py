@@ -611,3 +611,21 @@ def test_space_done_mutes_until_the_session_asks_again(tmp_path, monkeypatch):
     assert ClaudeSessionsSource(
         root=str(tmp_path), dwell=0).poll()[0].state == ATTENTION
     assert not ack.exists()                         # ack retired itself
+
+
+def test_multiwindow_sessions_label_by_window_topic(tmp_path, monkeypatch):
+    """main/mainB hold many windows on DIFFERENT topics; the window name is
+    the topic, so it must name the tile — not the shared session name."""
+    proj = tmp_path / "-home-me"
+    proj.mkdir()
+    _write_jsonl(proj, "cafe0001", [
+        {"type": "user", "cwd": "/home/me", "message": {"content": []}}])
+    src = ClaudeSessionsSource(root=str(tmp_path))
+    monkeypatch.setattr(src, "_session_panes", lambda: {"cafe0001": "mainB:3.1"})
+    monkeypatch.setattr(src, "_all_pane_targets", lambda: {"mainB:3.1"})
+    src._sp_names = {"cafe0001": ("stonks-research", "5")}
+    assert src.poll()[0].label == "stonks-research"
+    src._sp_names = {"cafe0001": ("claude", "5")}     # auto-name → session
+    assert src.poll()[0].label == "mainB"
+    src._sp_names = {"cafe0001": ("bash", "1")}       # single window → session
+    assert src.poll()[0].label == "mainB"
