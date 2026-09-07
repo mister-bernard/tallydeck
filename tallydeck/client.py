@@ -168,15 +168,18 @@ def run(link, surface, view: View, poll_every: float = 2.0,
                 else:
                     view.page_next()
         else:
-            # Left point is the beacon — pressing it services the most
-            # urgent visible key, whatever slot it sits in.
-            urgent = [s for s in key_map
-                      if s is not None and s.state in _URGENCY]
+            # Left point is the beacon. Most urgent thing on ANOTHER page →
+            # jump to that page first (see it in context); already visible →
+            # service it directly.
+            urgent = [s for s in signals if s.state in _URGENCY]
             if urgent:
                 sig = max(urgent, key=lambda s: (_URGENCY[s.state],
                                                  s.priority, s.updated))
-                link.press(sig.id, long=False)
-                local_action(sig, False)
+                if any(k is not None and k.id == sig.id for k in key_map):
+                    link.press(sig.id, long=False)
+                    local_action(sig, False)
+                else:
+                    view.jump_to(sig.id)
         wake.set()
 
     if hasattr(surface, "set_callbacks"):

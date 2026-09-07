@@ -575,3 +575,15 @@ def test_oneshots_never_shout_and_sink(tmp_path, monkeypatch):
     assert s.state == WORKING          # an ended one-shot never flashes
     assert s.priority < 0              # ranks below every persistent session
     assert s.meta["oneshot"] is True
+
+
+def test_beacon_jump_to_finds_the_alert_page():
+    sigs = [Signal(id=f"s{i}", label=f"s{i}", state=WORKING, priority=100 - i)
+            for i in range(12)]
+    sigs[10].state = IDLE                       # sinks to the tail
+    v = View(profile=NEO)
+    v.layout(sigs)
+    v.jump_to(sigs[10].id)
+    assert v.page == 1                          # the alert's page, not page 0
+    v.jump_to("s0")
+    assert v.page == 0

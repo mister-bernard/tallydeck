@@ -87,6 +87,7 @@ class View:
             for i, s in enumerate(window):
                 keys[seq[i]] = s
 
+        self.last_order = [s.id for s in ordered]   # for beacon page-jumps
         urgent = {"blocked", "attention"}
         offpage = any(s.state in urgent
                       for s in ordered[:self.page * per_page]
@@ -95,6 +96,12 @@ class View:
                       summary=summarize(signals),
                       meter=meters[0] if meters else None,
                       offpage_urgent=offpage)
+
+    def jump_to(self, sid: str) -> None:
+        """Flip to the page holding this signal (rank order, latest layout)."""
+        order = getattr(self, "last_order", [])
+        if sid in order:
+            self.page = order.index(sid) // self.profile.keys
 
     def page_next(self) -> None:
         self.page += 1     # clamped on next layout()
