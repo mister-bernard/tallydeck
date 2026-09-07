@@ -84,7 +84,7 @@ def _assistant_wants_input(lines: list[str]) -> bool:
     return True
 
 
-def _snippet(lines: list[str], limit: int = 120) -> str:
+def _snippet(lines: list[str], limit: int = 300) -> str:
     for ln in reversed(lines):
         try:
             rec = json.loads(ln)
@@ -262,7 +262,7 @@ class ClaudeSessionsSource(Source):
                     # Markdown chrome (**bold** etc.) is noise at this size;
                     # the renderer wraps and pages the text itself.
                     import re as _re
-                    sub = _re.sub(r"[*_`#]+", "", snip)[:160]
+                    sub = _re.sub(r"[*_`#]+", "", snip)[:280]
                 flash = None
                 if state == ATTENTION and (now - mtime) > self.flash_for:
                     flash = False

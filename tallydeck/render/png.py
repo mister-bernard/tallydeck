@@ -58,7 +58,7 @@ def render_png(profile: DeviceProfile, layout: Layout,
         y = bez + r * (kp + gap)
         face = draw_key(sig, profile.key_px,
                         lit=bool(sig and lit.get(sig.id)),
-                        askpage=int(t / 3) % 2).resize((kp, kp))
+                        askpage=int(t / 2)).resize((kp, kp))
         img.paste(face, (x, y))
         d.rounded_rectangle([x - 1, y - 1, x + kp, y + kp],
                             radius=6 * scale, outline="#000000", width=scale)

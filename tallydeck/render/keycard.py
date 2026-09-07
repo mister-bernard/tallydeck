@@ -158,11 +158,10 @@ def draw_key(sig: Signal | None, px: int, lit: bool = False,
     if sig.sublabel:
         y2 = y + round(s * 0.24)
         if sig.state in ("attention", "blocked") and len(sig.sublabel) > 30:
-            # The ask gets the key's whole empty middle: up to 3 wrapped
-            # lines, and a long ask alternates between two text pages on a
-            # slow tick (the flash already draws the eye; the page flip
-            # lets the message finish its sentence).
-            lines = _wrap_n(d, sig.sublabel, f_sub, s - 2 * pad, 6)
+            # The ask gets the key's whole empty middle: 3 wrapped lines
+            # per page, cycling through as many pages as the message needs
+            # (the flash draws the eye; the page flips finish the story).
+            lines = _wrap_n(d, sig.sublabel, f_sub, s - 2 * pad, 12)
             per = 3
             pages = max(1, (len(lines) + per - 1) // per)
             pg = askpage % pages

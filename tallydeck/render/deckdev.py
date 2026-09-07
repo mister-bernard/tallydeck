@@ -102,12 +102,12 @@ class DeckSurface:
     def show(self, layout: Layout, lit: dict[str, bool],
              t: float = 0.0, pressed: frozenset = frozenset()) -> None:
         with self._lock:
-            askpage = int(t / 3) % 2
+            askpage = int(t / 2)
             for i, sig in enumerate(layout.keys[:self.profile.keys]):
                 is_lit = bool(sig and lit.get(sig.id))
                 is_pressed = i in pressed
                 paged = bool(sig and sig.state in ("attention", "blocked")
-                             and len(sig.sublabel) > 30)
+                             and len(sig.sublabel) > 55)   # ~2+ pages
                 # Skip HID writes for unchanged keys — flashing 2 of 8 keys
                 # should cost 2 updates per frame, not 8.
                 print_key = (None if sig is None else
