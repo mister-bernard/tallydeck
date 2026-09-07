@@ -178,6 +178,9 @@ class ClaudeSessionsSource(Source):
         self._samples: dict[str, list[tuple[float, int]]] = {}
         self.snooze_for = float(opts.get("snooze_for", 900))
         self._snooze: dict[str, float] = {}    # session → quiet-until epoch
+        # One-shots (disposable runner windows) have no human loop: they must
+        # never demand attention and always rank below persistent sessions.
+        self.oneshot_sessions = set(opts.get("oneshot_sessions", ["oneshot"]))
 
     def poll(self) -> list[Signal]:
         signals: list[Signal] = []
@@ -220,6 +223,8 @@ class ClaudeSessionsSource(Source):
                     state = WORKING
                 if state == ATTENTION and self._snooze.get(fp.stem, 0) > now:
                     state = IDLE               # snoozed: quiet, still listed
+                if oneshot and state == ATTENTION:
+                    state = WORKING            # nobody answers a one-shot
                 # Real cwd from the records; munged-name reconstruction only
                 # as a fallback for logs that never carried one.
                 full = _last_cwd(lines) or _resolve_munged(proj_dir.name)
@@ -247,6 +252,8 @@ class ClaudeSessionsSource(Source):
                 # offers to resume instead of teleporting you somewhere
                 # wrong.
                 pane = exact or ""
+                oneshot = bool(exact) and \
+                    exact.split(":", 1)[0] in self.oneshot_sessions
                 label = exact.split(":", 1)[0] if exact \
                     else (os.path.basename(full) or full)
                 signals.append(Signal(
@@ -259,10 +266,11 @@ class ClaudeSessionsSource(Source):
                     updated=mtime,
                     # Hotter sessions outrank within the same state, so the
                     # busiest work funnels toward the top of the deck.
-                    priority=int(min(rate, 1_000_000)),
+                    priority=-10 if oneshot else int(min(rate, 1_000_000)),
                     group=self.group,
                     meta={"project": full, "session": fp.stem,
                           "account": acct, "exact_pane": bool(exact),
+                          "oneshot": oneshot,
                           # Resolved hub-side because only the hub can see
                           # tmux. Without it the deck machine would have to
                           # re-derive the pane over ssh on every press.

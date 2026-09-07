@@ -558,3 +558,20 @@ def test_session_backed_signal_does_not_ack_on_short_press(tmp_path):
     assert json.loads((tmp_path / "ask-abc.json").read_text())["state"] == "blocked"
     assert src.on_press(sig, long=True) is True        # long: explicit dismiss
     assert not (tmp_path / "ask-abc.json").exists()
+
+
+def test_oneshots_never_shout_and_sink(tmp_path, monkeypatch):
+    proj = tmp_path / "-home-me-projects-x"
+    proj.mkdir()
+    _write_jsonl(proj, "aaaa1111", [{"type": "assistant", "message": {
+        "stop_reason": "end_turn",
+        "content": [{"type": "text", "text": "One-shot answer done."}]}}])
+    import os as _os
+    t = time.time() - 60
+    _os.utime(proj / "aaaa1111.jsonl", (t, t))
+    src = ClaudeSessionsSource(root=str(tmp_path))
+    monkeypatch.setattr(src, "_session_panes", lambda: {"aaaa1111": "oneshot:1.3"})
+    s = src.poll()[0]
+    assert s.state == WORKING          # an ended one-shot never flashes
+    assert s.priority < 0              # ranks below every persistent session
+    assert s.meta["oneshot"] is True

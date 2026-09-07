@@ -74,6 +74,8 @@ def draw_key(sig: Signal | None, px: int, lit: bool = False,
     muted = sig.state in theme.MUTED_STATES
 
     heat = float((sig.meta or {}).get("heat", 0.0) or 0.0)
+    if (sig.meta or {}).get("oneshot"):
+        muted = True          # disposable worker: renders quiet, ranks last
 
     if lit:
         bg, fg, sub = color, theme.FLOOD_TEXT, theme.FLOOD_TEXT

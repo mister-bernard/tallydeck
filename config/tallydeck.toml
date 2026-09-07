@@ -30,6 +30,9 @@ poll_every = 1.0
 
 [[sources]]
 kind = "claude-sessions"
+# tmux sessions holding disposable one-shot runners: never flash, rank last,
+# render muted. Persistent sessions always outrank them.
+oneshot_sessions = ["oneshot"]
 # One entry per Claude account. The label lands on the key as a badge, so you
 # can see WHICH quota a working session is draining rather than guessing.
 roots = [
