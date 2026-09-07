@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import time
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -69,10 +69,12 @@ class TokenBurnSource(Source):
 
     # ── pure computation (unit-testable) ─────────────────────────────────────
 
-    def signals_from(self, payload: dict, targets: dict) -> list[Signal]:
+    def signals_from(self, payload: dict, targets: dict, now: float | None = None
+                     ) -> list[Signal]:
+        now = time.time() if now is None else now
         burned = target = 0.0
         parts: list[str] = []
-        resets: list[str] = []
+        lanes: list[dict] = []
         for acct in payload.get("accounts", []):
             if acct.get("provider") != "anthropic" or not acct.get("enabled"):
                 continue
@@ -85,12 +87,22 @@ class TokenBurnSource(Source):
             burned += pct / 100.0 * limit
             target += tgt_pct / 100.0 * limit
             parts.append(f"{acct.get('id')} {round(pct)}")
-            if acct.get("session_reset"):
-                resets.append(acct["session_reset"])
+            # Each account gets its own lane: its own fill and its own clock.
+            # Aggregating them hid the thing that actually matters — WHICH
+            # account is close to its ceiling, and when that ceiling lifts.
+            lanes.append({
+                "id": str(acct.get("id")),
+                "pct": float(pct),
+                "frac": (pct / 100.0 * limit) / max(1.0, tgt_pct / 100.0 * limit),
+                "remaining_s": self._remaining(acct.get("session_reset"), now),
+                "reset_clock": self._fmt_reset(acct.get("session_reset") or ""),
+            })
         if not parts or target <= 0:
             return []
         frac = burned / target
-        reset_txt = self._fmt_reset(min(resets)) if resets else ""
+        # The soonest lane with a real countdown is the one that constrains you.
+        timed = [l for l in lanes if l["remaining_s"] is not None]
+        soon = min(timed, key=lambda l: l["remaining_s"])["id"] if timed else ""
         return [Signal(
             id="burn/session",
             label="burn",
@@ -103,9 +115,40 @@ class TokenBurnSource(Source):
                 "frac": frac,
                 "left": f"{round(frac * 100)}%",
                 "mid": " · ".join(parts),
-                "right": f"→ {reset_txt}" if reset_txt else "",
+                # Was the reset CLOCK TIME ("01:00") formatted so it read like a
+                # duration — which is exactly how it was misread. Now it is a
+                # real countdown per account, soonest one marked.
+                "right": "  ".join(
+                    f"{l['id']} {self._fmt_remaining(l['remaining_s'])}"
+                    for l in lanes if l["remaining_s"] is not None
+                ),
+                "lanes": lanes,
+                "soonest": soon,
             },
         )]
+
+    @staticmethod
+    def _remaining(iso: str | None, now: float) -> float | None:
+        """Seconds until the window resets, or None if unknown/expired."""
+        if not iso:
+            return None
+        try:
+            dt = datetime.fromisoformat(iso)
+        except (ValueError, TypeError):
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        # Clamp at zero: a negative countdown means the window already rolled
+        # and the API has not caught up. Showing "-0:03" would be alarming and
+        # meaningless; showing 0:00 is honest.
+        return max(0.0, dt.timestamp() - now)
+
+    @staticmethod
+    def _fmt_remaining(secs: float | None) -> str:
+        if secs is None:
+            return ""
+        m = int(secs // 60)
+        return f"{m // 60}:{m % 60:02d}"
 
     def _fmt_reset(self, iso: str) -> str:
         try:

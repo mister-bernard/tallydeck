@@ -221,7 +221,10 @@ def _burn_fixture():
 def test_burn_aggregates_anthropic_accounts_only():
     from tallydeck.sources.burn import TokenBurnSource
     payload, targets = _burn_fixture()
-    sigs = TokenBurnSource(tz="UTC").signals_from(payload, targets)
+    # Pin "now" so the countdowns are deterministic: 2h before both resets.
+    import datetime
+    now = datetime.datetime.fromisoformat("2026-09-07T06:00:00+00:00").timestamp()
+    sigs = TokenBurnSource(tz="UTC").signals_from(payload, targets, now=now)
     assert len(sigs) == 1
     m = sigs[0].meta
     # (15% + 10%) of 9M each = 2.25M burned; (40% + 70%) of 9M = 9.9M target
@@ -229,8 +232,43 @@ def test_burn_aggregates_anthropic_accounts_only():
     assert m["meter"] is True
     assert m["left"] == "23%"
     assert m["mid"] == "A 15 · B 10"          # grok account excluded
-    assert m["right"] == "→ 08:00"
+    # `right` is a COUNTDOWN now, not the reset wall-clock. The old "→ 08:00"
+    # was read as a duration and appeared frozen for hours; that was the bug.
+    assert m["right"] == "A 2:00  B 2:00"
+    # One lane per anthropic account, each with its own fill — grok excluded.
+    assert [l["id"] for l in m["lanes"]] == ["A", "B"]
+    assert abs(m["lanes"][0]["frac"] - 15 / 40) < 1e-9   # 15% against a 40% target
+    assert abs(m["lanes"][1]["frac"] - 10 / 70) < 1e-9
+    assert all(l["remaining_s"] == 7200 for l in m["lanes"])
+    assert m["soonest"] in ("A", "B")
     assert not sigs[0].wants_flash
+
+
+def test_burn_countdown_never_goes_negative():
+    """A window that has already rolled must read 0:00, not a negative time.
+
+    The API can lag the reset by a few seconds; showing "-0:03" would be both
+    alarming and meaningless.
+    """
+    from tallydeck.sources.burn import TokenBurnSource
+    payload, targets = _burn_fixture()
+    import datetime
+    past = datetime.datetime.fromisoformat("2026-09-07T09:00:00+00:00").timestamp()
+    m = TokenBurnSource(tz="UTC").signals_from(payload, targets, now=past)[0].meta
+    assert m["right"] == "A 0:00  B 0:00"
+    assert all(l["remaining_s"] == 0 for l in m["lanes"])
+
+
+def test_burn_soonest_is_the_binding_account():
+    """With staggered resets, `soonest` must name the window that closes first."""
+    from tallydeck.sources.burn import TokenBurnSource
+    payload, targets = _burn_fixture()
+    payload["accounts"][1]["session_reset"] = "2026-09-07T10:30:00+00:00"
+    import datetime
+    now = datetime.datetime.fromisoformat("2026-09-07T06:00:00+00:00").timestamp()
+    m = TokenBurnSource(tz="UTC").signals_from(payload, targets, now=now)[0].meta
+    assert m["soonest"] == "A"
+    assert m["right"] == "A 2:00  B 4:30"
 
 
 def test_burn_over_target_and_empty():
