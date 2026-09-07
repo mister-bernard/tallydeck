@@ -187,7 +187,8 @@ def draw_meter(size: tuple[int, int], frac: float, left: str = "",
     kw = dict(stroke_width=SS + 1, stroke_fill=(3, 4, 8))
     lw = rw = 0.0
     if lane_list and len(lane_list) >= 2:
-        left = mid = ""     # the lanes already say this, and say it better
+        left = mid = right = ""   # the lanes carry all of it now — badge,
+        soonest = ""              # info, and their own embedded countdowns
     if left:
         lw = d.textlength(left, font=f_big)
         d.text((x0 + pad, ty), left, font=f_big, fill="#F2F6FF", **kw)
