@@ -454,3 +454,37 @@ def test_brief_reports_session_and_repo(tmp_path):
     assert "widget" in out and "attention" in out
     assert "verify the row counts" in out
     assert "WHERE IT LEFT OFF" in out
+
+
+# ── marbled backgrounds ──────────────────────────────────────────────────────
+
+def test_marble_deterministic_and_distinct():
+    from tallydeck.render.marble import swirl
+    a1 = swirl((48, 48), "cc/abc", "working", (62, 155, 255))
+    a2 = swirl((48, 48), "cc/abc", "working", (62, 155, 255))
+    b = swirl((48, 48), "cc/other", "working", (62, 155, 255))
+    assert a1.tobytes() == a2.tobytes()      # same card → same swirl, always
+    assert a1.tobytes() != b.tobytes()       # different card → different swirl
+
+
+def test_marble_luminance_ceiling_holds_across_heat():
+    from tallydeck.render.marble import card_bg
+    def worst_contrast(img):
+        def lin(c):
+            c /= 255.0
+            return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+        w = 1e9
+        for r, g, b in img.getdata():
+            L = 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+            w = min(w, 1.05 / (L + 0.05))
+        return w
+    for heat in (0.0, 0.5, 1.0):
+        img = card_bg((64, 64), "cc/x", "working", (229, 72, 77), heat)
+        assert worst_contrast(img) > 7.0     # white text stays comfortably AAA
+
+
+def test_marble_cache_reuses_by_heat_bucket():
+    from tallydeck.render import marble
+    a = marble.card_bg((32, 32), "cc/c", "idle", (86, 90, 100), 0.50)
+    b = marble.card_bg((32, 32), "cc/c", "idle", (86, 90, 100), 0.52)
+    assert a is b                            # same bucket → same cached image

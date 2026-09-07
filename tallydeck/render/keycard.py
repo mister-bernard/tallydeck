@@ -80,17 +80,22 @@ def draw_key(sig: Signal | None, px: int, lit: bool = False,
         bar = theme.mix(color, "#000000", 0.35)
         track = theme.mix(color, "#000000", 0.25)
         fill = theme.FLOOD_TEXT
+        d.rectangle([0, 0, s, s], fill=bg)
     else:
-        # Background carries relative burn heat: cold stays near-black,
-        # the hottest session glows ember. Levels must read apart at a glance.
-        bg = theme.heat_bg(heat)
+        # Marbled background: a deterministic swirl per card, its base color
+        # carrying relative burn heat (near-black → indigo → ember), state
+        # accent only in the ink highlights. Luminance-ceilinged, so text
+        # contrast is a property of the code, not a hope. Flood frames stay
+        # flat — flash must dominate everything.
+        from .marble import card_bg
+        img = card_bg((s, s), sig.id, sig.state,
+                      theme.hex_rgb(color), heat).copy()
+        d = ImageDraw.Draw(img)
         fg = theme.FG_DIM if muted else theme.FG
         sub = theme.FG_DIM
         bar = theme.mix(color, theme.BG, 0.55) if muted else color
         track = theme.TRACK
         fill = color
-
-    d.rectangle([0, 0, s, s], fill=bg)
 
     # tally bar
     bar_h = round(s * 0.085)
