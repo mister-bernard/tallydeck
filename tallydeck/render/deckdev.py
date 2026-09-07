@@ -148,19 +148,23 @@ class DeckSurface:
         molten red past target)."""
         if self.profile.touch_points < 2 or not hasattr(self.deck, "set_key_color"):
             return
-        if layout.pages > 1:
-            left = (70, 52, 14) if layout.page > 0 else (0, 0, 0)
-            right = (70, 52, 14) if layout.page < layout.pages - 1 else (0, 0, 0)
+        # The LEFT point is the urgency beacon, ALWAYS — demoting it to a
+        # page arrow right when the fleet is crowded enough to page is
+        # exactly backwards. It also covers urgency parked on OTHER pages.
+        states = {s.state for s in layout.keys if s}
+        urgent_here = "blocked" in states or "attention" in states
+        if urgent_here or layout.offpage_urgent:
+            on = any(lit.values()) if lit else True
+            color = (229, 72, 77) if "blocked" in states else (255, 178, 36)
+            left = color if on else (10, 6, 2)
+        elif "working" in states:
+            left = (8, 20, 46)
         else:
-            states = {s.state for s in layout.keys if s}
-            if "blocked" in states or "attention" in states:
-                on = any(lit.values()) if lit else True
-                color = (229, 72, 77) if "blocked" in states else (255, 178, 36)
-                left = color if on else (10, 6, 2)
-            elif "working" in states:
-                left = (8, 20, 46)
-            else:
-                left = (0, 0, 0)
+            left = (0, 0, 0)
+        # RIGHT: pager when there is anywhere to go, burn gauge otherwise.
+        if layout.pages > 1:
+            right = (70, 52, 14)
+        else:
             m = layout.meter
             if m is not None:
                 frac = float(m.meta.get("frac", 0.0))

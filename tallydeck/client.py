@@ -157,18 +157,26 @@ def run(link, surface, view: View, poll_every: float = 2.0,
 
     pages_now = [1]   # updated each frame; touch behavior depends on it
 
+    _URGENCY = {"blocked": 2, "attention": 1}
+
     def on_touch(direction: int) -> None:
-        if pages_now[0] > 1:
-            if direction > 0:
-                view.page_next()
-            else:
-                view.page_prev()
-        elif direction < 0 and key_map and key_map[0] is not None:
-            # Single page: the left touch point doubles as "service the most
-            # urgent thing" — same as pressing the top-left key it points at.
-            sig = key_map[0]
-            link.press(sig.id, long=False)
-            local_action(sig, False)
+        if direction > 0:
+            # Right point: cycle pages (wraps) when there are any.
+            if pages_now[0] > 1:
+                if view.page >= pages_now[0] - 1:
+                    view.page = 0
+                else:
+                    view.page_next()
+        else:
+            # Left point is the beacon — pressing it services the most
+            # urgent visible key, whatever slot it sits in.
+            urgent = [s for s in key_map
+                      if s is not None and s.state in _URGENCY]
+            if urgent:
+                sig = max(urgent, key=lambda s: (_URGENCY[s.state],
+                                                 s.priority, s.updated))
+                link.press(sig.id, long=False)
+                local_action(sig, False)
         wake.set()
 
     if hasattr(surface, "set_callbacks"):

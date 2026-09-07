@@ -22,6 +22,7 @@ class Layout:
     pages: int
     summary: str
     meter: Signal | None = None      # meta.meter signal → info bar, not a key
+    offpage_urgent: bool = False     # something NOT visible needs the human
 
 
 @dataclass
@@ -31,6 +32,8 @@ class View:
     hide_idle: bool = False
     fill: str = "columns"    # "columns": rank flows top-left ↓ then next
     page: int = 0            # column; "rows": left→right per row
+    sticky: bool = True      # a signal keeps its key while visible — keys
+    _slots: dict = field(default_factory=dict)  # must not move under a finger
 
     def layout(self, signals: list[Signal]) -> Layout:
         meters = [s for s in signals if s.meta.get("meter")]
@@ -54,18 +57,44 @@ class View:
                       default=0)
         for s in window:
             s.meta["heat"] = (s.priority / hottest) if hottest else 0.0
+
+        rows, cols = self.profile.rows, self.profile.cols
+        # Column-major position sequence: rank #1 top-left, #2 below it…
+        seq = [(i % rows) * cols + (i // rows) for i in range(per_page)] \
+            if self.fill == "columns" else list(range(per_page))
+
         keys: list[Signal | None] = [None] * per_page
-        if self.fill == "columns":
-            # Rank #1 top-left, #2 below it, #3 top of the next column — the
-            # hottest work funnels into the leftmost column of the deck.
-            rows, cols = self.profile.rows, self.profile.cols
-            for i, s in enumerate(window):
-                keys[(i % rows) * cols + (i // rows)] = s
+        if self.sticky and pages == 1:
+            # STABILITY BEATS PERFECT RANK: a key must not move between the
+            # glance and the press. Signals keep their slot while visible;
+            # rank only decides where NEWCOMERS land (best free position).
+            # With multiple pages, ranking takes over — a crowded fleet needs
+            # order more than stillness.
+            alive = {s.id for s in window}
+            self._slots = {sid: pos for sid, pos in self._slots.items()
+                           if sid in alive}
+            used = set(self._slots.values())
+            free = [p for p in seq if p not in used]
+            for s in window:
+                if s.id not in self._slots:
+                    if not free:
+                        break
+                    self._slots[s.id] = free.pop(0)
+            by_id = {s.id: s for s in window}
+            for sid, pos in self._slots.items():
+                keys[pos] = by_id[sid]
         else:
-            keys[:len(window)] = window
+            for i, s in enumerate(window):
+                keys[seq[i]] = s
+
+        urgent = {"blocked", "attention"}
+        offpage = any(s.state in urgent
+                      for s in ordered[:self.page * per_page]
+                      + ordered[(self.page + 1) * per_page:])
         return Layout(keys=keys, page=self.page, pages=pages,
                       summary=summarize(signals),
-                      meter=meters[0] if meters else None)
+                      meter=meters[0] if meters else None,
+                      offpage_urgent=offpage)
 
     def page_next(self) -> None:
         self.page += 1     # clamped on next layout()

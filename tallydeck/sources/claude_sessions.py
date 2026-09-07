@@ -176,6 +176,8 @@ class ClaudeSessionsSource(Source):
         # sessions rank first on the deck.
         self.burn_window = float(opts.get("burn_window", 600))
         self._samples: dict[str, list[tuple[float, int]]] = {}
+        self.snooze_for = float(opts.get("snooze_for", 900))
+        self._snooze: dict[str, float] = {}    # session → quiet-until epoch
 
     def poll(self) -> list[Signal]:
         signals: list[Signal] = []
@@ -216,6 +218,8 @@ class ClaudeSessionsSource(Source):
                 if state == ATTENTION and ((now - mtime) < self.dwell
                                            or not _assistant_wants_input(lines)):
                     state = WORKING
+                if state == ATTENTION and self._snooze.get(fp.stem, 0) > now:
+                    state = IDLE               # snoozed: quiet, still listed
                 # Real cwd from the records; munged-name reconstruction only
                 # as a fallback for logs that never carried one.
                 full = _last_cwd(lines) or _resolve_munged(proj_dir.name)
@@ -223,6 +227,10 @@ class ClaudeSessionsSource(Source):
                 sub = _age_str(now - mtime)
                 if rate >= 20:
                     sub += f" · {rate * 60 / 1024:.0f}k/m"
+                snip = _snippet(lines)
+                if state == ATTENTION and snip:
+                    # 96px answers "what do I do?" — the ask beats a rate.
+                    sub = snip[:34]
                 flash = None
                 if state == ATTENTION and (now - mtime) > self.flash_for:
                     flash = False
@@ -246,7 +254,7 @@ class ClaudeSessionsSource(Source):
                     label=label[:24],
                     sublabel=sub,
                     flash=flash,
-                    detail=_snippet(lines),
+                    detail=snip,
                     state=state,
                     updated=mtime,
                     # Hotter sessions outrank within the same state, so the
@@ -389,7 +397,15 @@ class ClaudeSessionsSource(Source):
         return best
 
     def on_press(self, sig: Signal, long: bool = False) -> bool:
-        """Focus the tmux pane working in this project, if one exists."""
+        """Short press: focus the pane. Long press: snooze the nag."""
+        if long:
+            sid = str(sig.meta.get("session", ""))
+            if sid:
+                if self._snooze.get(sid, 0) > time.time():
+                    self._snooze.pop(sid, None)      # press again to unsnooze
+                else:
+                    self._snooze[sid] = time.time() + self.snooze_for
+                return True
         project = sig.meta.get("project", "")
         if not project:
             return False
