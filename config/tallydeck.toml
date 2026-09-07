@@ -22,8 +22,20 @@ connect = ["ssh", "claw", "~/.local/bin/tallyd"]
 # which is fine — nothing there presses keys.
 on_press = ["~/bin/tally-open-mac.sh"]
 
+# How often the deck asks the hub for a fresh snapshot. This is the dominant
+# term in how stale the display looks — key redraws are already cached per key
+# and a press wakes the loop immediately, so latency you can see is almost
+# always this number. Lower costs a little ssh chatter and nothing else.
+poll_every = 1.0
+
 [[sources]]
 kind = "claude-sessions"
+# One entry per Claude account. The label lands on the key as a badge, so you
+# can see WHICH quota a working session is draining rather than guessing.
+roots = [
+  { label = "A", path = "~/.claude/projects" },
+  { label = "B", path = "~/.config/claude-b/.claude/projects" },
+]
 
 [[sources]]
 kind = "watchdir"

@@ -91,6 +91,7 @@ def cmd_term(cfg, args):
     from .render.surfaces import TermSurface
     view = _view(cfg, args)
     run(_link(cfg, args), TermSurface(view.profile), view,
+        poll_every=float(cfg.get("client", {}).get("poll_every", 2.0)),
         on_press_cmd=_on_press_cmd(cfg))
 
 
@@ -109,7 +110,9 @@ def cmd_deck(cfg, args):
     surface = DeckSurface(preferred=view.profile.name,
                           brightness=args.brightness)
     view.profile = surface.profile            # trust the hardware's geometry
-    run(_link(cfg, args), surface, view, on_press_cmd=_on_press_cmd(cfg))
+    run(_link(cfg, args), surface, view,
+        poll_every=float(cfg.get("client", {}).get("poll_every", 2.0)),
+        on_press_cmd=_on_press_cmd(cfg))
 
 
 def cmd_raise(cfg, args):

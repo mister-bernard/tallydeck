@@ -34,9 +34,11 @@ if [[ -n "${TALLY_TMUX:-}" ]]; then
   REMOTE="tmux -S ${SOCKET} attach -t ${SESS} \\; select-pane -t ${TALLY_TMUX}"
 elif [[ -n "${TALLY_PROJECT:-}" ]]; then
   # No live pane: drop into the project directory instead of failing silently.
-  REMOTE="cd ${TALLY_PROJECT} && exec \$SHELL -l"
+  # No variable at all — bash is guaranteed present on the hub, and a
+  # literal cannot be eaten by an intermediate shell.
+  REMOTE="cd ${TALLY_PROJECT} && exec bash -l"
 else
-  REMOTE="exec \$SHELL -l"
+  REMOTE="exec bash -l"
 fi
 
 CMD="ssh -t ${HOST} \"${REMOTE}\""

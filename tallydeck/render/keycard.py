@@ -82,6 +82,24 @@ def draw_key(sig: Signal | None, px: int, lit: bool = False,
     y = bar_h + round(s * 0.10)
     d.text((pad, y), label, font=f_label, fill=fg)
 
+    # Account badge, bottom-right. Which of the two quotas a session is
+    # draining is invisible otherwise — you can watch it work with no idea
+    # whose ceiling it is walking toward. Drawn before the sublabel so the
+    # sublabel can be truncated around it rather than run underneath.
+    acct = str((sig.meta or {}).get("account", ""))
+    badge_w = 0
+    if acct:
+        f_acct = theme.font("semibold", round(s * 0.135))
+        aw = d.textlength(acct, font=f_acct)
+        bw, bh = aw + round(s * 0.09), round(s * 0.16)
+        bx1, by1 = s - pad, s - round(s * 0.035)
+        bx0, by0 = bx1 - bw, by1 - bh
+        d.rounded_rectangle([bx0, by0, bx1, by1], radius=round(s * 0.04),
+                            fill=track)
+        d.text((bx0 + (bw - aw) / 2, by0 + round(s * 0.012)), acct,
+               font=f_acct, fill=sub)
+        badge_w = bw + pad
+
     if sig.sublabel:
         y2 = y + round(s * 0.24)
         d.text((pad, y2), _truncate(d, sig.sublabel, f_sub, s - 2 * pad),
@@ -91,7 +109,7 @@ def draw_key(sig: Signal | None, px: int, lit: bool = False,
     if sig.progress is not None:
         h = round(s * 0.07)
         y0 = s - round(s * 0.145)
-        x0, x1 = pad, s - pad
+        x0, x1 = pad, s - pad - badge_w
         d.rounded_rectangle([x0, y0, x1, y0 + h], radius=h // 2, fill=track)
         w = round((x1 - x0) * sig.progress)
         if w > h:  # avoid a smeared nub at ~0%

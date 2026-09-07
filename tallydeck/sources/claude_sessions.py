@@ -87,7 +87,18 @@ class ClaudeSessionsSource(Source):
 
     def __init__(self, **opts):
         super().__init__(**opts)
-        self.root = Path(opts.get("root", Path.home() / ".claude" / "projects"))
+        # Sessions for different Claude accounts live under different HOMEs,
+        # and which account a session is spending is not visible anywhere on
+        # the key otherwise — you can watch a session work with no idea which
+        # of the two quotas it is draining.
+        roots = opts.get("roots")
+        if roots:
+            self.roots = [(str(r.get("label", "")), Path(r["path"]).expanduser())
+                          for r in roots]
+        else:
+            self.roots = [("", Path(opts.get(
+                "root", Path.home() / ".claude" / "projects")).expanduser())]
+        self.root = self.roots[0][1]      # kept: existing callers/tests read it
         self.stale = float(opts.get("stale", 1800))
         # Dwell: tool results are logged as "user" records, so mid-turn the
         # tail flaps assistant/user/assistant… Only a log that has been
@@ -97,10 +108,16 @@ class ClaudeSessionsSource(Source):
 
     def poll(self) -> list[Signal]:
         signals: list[Signal] = []
-        if not self.root.is_dir():
-            return signals
         now = time.time()
-        for proj_dir in self.root.iterdir():
+        for acct, root in self.roots:
+            if not root.is_dir():
+                continue
+            signals.extend(self._scan(root, acct, now))
+        return signals
+
+    def _scan(self, root, acct: str, now: float) -> list[Signal]:
+        signals: list[Signal] = []
+        for proj_dir in root.iterdir():
             if not proj_dir.is_dir():
                 continue
             for fp in proj_dir.glob("*.jsonl"):
@@ -126,6 +143,7 @@ class ClaudeSessionsSource(Source):
                     updated=mtime,
                     group=self.group,
                     meta={"project": full, "session": fp.stem,
+                          "account": acct,
                           # Resolved hub-side because only the hub can see
                           # tmux. Without it the deck machine would have to
                           # re-derive the pane over ssh on every press.
