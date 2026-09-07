@@ -15,6 +15,7 @@ Long-press (≥ 0.5 s) sends `long: true` — sources may treat that as
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import threading
 import time

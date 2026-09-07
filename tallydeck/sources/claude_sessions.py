@@ -125,7 +125,11 @@ class ClaudeSessionsSource(Source):
                     state=state,
                     updated=mtime,
                     group=self.group,
-                    meta={"project": full, "session": fp.stem},
+                    meta={"project": full, "session": fp.stem,
+                          # Resolved hub-side because only the hub can see
+                          # tmux. Without it the deck machine would have to
+                          # re-derive the pane over ssh on every press.
+                          "tmux": self._pane_for(full)},
                 ))
         # One key per project: keep the most recent session of each label.
         best: dict[str, Signal] = {}
@@ -134,6 +138,36 @@ class ClaudeSessionsSource(Source):
             if k not in best or s.updated > best[k].updated:
                 best[k] = s
         return list(best.values())
+
+
+    # ── tmux resolution ──────────────────────────────────────────────────────
+
+    _PANE_TTL = 15.0   # panes move rarely; a press must not wait on a scan
+
+    def _panes(self) -> dict[str, str]:
+        """{realpath(cwd): target} for every pane, cached briefly."""
+        now = time.time()
+        if now - getattr(self, "_pane_ts", 0.0) < self._PANE_TTL:
+            return getattr(self, "_pane_cache", {})
+        out_map: dict[str, str] = {}
+        try:
+            r = subprocess.run(
+                ["tmux", "list-panes", "-a", "-F",
+                 "#{session_name}:#{window_index}.#{pane_index} #{pane_current_path}"],
+                capture_output=True, text=True, timeout=3)
+            if r.returncode == 0:
+                for line in r.stdout.strip().splitlines():
+                    target, _, cwd = line.partition(" ")
+                    if cwd:
+                        out_map[os.path.realpath(cwd)] = target
+        except (OSError, subprocess.TimeoutExpired):
+            pass          # fail open: no target is better than no signal
+        self._pane_cache, self._pane_ts = out_map, now
+        return out_map
+
+    def _pane_for(self, project: str) -> str:
+        key = os.path.realpath(project) if os.path.exists(project) else project
+        return self._panes().get(key, "")
 
     def on_press(self, sig: Signal, long: bool = False) -> bool:
         """Focus the tmux pane working in this project, if one exists."""
