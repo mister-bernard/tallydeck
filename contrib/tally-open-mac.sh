@@ -44,6 +44,10 @@ if [ "${TALLY_GROUP:-}" != "cc" ] \
   exit 0
 fi
 
+# Long press already acted hub-side (snooze) — opening the router on top
+# of that would be two conflicting answers to one gesture.
+[ "${TALLY_LONG:-0}" = "1" ] && exit 0
+
 TARGET="${TALLY_TMUX:-}"
 SESS="${TARGET%%:*}"
 
@@ -157,6 +161,7 @@ if [ -n "$APP" ]; then
     BEST_TTY=""; BEST_SESS=""; BEST_ACT=""
     while IFS='|' read -r tty sess act; do
       [ -n "$tty" ] || continue
+      case "$sess" in _fl-*) continue ;; esac   # never popup on a popup
       if [ -n "$TITLES" ]; then
         case "$TITLES" in *"TALLY[$tty]"*) ;; *) continue ;; esac # ghost → skip
       else
@@ -179,10 +184,15 @@ EOF
       focus_by_token "TALLY[$PICK_TTY]" \
         || /usr/bin/osascript -e "tell application \"$APP\" to activate" 2>/dev/null
       ROUTE="~/.local/bin/tally-route $(q "$PICK_TTY") $(q "$PICK_SESS") $(q "$TARGET") $(q "${TALLY_SESSION:-}") $(q "${TALLY_PROJECT:-}") $(q "${TALLY_LABEL:-}") $(q "${TALLY_STATE:-}") $(q "${TALLY_ACCOUNT:-}")"
-      ssh -o BatchMode=yes "$HOST" \
-        "tmux -S '$SOCKET' display-popup -c $(q "$PICK_TTY") -w 95% -h 90% -E $(q "$ROUTE")" \
-        >/dev/null 2>&1 &
-      exit 0
+      # Foreground: a failed dispatch (dead client, wrong socket) must fall
+      # through to the fresh-window path instead of vanishing silently. The
+      # ssh stays open while the popup is up; that is fine — we are a
+      # fire-and-forget child of the deck client.
+      if ssh -o BatchMode=yes "$HOST" \
+           "tmux -S '$SOCKET' display-popup -c $(q "$PICK_TTY") -w 95% -h 90% -E $(q "$ROUTE")" \
+           >/dev/null 2>&1; then
+        exit 0
+      fi
     fi
   fi
 fi
@@ -190,7 +200,10 @@ fi
 # ── fallback: no real attached window anywhere → open a fresh one ────────────
 
 if [ -n "$TARGET" ]; then
-  REMOTE="tmux -S ${SOCKET} attach -t $(q "$SESS") \\; select-pane -t $(q "$TARGET")"
+  # attach -t with the FULL session:window.pane sets the current window too
+  # (verified on tmux 3.4) — attaching to just the session landed on
+  # whatever window that session happened to show.
+  REMOTE="tmux -S ${SOCKET} attach -t $(q "$TARGET") \\; select-pane -t $(q "$TARGET")"
 elif [ -n "${TALLY_PROJECT:-}" ]; then
   # Brief + [r]esume choice, then shell — never a silent bare prompt.
   REMOTE="~/.local/bin/tally-land $(q "${TALLY_PROJECT}") $(q "${TALLY_SESSION:-}") $(q "${TALLY_LABEL:-}") $(q "${TALLY_STATE:-}") $(q "${TALLY_ACCOUNT:-}")"

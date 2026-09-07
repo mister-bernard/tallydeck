@@ -538,11 +538,14 @@ def test_exact_pane_is_sticky_until_the_pane_dies(monkeypatch):
     mapping must survive the gaps between tool calls."""
     src = ClaudeSessionsSource()
     monkeypatch.setattr(src, "_session_panes", lambda: {"s1": "work:2.0"})
-    monkeypatch.setattr(src, "_panes", lambda: {"/x": "work:2.0"})
+    # validation is against ALL live pane targets — the cwd-keyed map
+    # collapses shared-directory panes and demoted live sessions (audit P0)
+    monkeypatch.setattr(src, "_all_pane_targets",
+                        lambda: {"work:2.0", "other:1.1"})
     assert src._exact_pane("s1") == "work:2.0"
     monkeypatch.setattr(src, "_session_panes", lambda: {})   # tool ended
     assert src._exact_pane("s1") == "work:2.0"               # still known
-    monkeypatch.setattr(src, "_panes", lambda: {})           # pane gone
+    monkeypatch.setattr(src, "_all_pane_targets", lambda: set())  # pane gone
     assert src._exact_pane("s1") == ""
 
 

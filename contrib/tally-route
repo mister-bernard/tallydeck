@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
 # tally-route <client_tty> <cur_sess> <target> <uuid> <project> <label> <state> [account]
 #
-# The attention router, run inside a floating tmux popup (95% x 90%) over
-# whatever the operator is viewing. One menu, always, per the operator's spec — every
-# option works whether the session has a live pane or must be resurrected:
+# The attention router, run inside a floating tmux popup over whatever the
+# operator is viewing. One menu, always — every option works whether the
+# session has a live pane or must be resurrected:
 #
-#   Enter → GO THERE, floating: live pane → grouped attach (own selection,
-#           nothing shared moves); dead → resume in a fresh tmux session,
-#           attached here. Ctrl-b d puts it back / leaves it running.
+#   Enter → GO THERE, floating: live pane → grouped view (own selection,
+#           nothing shared moves); dead → resume attached here.
+#           Ctrl-b d puts it back / leaves it running.
 #   t     → open it as a TAB (window) of your current session
 #   s     → SPLIT it into your current window, side by side
+#   ␣     → DONE: mute this alert until the session asks anew
 #   other → dismiss; nothing anywhere changes
-#
-# The underlying view is never touched without an explicit choice.
 set -u
 TTY="${1:-}"; CUR="${2:-}"; TARGET="${3:-}"; UUID="${4:-}"
 PROJ="${5:-}"; LABEL="${6:-}"; STATE="${7:-}"; ACCT="${8:-}"
@@ -20,20 +19,42 @@ SOCKET="${TALLY_TMUX_SOCKET:-/tmp/tmux-1000/cc}"
 T() { tmux -S "$SOCKET" "$@"; }
 export PYTHONPATH="$HOME/projects/tallydeck${PYTHONPATH:+:$PYTHONPATH}"
 
+# The Mac's CUR is a snapshot; the client may have switched since. Resolve
+# fresh, from in here, where the server is one call away.
+LIVE_CUR=$(T display -p -t "$TTY" '#{client_session}' 2>/dev/null)
+[ -n "$LIVE_CUR" ] && CUR="$LIVE_CUR"
+
+# Reap leftover floating groups nobody is attached to. destroy-unattached
+# cannot be used here (set-option rejects the '=' prefix, and the reaper
+# races the attach — an unattached group dies in <200ms, faster than we can
+# attach to it) — explicit cleanup is the reliable version. Also heals
+# groups leaked by earlier versions.
+T list-sessions -F '#{session_name} #{session_attached}' 2>/dev/null \
+  | while read -r name attached; do
+      case "$name" in
+        _fl-*) [ "$attached" = "0" ] && T kill-session -t "$name" 2>/dev/null ;;
+      esac
+    done
+
+# A recorded pane can die between the alert and the press (hook asks carry
+# panes up to 30 min old). A dead target must downgrade to the resume flow,
+# not fail into a silently empty popup.
+if [ -n "$TARGET" ] && ! T display -p -t "$TARGET" '#{pane_id}' >/dev/null 2>&1; then
+  TARGET=""
+fi
+
 # Which claude binary owns this session's history (account B has its own HOME).
 BIN="claude"
 [ "$ACCT" = "B" ] && BIN="$HOME/.local/bin/claude-b"
 RESUME="$BIN --dangerously-skip-permissions --resume '$UUID'; exec bash -l"
 
-# Terminals answer queries (e.g. the DA1 reply "^[[?1;2c") and those bytes
-# arrive as INPUT. Delivered into an attached Claude prompt they read as a
-# typed line and get submitted. Drop whatever is buffered before handover.
+# Terminals answer queries (the DA1 reply "^[[?1;2c") and those bytes arrive
+# as INPUT — drain before the menu read, or they dismiss the router; drain
+# before any attach, or they land in a Claude prompt as a typed line.
 drain_input() { while read -r -s -n 10000 -t 0.05 _ 2>/dev/null; do :; done; }
 
-# Fresh detachable session running the resume — used by every dead-session
-# action so the session survives detach and shows up on the deck afterwards.
 ensure_resurrected() {
-  NAME="fl-$(printf '%s' "${LABEL:-sess}" | tr -c 'a-zA-Z0-9_-' '-' | cut -c1-24)"
+  NAME="fl-$(printf '%s' "${UUID:-x}" | cut -c1-8)"   # uuid-keyed: labels collide
   if ! T has-session -t "=$NAME" 2>/dev/null; then
     T new-session -d -s "$NAME" -c "${PROJ:-$HOME}" "$RESUME"
   fi
@@ -46,6 +67,7 @@ LIVE=""; [ -n "$TARGET" ] && LIVE=1
 printf '  \033[38;2;44;48;62m%s\033[0m\n' "──────────────────────────────────────────────────────────────────────────"
 printf '  \033[1;38;2;0;229;255m⏎\033[0m open floating%s    \033[1;38;2;0;229;255mt\033[0m tab here    \033[1;38;2;0;229;255ms\033[0m split here    \033[1;38;2;0;229;255m␣\033[0m done (mute)    \033[2mother dismisses\033[0m\n' \
   "$([ -n "$LIVE" ] || printf '\033[2m (resumes)\033[0m')"
+drain_input
 read -r -n 1 -s -t 120 key 2>/dev/null || exit 0
 
 SESS="${TARGET%%:*}"
@@ -63,13 +85,16 @@ case "$key" in
       GRP="_fl-${SESS}"
       if ! T has-session -t "=$GRP" 2>/dev/null; then
         T new-session -d -s "$GRP" -t "$SESS" 2>/dev/null
-        T set-option -t "=$GRP" destroy-unattached on 2>/dev/null
       fi
-      # Select the window only in OUR group — everyone else's view stays put.
-      T select-window -t "=$GRP:${TARGET#*:}" 2>/dev/null \
-        || T select-window -t "=$GRP:${TARGET%%.*}" 2>/dev/null
+      # Window part of the target, selected ONLY in our group — everyone
+      # else's view stays put. (The old fallback built =grp:sess:1, a
+      # malformed target; the window index must be split out first.)
+      W="${TARGET#*:}"
+      T select-window -t "=$GRP:${W%%.*}" 2>/dev/null
       drain_input; unset TMUX
-      exec tmux -S "$SOCKET" attach -t "=$GRP"
+      tmux -S "$SOCKET" attach -t "=$GRP"
+      T kill-session -t "=$GRP" 2>/dev/null    # tidy on the way out
+      exit 0
     elif [ -n "$UUID" ]; then
       ensure_resurrected
       drain_input; unset TMUX
@@ -89,10 +114,11 @@ case "$key" in
     fi ;;
   s|S)  # split into the current window
     if [ -n "$LIVE" ]; then
-      # join-pane MOVES the pane (tmux has no pane-linking) — the hint says
-      # how to send it home again.
-      T join-pane -h -s "$TARGET" -t "$CUR:" 2>/dev/null \
-        && T display-message -c "$TTY" "moved here — 'break-pane' sends it back out" 2>/dev/null
+      if T join-pane -h -s "$TARGET" -t "$CUR:" 2>/dev/null; then
+        T display-message -c "$TTY" "moved here — 'break-pane' sends it back out" 2>/dev/null
+      else
+        T display-message -c "$TTY" "split failed — that pane may be its window's only one" 2>/dev/null
+      fi
     elif [ -n "$UUID" ]; then
       T split-window -h -t "$CUR:" -c "${PROJ:-$HOME}" "$RESUME" 2>/dev/null
     fi ;;

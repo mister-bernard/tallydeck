@@ -226,6 +226,9 @@ class ClaudeSessionsSource(Source):
                     state = WORKING
                 if state == ATTENTION and self._snooze.get(fp.stem, 0) > now:
                     state = IDLE               # snoozed: quiet, still listed
+                if state == ATTENTION and (Path.home() / ".tallydeck" /
+                        "signals" / f"ask-{fp.stem[:8]}.json").is_file():
+                    state = WORKING     # the hook's key owns this alarm
                 if state == ATTENTION:
                     # Inbox-done (space in the popup): quiet until the log
                     # MOVES again — a fresh ask revives the alert on its own.
@@ -268,7 +271,7 @@ class ClaudeSessionsSource(Source):
                 label = exact.split(":", 1)[0] if exact \
                     else (os.path.basename(full) or full)
                 signals.append(Signal(
-                    id=f"{self.group}/{fp.stem[:8]}",
+                    id=f"{self.group}/{acct or 'x'}-{fp.stem[:8]}",
                     label=label[:24],
                     sublabel=sub,
                     flash=flash,
@@ -327,10 +330,30 @@ class ClaudeSessionsSource(Source):
             memo[session] = found
             return found
         remembered = memo.get(session)
-        if remembered and remembered in set(self._panes().values()):
+        if remembered and remembered in self._all_pane_targets():
             return remembered
         memo.pop(session, None)
         return ""
+
+    def _all_pane_targets(self) -> set:
+        """Every live pane target. The cwd-keyed map collapses panes sharing
+        a directory (46 panes → 10 entries live), so validating the sticky
+        memo against its values randomly demoted live sessions to paneless."""
+        now = time.time()
+        if now - getattr(self, "_apt_ts", 0.0) < self._PANE_TTL:
+            return getattr(self, "_apt_cache", set())
+        out: set = set()
+        try:
+            r = subprocess.run(
+                self._tmux("list-panes", "-a", "-F",
+                           "#{session_name}:#{window_index}.#{pane_index}"),
+                capture_output=True, text=True, timeout=3)
+            if r.returncode == 0:
+                out = set(r.stdout.split())
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        self._apt_cache, self._apt_ts = out, now
+        return out
 
     def _session_panes(self) -> dict[str, str]:
         """{session_uuid: pane target} — EXACT identity, via CLAUDE_SESSION_ID
@@ -416,7 +439,11 @@ class ClaudeSessionsSource(Source):
         return best
 
     def on_press(self, sig: Signal, long: bool = False) -> bool:
-        """Short press: focus the pane. Long press: snooze the nag."""
+        """Long press: snooze. Short press: NOTHING hub-side — the Mac owns
+        routing. The old handler here switch-cliented a cwd-GUESSED pane with
+        no -c, which tmux resolves to the most-recently-used client: it
+        yanked whatever window the operator was in onto an arbitrary session,
+        racing the popup on every press (the audit's second view-jump)."""
         if long:
             sid = str(sig.meta.get("session", ""))
             if sid:
@@ -425,31 +452,7 @@ class ClaudeSessionsSource(Source):
                 else:
                     self._snooze[sid] = time.time() + self.snooze_for
                 return True
-        project = sig.meta.get("project", "")
-        if not project:
-            return False
-        try:
-            out = subprocess.run(
-                self._tmux("list-panes", "-a", "-F",
-                           "#{session_name}:#{window_index}.#{pane_index} "
-                           "#{pane_current_path}"),
-                capture_output=True, text=True, timeout=3,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return False
-        if out.returncode != 0:
-            return False
-        proj_real = os.path.realpath(project) if os.path.exists(project) else project
-        for line in out.stdout.strip().splitlines():
-            target, _, cwd = line.partition(" ")
-            cwd_real = os.path.realpath(cwd) if os.path.exists(cwd) else cwd
-            if cwd_real == proj_real or cwd_real.startswith(proj_real + "/") \
-               or proj_real.startswith(cwd_real + "/"):
-                subprocess.run(self._tmux("switch-client", "-t", target),
-                               capture_output=True, timeout=3)
-                return True
         return False
-
 
 def _age_str(seconds: float) -> str:
     s = int(seconds)
