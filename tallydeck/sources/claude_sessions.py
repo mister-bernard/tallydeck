@@ -226,6 +226,17 @@ class ClaudeSessionsSource(Source):
                     state = WORKING
                 if state == ATTENTION and self._snooze.get(fp.stem, 0) > now:
                     state = IDLE               # snoozed: quiet, still listed
+                if state == ATTENTION:
+                    # Inbox-done (space in the popup): quiet until the log
+                    # MOVES again — a fresh ask revives the alert on its own.
+                    ackf = Path.home() / ".tallydeck" / "acked" / fp.stem[:8]
+                    try:
+                        if ackf.stat().st_mtime >= mtime:
+                            state = IDLE
+                        else:
+                            ackf.unlink()      # session spoke again: rearm
+                    except OSError:
+                        pass
                 if oneshot and state == ATTENTION:
                     state = WORKING            # nobody answers a one-shot
                 # Real cwd from the records; munged-name reconstruction only

@@ -587,3 +587,23 @@ def test_beacon_jump_to_finds_the_alert_page():
     assert v.page == 1                          # the alert's page, not page 0
     v.jump_to("s0")
     assert v.page == 0
+
+
+def test_space_done_mutes_until_the_session_asks_again(tmp_path, monkeypatch):
+    import os
+    from pathlib import Path
+    proj = tmp_path / "-home-me-projects-w"
+    proj.mkdir()
+    p = _write_jsonl(proj, "feedbeef", [{"type": "assistant", "message": {
+        "stop_reason": "end_turn",
+        "content": [{"type": "text", "text": "Decision needed on the rollout."}]}}])
+    t = time.time() - 120
+    os.utime(p, (t, t))
+    ack = Path.home() / ".tallydeck" / "acked" / "feedbeef"
+    ack.parent.mkdir(parents=True, exist_ok=True)
+    ack.touch()                                     # space pressed
+    src = ClaudeSessionsSource(root=str(tmp_path))
+    assert src.poll()[0].state == IDLE              # muted
+    os.utime(p, None)                               # session asks anew (log moves)
+    assert ClaudeSessionsSource(root=str(tmp_path)).poll()[0].state == ATTENTION
+    assert not ack.exists()                         # ack retired itself
