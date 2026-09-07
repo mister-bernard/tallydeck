@@ -1,85 +1,91 @@
 #!/usr/bin/env bash
 # tally-route <client_tty> <cur_sess> <target> <uuid> <project> <label> <state> [account]
 #
-# The attention router, run INSIDE a floating tmux popup (80% x 70%) over
-# whatever the operator is viewing. The underlying view is NEVER touched:
+# The attention router, run inside a floating tmux popup (95% x 90%) over
+# whatever the operator is viewing. One menu, always, per the operator's spec — every
+# option works whether the session has a live pane or must be resurrected:
 #
-#   Enter → the popup ITSELF becomes the session, through a GROUPED session
-#           (tmux new-session -t): same windows, INDEPENDENT current-window
-#           selection. A plain `attach` shares the selection, so moving
-#           around in the popup dragged every other viewer of that session
-#           along with it. Ctrl-b d detaches; the group self-destroys.
-#   b     → link the pressed session's window into your current session's
-#           window list (reversible; the source session keeps it)
-#   r     → (paneless) resume the Claude session in a NEW tmux session,
-#           attached floating in this popup; Ctrl-b d leaves it running
-#           and it shows up on the deck as a live pane from then on
-#   other → dismiss, nothing changed
+#   Enter → GO THERE, floating: live pane → grouped attach (own selection,
+#           nothing shared moves); dead → resume in a fresh tmux session,
+#           attached here. Ctrl-b d puts it back / leaves it running.
+#   t     → open it as a TAB (window) of your current session
+#   s     → SPLIT it into your current window, side by side
+#   other → dismiss; nothing anywhere changes
+#
+# The underlying view is never touched without an explicit choice.
 set -u
 TTY="${1:-}"; CUR="${2:-}"; TARGET="${3:-}"; UUID="${4:-}"
 PROJ="${5:-}"; LABEL="${6:-}"; STATE="${7:-}"; ACCT="${8:-}"
 SOCKET="${TALLY_TMUX_SOCKET:-/tmp/tmux-1000/cc}"
 T() { tmux -S "$SOCKET" "$@"; }
-
-# Terminals answer queries (e.g. the DA1 reply "^[[?1;2c") and those bytes
-# arrive as INPUT. Delivered into an attached Claude prompt they read as a
-# typed line and get submitted — a keypress here turning into an API call.
-# Drop anything already buffered before handing the tty over.
-drain_input() { while read -r -s -n 10000 -t 0.05 _ 2>/dev/null; do :; done; }
 export PYTHONPATH="$HOME/projects/tallydeck${PYTHONPATH:+:$PYTHONPATH}"
 
 # Which claude binary owns this session's history (account B has its own HOME).
 BIN="claude"
 [ "$ACCT" = "B" ] && BIN="$HOME/.local/bin/claude-b"
+RESUME="$BIN --dangerously-skip-permissions --resume '$UUID'; exec bash -l"
+
+# Terminals answer queries (e.g. the DA1 reply "^[[?1;2c") and those bytes
+# arrive as INPUT. Delivered into an attached Claude prompt they read as a
+# typed line and get submitted. Drop whatever is buffered before handover.
+drain_input() { while read -r -s -n 10000 -t 0.05 _ 2>/dev/null; do :; done; }
+
+# Fresh detachable session running the resume — used by every dead-session
+# action so the session survives detach and shows up on the deck afterwards.
+ensure_resurrected() {
+  NAME="fl-$(printf '%s' "${LABEL:-sess}" | tr -c 'a-zA-Z0-9_-' '-' | cut -c1-24)"
+  if ! T has-session -t "=$NAME" 2>/dev/null; then
+    T new-session -d -s "$NAME" -c "${PROJ:-$HOME}" "$RESUME"
+  fi
+}
 
 /usr/bin/python3 -m tallydeck.cli brief \
   --session "$UUID" --project "$PROJ" --label "$LABEL" --state "$STATE"
 
-if [ -n "$TARGET" ]; then
-  printf '  \033[1;96m[⏎]\033[0m open here, floating (Ctrl-b d to put it back)   \033[1;96m[b]\033[0m add to my windows   \033[2mother → dismiss\033[0m\n'
-else
-  printf '  \033[1;96m[r]\033[0m resume here, floating (Ctrl-b d keeps it running)   \033[2mother → dismiss\033[0m\n'
-fi
+LIVE=""; [ -n "$TARGET" ] && LIVE=1
+printf '  \033[1;96m[⏎]\033[0m open floating%s   \033[1;96m[t]\033[0m as a tab here   \033[1;96m[s]\033[0m split into this window   \033[2mother → dismiss\033[0m\n' \
+  "$([ -n "$LIVE" ] || printf ' (resumes it)')"
 read -r -n 1 -s -t 120 key 2>/dev/null || exit 0
 
-if [ -n "$TARGET" ]; then
-  SESS="${TARGET%%:*}"
-  case "$key" in
-    "")   # Enter: view the session in a private group — nothing shared
+SESS="${TARGET%%:*}"
+case "$key" in
+  ""|r|R)  # GO THERE, floating
+    if [ -n "$LIVE" ]; then
       GRP="_fl-${SESS}"
       if ! T has-session -t "=$GRP" 2>/dev/null; then
         T new-session -d -s "$GRP" -t "$SESS" 2>/dev/null
-        # The group exists only for this popup: it evaporates on detach
-        # instead of piling up phantom sessions on the socket.
         T set-option -t "=$GRP" destroy-unattached on 2>/dev/null
       fi
-      # Select the window ONLY in our own group; the original session's
-      # selection — what everyone else is looking at — is left alone. Pane
-      # focus is window-scoped and therefore shared, so it is not touched.
+      # Select the window only in OUR group — everyone else's view stays put.
       T select-window -t "=$GRP:${TARGET#*:}" 2>/dev/null \
         || T select-window -t "=$GRP:${TARGET%%.*}" 2>/dev/null
-      drain_input
-      unset TMUX
-      exec tmux -S "$SOCKET" attach -t "=$GRP" ;;
-    b|B)  # bring it into my window list
+      drain_input; unset TMUX
+      exec tmux -S "$SOCKET" attach -t "=$GRP"
+    elif [ -n "$UUID" ]; then
+      ensure_resurrected
+      drain_input; unset TMUX
+      exec tmux -S "$SOCKET" attach -t "=$NAME"
+    fi ;;
+  t|T|b|B)  # a tab (window) in the current session
+    if [ -n "$LIVE" ]; then
       WID=$(T display -p -t "$TARGET" '#{window_id}' 2>/dev/null)
       [ -n "$WID" ] || exit 0
-      if ! T list-windows -t "$CUR" -F '#{window_id}' 2>/dev/null \
-           | grep -qx "$WID"; then
-        T link-window -a -s "$WID" -t "$CUR:" 2>/dev/null
-      fi
+      T list-windows -t "$CUR" -F '#{window_id}' 2>/dev/null | grep -qx "$WID" \
+        || T link-window -a -s "$WID" -t "$CUR:" 2>/dev/null
       T select-window -t "$WID" 2>/dev/null
       T select-pane -t "$TARGET" 2>/dev/null
-      T display-message -c "$TTY" "linked here — 'unlink-window' sends it back" 2>/dev/null ;;
-  esac
-elif { [ "$key" = "r" ] || [ "$key" = "R" ]; } && [ -n "$UUID" ]; then
-  NAME="fl-$(printf '%s' "${LABEL:-sess}" | tr -c 'a-zA-Z0-9_-' '-' | cut -c1-24)"
-  if ! T has-session -t "=$NAME" 2>/dev/null; then
-    T new-session -d -s "$NAME" -c "${PROJ:-$HOME}" \
-      "$BIN --dangerously-skip-permissions --resume '$UUID'; exec bash -l"
-  fi
-  drain_input
-  unset TMUX
-  exec tmux -S "$SOCKET" attach -t "=$NAME"
-fi
+      T display-message -c "$TTY" "linked here — 'unlink-window' sends it back" 2>/dev/null
+    elif [ -n "$UUID" ]; then
+      T new-window -a -t "$CUR:" -c "${PROJ:-$HOME}" "$RESUME" 2>/dev/null
+    fi ;;
+  s|S)  # split into the current window
+    if [ -n "$LIVE" ]; then
+      # join-pane MOVES the pane (tmux has no pane-linking) — the hint says
+      # how to send it home again.
+      T join-pane -h -s "$TARGET" -t "$CUR:" 2>/dev/null \
+        && T display-message -c "$TTY" "moved here — 'break-pane' sends it back out" 2>/dev/null
+    elif [ -n "$UUID" ]; then
+      T split-window -h -t "$CUR:" -c "${PROJ:-$HOME}" "$RESUME" 2>/dev/null
+    fi ;;
+esac
 exit 0
