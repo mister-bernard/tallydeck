@@ -105,12 +105,37 @@ class PipeLink:
 # ── run loop ─────────────────────────────────────────────────────────────────
 
 def run(link, surface, view: View, poll_every: float = 2.0,
-        once: bool = False) -> None:
-    """Drive `surface` from `link` until interrupted (or one frame if once)."""
+        once: bool = False, on_press_cmd: list[str] | None = None) -> None:
+    """Drive `surface` from `link` until interrupted (or one frame if once).
+
+    `on_press_cmd`: optional LOCAL command run on every short press, in
+    addition to the hub-side action — this is how a key press reaches the
+    machine the deck is plugged into (pop a terminal window, ring a bell,
+    raise an app). It receives the signal as TALLY_* environment variables:
+    TALLY_ID, TALLY_LABEL, TALLY_GROUP, TALLY_STATE, TALLY_PROJECT,
+    TALLY_SESSION, TALLY_LONG.
+    """
     pressed_at: dict[int, float] = {}
     held: set[int] = set()
     key_map: list[Signal | None] = []
     wake = threading.Event()      # poked by input so feedback is instant
+
+    def local_action(sig: Signal, long: bool) -> None:
+        if not on_press_cmd:
+            return
+        import os
+        env = dict(os.environ,
+                   TALLY_ID=sig.id, TALLY_LABEL=sig.label,
+                   TALLY_GROUP=sig.group, TALLY_STATE=sig.state,
+                   TALLY_PROJECT=str(sig.meta.get("project", "")),
+                   TALLY_SESSION=str(sig.meta.get("session", "")),
+                   TALLY_LONG="1" if long else "0")
+        try:
+            subprocess.Popen(on_press_cmd, env=env,
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+        except OSError:
+            pass
 
     def on_key(index: int, down: bool) -> None:
         if down:
@@ -122,8 +147,9 @@ def run(link, surface, view: View, poll_every: float = 2.0,
             if t0 is not None and index < len(key_map):
                 sig = key_map[index]
                 if sig is not None:
-                    link.press(sig.id,
-                               long=(time.monotonic() - t0) >= LONG_PRESS)
+                    long = (time.monotonic() - t0) >= LONG_PRESS
+                    link.press(sig.id, long=long)
+                    local_action(sig, long)
         wake.set()
 
     def on_touch(direction: int) -> None:

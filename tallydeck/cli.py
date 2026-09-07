@@ -76,10 +76,16 @@ def cmd_ls(cfg, args):
         link.close()
 
 
+def _on_press_cmd(cfg) -> list[str] | None:
+    cmd = cfg.get("client", {}).get("on_press")
+    return [str(a) for a in cmd] if cmd else None
+
+
 def cmd_term(cfg, args):
     from .render.surfaces import TermSurface
     view = _view(cfg, args)
-    run(_link(cfg, args), TermSurface(view.profile), view)
+    run(_link(cfg, args), TermSurface(view.profile), view,
+        on_press_cmd=_on_press_cmd(cfg))
 
 
 def cmd_png(cfg, args):
@@ -97,7 +103,7 @@ def cmd_deck(cfg, args):
     surface = DeckSurface(preferred=view.profile.name,
                           brightness=args.brightness)
     view.profile = surface.profile            # trust the hardware's geometry
-    run(_link(cfg, args), surface, view)
+    run(_link(cfg, args), surface, view, on_press_cmd=_on_press_cmd(cfg))
 
 
 def cmd_raise(cfg, args):

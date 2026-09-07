@@ -19,3 +19,9 @@ kind = "watchdir"
 # On the deck machine, point at the server hub:
 # [client]
 # connect = ["ssh", "yourserver", "tallyd"]
+
+# Local command run on every short press (deck machine side). Receives the
+# signal as TALLY_ID / TALLY_LABEL / TALLY_STATE / TALLY_PROJECT / ... env
+# vars. Pair with examples/pop-terminal.sh to pop your terminal forward:
+# [client]
+# on_press = ["/path/to/tallydeck/examples/pop-terminal.sh"]
