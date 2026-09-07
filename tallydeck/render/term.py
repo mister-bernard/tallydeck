@@ -11,7 +11,12 @@ _ANSI = {
     "attention": "\033[30;43m",   # black on yellow
     "working": "\033[97;44m",     # white on blue
     "success": "\033[30;42m",     # black on green
-    "idle": "\033[90;100m",       # gray
+    # 90 and 100 are the SAME palette entry (bright black) as foreground and
+    # background — an idle cell rendered its label in exactly its own background
+    # colour, so the keys came out as blank grey blocks. Observed 2026-09-07 on a
+    # live fleet: the data was arriving fine, it was simply invisible.
+    # 37 keeps idle visually quiet without making it unreadable.
+    "idle": "\033[37;100m",       # dim white on gray — MUST contrast with bg
     "offline": "\033[90;40m",
 }
 _RESET = "\033[0m"
