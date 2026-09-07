@@ -307,3 +307,60 @@ def test_term_render_smoke():
     lay = View(profile=NEO).layout(DemoSource().poll())
     out = render_term(NEO, lay, {})
     assert "arb bot" in out and "page" not in out
+
+
+def test_config_layers_repo_then_user(tmp_path, monkeypatch):
+    """The tracked repo config loads underneath the user's, and the user wins.
+
+    Two layers exist because the hub and the deck machine need different
+    settings while sharing one repo — and because config that must be
+    hand-edited per machine drifts away from the code that reads it.
+    """
+    from tallydeck import config
+    user = tmp_path / "user.toml"
+    user.write_text('[view]\ndevice = "xl"\n')
+    cfg = config.load(user)
+    assert cfg["view"]["device"] == "xl"          # user overrides repo
+    assert cfg["client"]["on_press"]              # repo layer still applied
+    assert cfg["client"]["connect"][0] == "ssh"
+
+
+def test_repo_config_carries_no_secrets():
+    """The tracked layer must never grow a credential.
+
+    It is in git. Private today is not private forever, and the habit is what
+    protects you, not the visibility flag.
+
+    Deliberately NOT a substring grep: the first version flagged
+    `kind = "tokenburn"` because the word "token" appears in a source name.
+    A check that fires on legitimate values is a check that gets deleted. This
+    one looks at KEY NAMES that promise a credential, and at VALUES that look
+    like one.
+    """
+    import re
+    import tomllib
+    from tallydeck import config
+    if not config.REPO_PATH.is_file():
+        return
+    with open(config.REPO_PATH, "rb") as fh:
+        data = tomllib.load(fh)
+
+    key_pat = re.compile(
+        r"(?:^|_)(token|secret|password|passwd|api_?key|private_?key|"
+        r"credential|auth)s?(?:$|_)", re.I)
+    # sk-…, ghp_…, PEM blocks, or a long unbroken high-entropy blob.
+    val_pat = re.compile(
+        r"(^(sk|ghp|gho|xox[bp]|AKIA)[-_])|(-----BEGIN)|([A-Za-z0-9+/=]{40,})")
+
+    def walk(node, path=""):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                assert not key_pat.search(k), f"credential-shaped key {path}{k!r}"
+                walk(v, f"{path}{k}.")
+        elif isinstance(node, list):
+            for i, v in enumerate(node):
+                walk(v, f"{path}[{i}].")
+        elif isinstance(node, str):
+            assert not val_pat.search(node), f"credential-shaped value at {path}"
+
+    walk(data)

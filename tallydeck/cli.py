@@ -78,7 +78,13 @@ def cmd_ls(cfg, args):
 
 def _on_press_cmd(cfg) -> list[str] | None:
     cmd = cfg.get("client", {}).get("on_press")
-    return [str(a) for a in cmd] if cmd else None
+    if not cmd:
+        return None
+    # Expand ~ here: this argv is executed LOCALLY, so an unexpanded tilde is a
+    # path that does not exist rather than a shell that will resolve it. The
+    # tracked config uses ~ deliberately, since /Users/you and /home/me are
+    # different on the two machines that read the same file.
+    return [str(Path(a).expanduser()) for a in cmd]
 
 
 def cmd_term(cfg, args):
