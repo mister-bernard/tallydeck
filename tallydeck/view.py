@@ -29,7 +29,8 @@ class View:
     profile: DeviceProfile
     pinned: list[str] = field(default_factory=list)   # signal ids to fix first
     hide_idle: bool = False
-    page: int = 0
+    fill: str = "columns"    # "columns": rank flows top-left ↓ then next
+    page: int = 0            # column; "rows": left→right per row
 
     def layout(self, signals: list[Signal]) -> Layout:
         meters = [s for s in signals if s.meta.get("meter")]
@@ -46,8 +47,15 @@ class View:
         pages = max(1, -(-len(ordered) // per_page))
         self.page = max(0, min(self.page, pages - 1))
         window = ordered[self.page * per_page:(self.page + 1) * per_page]
-        keys: list[Signal | None] = list(window) + \
-            [None] * (per_page - len(window))
+        keys: list[Signal | None] = [None] * per_page
+        if self.fill == "columns":
+            # Rank #1 top-left, #2 below it, #3 top of the next column — the
+            # hottest work funnels into the leftmost column of the deck.
+            rows, cols = self.profile.rows, self.profile.cols
+            for i, s in enumerate(window):
+                keys[(i % rows) * cols + (i // rows)] = s
+        else:
+            keys[:len(window)] = window
         return Layout(keys=keys, page=self.page, pages=pages,
                       summary=summarize(signals),
                       meter=meters[0] if meters else None)

@@ -35,29 +35,43 @@ def _lerp3(ramp: tuple[str, str, str], t: float) -> tuple[int, int, int]:
 
 
 def _draw_band(img, d, x0: int, x1: int, y0: int, y1: int,
-               frac: float, t: float, label: str = "") -> None:
+               frac: float, t: float, label: str = "",
+               target: float | None = None) -> None:
     """Paint one bar into `img` between y0 and y1. Extracted verbatim from the
     single-bar path so both modes render identically — two bars must not drift
-    into looking like a different product from one."""
+    into looking like a different product from one.
+
+    With `target`, the fill is a fraction of the whole bar (so it matches
+    whatever number is engraved on it), the target sits on the bar as a
+    bright notch, and only the portion PAST the notch goes molten. Without
+    it, legacy semantics: frac is progress toward target, >1 refills molten.
+    """
     inner_w, h_ = x1 - x0, y1 - y0
     if inner_w <= 0 or h_ <= 0:
         return
-    over = frac > 1.0
-    fill_frac = min(1.0, frac - 1.0 if over else max(0.0, frac))
+    if target is not None:
+        fill_frac = min(1.0, max(0.0, frac))
+        over = fill_frac > target
+    else:
+        over = frac > 1.0
+        fill_frac = min(1.0, frac - 1.0 if over else max(0.0, frac))
 
     d.rounded_rectangle([x0, y0, x1, y1], radius=h_ // 2,
                         fill="#0B0E16", outline="#1C2030", width=SS)
     bar = Image.new("RGB", (inner_w, h_), "#0B0E16")
     bd = ImageDraw.Draw(bar)
 
-    def paint(frac_w: float, ramp_, dim: float = 1.0):
-        fw_ = round(inner_w * frac_w)
-        for x in range(fw_):
+    def paint(frac_w: float, ramp_, dim: float = 1.0, start: float = 0.0):
+        for x in range(round(inner_w * start), round(inner_w * frac_w)):
             r, g, b = _lerp3(ramp_, x / max(1, inner_w - 1))
             bd.line([(x, 0), (x, h_)],
                     fill=(round(r * dim), round(g * dim), round(b * dim)))
 
-    if over:
+    if target is not None:
+        paint(min(fill_frac, target), RAMP_NORMAL)
+        if over:  # only the excess burns molten
+            paint(fill_frac, RAMP_OVER, start=target)
+    elif over:
         paint(1.0, RAMP_NORMAL, dim=0.35)
         paint(fill_frac, RAMP_OVER)
     else:
@@ -87,6 +101,11 @@ def _draw_band(img, d, x0: int, x1: int, y0: int, y1: int,
     for q in (0.25, 0.5, 0.75):
         qx = round(inner_w * q)
         bd.line([(qx, 0), (qx, h_)], fill=(5, 6, 10), width=SS)
+
+    if target is not None and 0.0 < target < 1.0:
+        # The burn target, as a bright notch ON the bar. Amber past it.
+        nx = round(inner_w * target)
+        bd.line([(nx, 0), (nx, h_)], fill=(255, 178, 36), width=SS * 2)
 
     mask = Image.new("L", (inner_w, h_), 0)
     ImageDraw.Draw(mask).rounded_rectangle(
@@ -147,7 +166,9 @@ def draw_meter(size: tuple[int, int], frac: float, left: str = "",
         bands = [(y0, y1, frac, None)]
 
     for top, bot, lane_frac, lane in bands:
-        _draw_band(img, d, x0, x1, top, bot, lane_frac, t)
+        tgt = lane.get("target") if lane else None
+        _draw_band(img, d, x0, x1, top, bot, lane_frac, t,
+                   target=float(tgt) if tgt else None)
 
     if len(lane_list) >= 2:
         pad_s = round(h * 0.14)

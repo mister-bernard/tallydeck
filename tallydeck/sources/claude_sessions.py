@@ -75,9 +75,38 @@ def _snippet(lines: list[str], limit: int = 120) -> str:
     return ""
 
 
-def _demunge(dirname: str) -> str:
-    """'-home-me-projects-foo' → 'foo' (best-effort short name)."""
-    return dirname.lstrip("-").split("-")[-1] or dirname
+def _last_cwd(lines: list[str]) -> str:
+    """The session's own records carry its real cwd — authoritative, unlike
+    the munged directory name, which is lossy: '-a-b-c' cannot distinguish
+    'a/b/c' from 'a/b-c', and pressing a key for my-web-app once
+    ssh'd into the nonexistent my/web/app."""
+    for ln in reversed(lines):
+        try:
+            rec = json.loads(ln)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(rec, dict) and rec.get("cwd"):
+            return str(rec["cwd"])
+    return ""
+
+
+def _resolve_munged(dirname: str) -> str:
+    """Fallback: existence-checked reconstruction of a munged dir name.
+    Greedy: at each step, consume as many dash-joined segments as still name
+    a real directory before descending."""
+    segs = dirname.lstrip("-").split("-")
+    path = "/"
+    i = 0
+    while i < len(segs):
+        for j in range(len(segs), i, -1):        # longest candidate first
+            cand = os.path.join(path, "-".join(segs[i:j]))
+            if os.path.isdir(cand):
+                path, i = cand, j
+                break
+        else:
+            path = os.path.join(path, "/".join(segs[i:]))  # best effort
+            break
+    return path
 
 
 class ClaudeSessionsSource(Source):
@@ -105,6 +134,12 @@ class ClaudeSessionsSource(Source):
         # QUIET for `dwell` seconds with an assistant tail is truly waiting
         # on the human; a fresh assistant tail is just Claude still working.
         self.dwell = float(opts.get("dwell", 15))
+        # Burn-rate window: bytes appended to a session log are a faithful,
+        # already-on-disk proxy for tokens spent. Sampled per poll, rated
+        # over this window, and fed into Signal.priority so the hottest
+        # sessions rank first on the deck.
+        self.burn_window = float(opts.get("burn_window", 600))
+        self._samples: dict[str, list[tuple[float, int]]] = {}
 
     def poll(self) -> list[Signal]:
         signals: list[Signal] = []
@@ -115,6 +150,17 @@ class ClaudeSessionsSource(Source):
             signals.extend(self._scan(root, acct, now))
         return signals
 
+    def _burn_rate(self, session: str, now: float, size: int) -> float:
+        """Bytes/sec appended to this session's log over the burn window."""
+        samples = self._samples.setdefault(session, [])
+        samples.append((now, size))
+        while samples and now - samples[0][0] > self.burn_window:
+            samples.pop(0)
+        if len(samples) < 2:
+            return 0.0
+        dt = samples[-1][0] - samples[0][0]
+        return max(0.0, (samples[-1][1] - samples[0][1]) / max(dt, 1.0))
+
     def _scan(self, root, acct: str, now: float) -> list[Signal]:
         signals: list[Signal] = []
         for proj_dir in root.iterdir():
@@ -122,7 +168,8 @@ class ClaudeSessionsSource(Source):
                 continue
             for fp in proj_dir.glob("*.jsonl"):
                 try:
-                    mtime = fp.stat().st_mtime
+                    st = fp.stat()
+                    mtime, size = st.st_mtime, st.st_size
                 except OSError:
                     continue
                 if now - mtime > self.stale:
@@ -132,15 +179,23 @@ class ClaudeSessionsSource(Source):
                 state = {"user": WORKING, "assistant": ATTENTION}.get(last, IDLE)
                 if state == ATTENTION and (now - mtime) < self.dwell:
                     state = WORKING
-                # Full readable path, kept for tmux matching on press.
-                full = "/" + proj_dir.name.lstrip("-").replace("-", "/")
+                # Real cwd from the records; munged-name reconstruction only
+                # as a fallback for logs that never carried one.
+                full = _last_cwd(lines) or _resolve_munged(proj_dir.name)
+                rate = self._burn_rate(fp.stem, now, size)   # bytes/sec
+                sub = _age_str(now - mtime)
+                if rate >= 20:
+                    sub += f" · {rate * 60 / 1024:.0f}k/m"
                 signals.append(Signal(
                     id=f"{self.group}/{fp.stem[:8]}",
-                    label=_demunge(proj_dir.name)[:14],
-                    sublabel=_age_str(now - mtime),
+                    label=(os.path.basename(full) or full)[:14],
+                    sublabel=sub,
                     detail=_snippet(lines),
                     state=state,
                     updated=mtime,
+                    # Hotter sessions outrank within the same state, so the
+                    # busiest work funnels toward the top of the deck.
+                    priority=int(min(rate, 1_000_000)),
                     group=self.group,
                     meta={"project": full, "session": fp.stem,
                           "account": acct,

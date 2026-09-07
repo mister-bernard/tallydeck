@@ -153,11 +153,20 @@ def run(link, surface, view: View, poll_every: float = 2.0,
                     local_action(sig, long)
         wake.set()
 
+    pages_now = [1]   # updated each frame; touch behavior depends on it
+
     def on_touch(direction: int) -> None:
-        if direction > 0:
-            view.page_next()
-        else:
-            view.page_prev()
+        if pages_now[0] > 1:
+            if direction > 0:
+                view.page_next()
+            else:
+                view.page_prev()
+        elif direction < 0 and key_map and key_map[0] is not None:
+            # Single page: the left touch point doubles as "service the most
+            # urgent thing" — same as pressing the top-left key it points at.
+            sig = key_map[0]
+            link.press(sig.id, long=False)
+            local_action(sig, False)
         wake.set()
 
     if hasattr(surface, "set_callbacks"):
@@ -175,6 +184,7 @@ def run(link, surface, view: View, poll_every: float = 2.0,
 
             layout = view.layout(signals)
             key_map = layout.keys
+            pages_now[0] = layout.pages
             flashing = [s for s in layout.keys if s and s.wants_flash]
             wall = time.time()   # epoch, so all surfaces blink in phase
             lit = {s.id: theme.flash_lit(s.state, wall) for s in flashing}

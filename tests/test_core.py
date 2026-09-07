@@ -68,7 +68,7 @@ def test_view_pins_then_ranks_and_pages():
     lay = v.layout(sigs)
     assert lay.pages == 2
     assert lay.keys[0].id == "s3"          # pinned wins over rank
-    assert lay.keys[1].id == "s7"          # then the attention signal
+    assert lay.keys[4].id == "s7"          # rank #2 sits BELOW #1 (column fill)
     v.page_next()
     lay2 = v.layout(sigs)
     assert lay2.page == 1
@@ -237,8 +237,12 @@ def test_burn_aggregates_anthropic_accounts_only():
     assert m["right"] == "A 2:00  B 2:00"
     # One lane per anthropic account, each with its own fill — grok excluded.
     assert [l["id"] for l in m["lanes"]] == ["A", "B"]
-    assert abs(m["lanes"][0]["frac"] - 15 / 40) < 1e-9   # 15% against a 40% target
-    assert abs(m["lanes"][1]["frac"] - 10 / 70) < 1e-9
+    # Fill = window pct, matching the number engraved on the lane (a 26% label
+    # over a 65%-full bar read as nonsense); the target rides the bar as a notch.
+    assert abs(m["lanes"][0]["frac"] - 0.15) < 1e-9
+    assert abs(m["lanes"][0]["target"] - 0.40) < 1e-9
+    assert abs(m["lanes"][1]["frac"] - 0.10) < 1e-9
+    assert abs(m["lanes"][1]["target"] - 0.70) < 1e-9
     assert all(l["remaining_s"] == 7200 for l in m["lanes"])
     assert m["soonest"] in ("A", "B")
     assert not sigs[0].wants_flash
@@ -364,3 +368,57 @@ def test_repo_config_carries_no_secrets():
             assert not val_pat.search(node), f"credential-shaped value at {path}"
 
     walk(data)
+
+
+# ── real cwd, burn-rate ranking, column fill ─────────────────────────────────
+
+def test_claude_sessions_uses_real_cwd_from_records(tmp_path):
+    proj = tmp_path / "-home-me-projects-my-web-app"
+    proj.mkdir()
+    _write_jsonl(proj, "abc12345", [
+        {"type": "user", "cwd": "/home/me/projects/my-web-app",
+         "message": {"content": []}}])
+    s = ClaudeSessionsSource(root=str(tmp_path)).poll()[0]
+    assert s.meta["project"] == "/home/me/projects/my-web-app"
+    assert s.label == "my-web-app"          # basename, truncated
+
+
+def test_resolve_munged_checks_existence(tmp_path, monkeypatch):
+    from tallydeck.sources.claude_sessions import _resolve_munged
+    real = tmp_path / "projects" / "my-web-app"
+    real.mkdir(parents=True)
+    munged = "-" + str(tmp_path).strip("/").replace("/", "-") \
+             + "-projects-my-web-app"
+    assert _resolve_munged(munged) == str(real)
+
+
+def test_burn_rate_feeds_priority(tmp_path):
+    src = ClaudeSessionsSource(root=str(tmp_path))
+    assert src._burn_rate("s1", 100.0, 1000) == 0.0      # first sample
+    assert src._burn_rate("s1", 110.0, 51000) == 5000.0  # 50k over 10s
+    assert src._burn_rate("cold", 110.0, 999) == 0.0
+
+
+def test_view_column_first_fill():
+    sigs = [Signal(id=f"s{i}", label=f"s{i}", state=WORKING, priority=10 - i)
+            for i in range(5)]
+    lay = View(profile=NEO).layout(sigs)            # fill="columns" default
+    # NEO is 2 rows x 4 cols; rank order walks columns: (0,0),(1,0),(0,1)...
+    assert lay.keys[0].id == "s0"                   # row 0, col 0
+    assert lay.keys[4].id == "s1"                   # row 1, col 0
+    assert lay.keys[1].id == "s2"                   # row 0, col 1
+    assert lay.keys[5].id == "s3"                   # row 1, col 1
+    assert lay.keys[2].id == "s4"
+    rows_lay = View(profile=NEO, fill="rows").layout(sigs)
+    assert [k.id for k in rows_lay.keys[:5] if k] == \
+        ["s0", "s1", "s2", "s3", "s4"]
+
+
+def test_burn_lane_fill_matches_window_pct():
+    from tallydeck.sources.burn import TokenBurnSource
+    payload, targets = _burn_fixture()
+    lanes = TokenBurnSource(tz="UTC").signals_from(
+        payload, targets)[0].meta["lanes"]
+    a = [l for l in lanes if l["id"] == "A"][0]
+    assert a["frac"] == 0.15         # 15% of the WINDOW — matches the label
+    assert a["target"] == 0.40       # target rides the bar as a notch

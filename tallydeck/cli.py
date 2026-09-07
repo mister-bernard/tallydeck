@@ -46,7 +46,8 @@ def _view(cfg: dict, args) -> View:
         sys.exit(f"unknown device {dev!r} (have: {', '.join(PROFILES)})")
     return View(profile=PROFILES[dev],
                 pinned=list(cfg["view"].get("pinned", [])),
-                hide_idle=bool(cfg["view"].get("hide_idle", False)))
+                hide_idle=bool(cfg["view"].get("hide_idle", False)),
+                fill=str(cfg["view"].get("fill", "columns")))
 
 
 def _link(cfg: dict, args):

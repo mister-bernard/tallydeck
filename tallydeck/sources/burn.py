@@ -94,7 +94,12 @@ class TokenBurnSource(Source):
             lanes.append({
                 "id": str(acct.get("id")),
                 "pct": float(pct),
-                "frac": (pct / 100.0 * limit) / max(1.0, tgt_pct / 100.0 * limit),
+                # Fill matches the number engraved on the lane — fraction of
+                # the WINDOW, not of the target. The target is drawn as a
+                # notch on the bar instead ("26%" filling 65% of the bar
+                # because the target was 40% read as nonsense).
+                "frac": pct / 100.0,
+                "target": tgt_pct / 100.0,
                 "remaining_s": remaining,
                 "reset_clock": self._fmt_reset(acct.get("session_reset") or ""),
                 # Engraved on the lane itself: window % + absolute burn in the
