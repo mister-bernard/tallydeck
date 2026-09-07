@@ -162,7 +162,7 @@ EOF
     fi
     if [ -n "$PICK_TTY" ]; then
       focus_by_token "TALLY[$PICK_TTY]"
-      ROUTE="~/.local/bin/tally-route $(q "$PICK_TTY") $(q "$PICK_SESS") $(q "$TARGET") $(q "${TALLY_SESSION:-}") $(q "${TALLY_PROJECT:-}") $(q "${TALLY_LABEL:-}") $(q "${TALLY_STATE:-}")"
+      ROUTE="~/.local/bin/tally-route $(q "$PICK_TTY") $(q "$PICK_SESS") $(q "$TARGET") $(q "${TALLY_SESSION:-}") $(q "${TALLY_PROJECT:-}") $(q "${TALLY_LABEL:-}") $(q "${TALLY_STATE:-}") $(q "${TALLY_ACCOUNT:-}")"
       ssh -o BatchMode=yes "$HOST" \
         "tmux -S '$SOCKET' display-popup -c $(q "$PICK_TTY") -w 100% -h 100% -E $(q "$ROUTE")" \
         >/dev/null 2>&1 &
@@ -177,7 +177,7 @@ if [ -n "$TARGET" ]; then
   REMOTE="tmux -S ${SOCKET} attach -t $(q "$SESS") \\; select-pane -t $(q "$TARGET")"
 elif [ -n "${TALLY_PROJECT:-}" ]; then
   # Brief + [r]esume choice, then shell — never a silent bare prompt.
-  REMOTE="~/.local/bin/tally-land $(q "${TALLY_PROJECT}") $(q "${TALLY_SESSION:-}") $(q "${TALLY_LABEL:-}") $(q "${TALLY_STATE:-}")"
+  REMOTE="~/.local/bin/tally-land $(q "${TALLY_PROJECT}") $(q "${TALLY_SESSION:-}") $(q "${TALLY_LABEL:-}") $(q "${TALLY_STATE:-}") $(q "${TALLY_ACCOUNT:-}")"
 else
   REMOTE="exec bash -l"
 fi
