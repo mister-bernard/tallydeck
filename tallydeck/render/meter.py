@@ -132,12 +132,11 @@ def draw_meter(size: tuple[int, int], frac: float, left: str = "",
     # gutter; anything else keeps the original single track, so nothing changes
     # for callers that do not supply lanes.
     lane_list = [l for l in (lanes or []) if isinstance(l, dict)]
-    bar_x1 = x1
     if len(lane_list) >= 2:
-        # Two bars plus engraved text over them is unreadable at 248x58 — the
-        # first render had "20%" sitting on top of lane A. Give the bars the
-        # left column and the clocks the right; nothing overlaps anything.
-        bar_x1 = x0 + round((x1 - x0) * 0.46)
+        # Full-width stacked lanes (the operator's spec): every pixel of the strip is
+        # bar. Text is ENGRAVED on the lanes with a dark stroke — badge on
+        # the left cap, useful info in the middle, the countdown embedded at
+        # the right end of its own bar.
         gap = max(SS, round((y1 - y0) * 0.10))
         span = (y1 - y0 - gap * (len(lane_list) - 1)) / len(lane_list)
         bands = []
@@ -148,8 +147,37 @@ def draw_meter(size: tuple[int, int], frac: float, left: str = "",
         bands = [(y0, y1, frac, None)]
 
     for top, bot, lane_frac, lane in bands:
-        _draw_band(img, d, x0, bar_x1, top, bot, lane_frac, t,
-                   label=(lane or {}).get("id", ""))
+        _draw_band(img, d, x0, x1, top, bot, lane_frac, t)
+
+    if len(lane_list) >= 2:
+        pad_s = round(h * 0.14)
+        span_h = bands[0][1] - bands[0][0]
+        f_badge = theme.font("display", max(8, round(span_h * 0.60)))
+        f_info = theme.font("semibold", max(8, round(span_h * 0.52)))
+        kw = dict(stroke_width=SS + 1, stroke_fill=(3, 4, 8))
+        for top, bot, _, lane in bands:
+            if not lane:
+                continue
+            cy_b = top + (bot - top - f_badge.size) // 2 - SS
+            cy_i = top + (bot - top - f_info.size) // 2 - SS
+            d.text((x0 + pad_s, cy_b), str(lane.get("id", "")),
+                   font=f_badge, fill="#F2F6FF", **kw)
+            midtxt = str(lane.get("mid", ""))
+            if midtxt:
+                mw = d.textlength(midtxt, font=f_info)
+                d.text(((w - mw) / 2, cy_i), midtxt, font=f_info,
+                       fill="#E8ECF8", **kw)
+            clock = str(lane.get("clock", ""))
+            if clock:
+                is_soon = soonest and lane.get("id") == soonest
+                cw = d.textlength(clock, font=f_info)
+                cx = x1 - pad_s - cw
+                d.text((cx, cy_i), clock, font=f_info,
+                       fill="#00E5FF" if is_soon else "#D7DEF2", **kw)
+                if is_soon:  # the window that lifts first is the one that binds
+                    uy = cy_i + f_info.size + SS
+                    d.line([(cx, uy), (cx + cw, uy)],
+                           fill="#00E5FF", width=max(1, SS))
 
     # ── text, engraved over everything ──────────────────────────────────────
     f_big = theme.font("display", round(h * 0.28))

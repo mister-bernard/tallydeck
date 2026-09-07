@@ -90,12 +90,19 @@ class TokenBurnSource(Source):
             # Each account gets its own lane: its own fill and its own clock.
             # Aggregating them hid the thing that actually matters — WHICH
             # account is close to its ceiling, and when that ceiling lifts.
+            remaining = self._remaining(acct.get("session_reset"), now)
             lanes.append({
                 "id": str(acct.get("id")),
                 "pct": float(pct),
                 "frac": (pct / 100.0 * limit) / max(1.0, tgt_pct / 100.0 * limit),
-                "remaining_s": self._remaining(acct.get("session_reset"), now),
+                "remaining_s": remaining,
                 "reset_clock": self._fmt_reset(acct.get("session_reset") or ""),
+                # Engraved on the lane itself: window % + absolute burn in the
+                # middle, bare countdown at the right end (the lane's badge
+                # already names the account — no "A 1:42" repetition).
+                "mid": f"{round(pct)}%  ·  {pct / 100.0 * limit / 1e6:.1f}M "
+                       f"of {tgt_pct / 100.0 * limit / 1e6:.1f}M",
+                "clock": self._fmt_remaining(remaining),
             })
         if not parts or target <= 0:
             return []

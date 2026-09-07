@@ -59,10 +59,21 @@ def render_term(profile: DeviceProfile, layout: Layout,
     pager = f"  page {layout.page + 1}/{layout.pages}" if layout.pages > 1 else ""
     if layout.meter is not None:
         m = layout.meter.meta
-        frac = float(m.get("frac", 0))
-        filled = min(_W * 2, round(_W * 2 * frac))
-        bar = "▰" * filled + "▱" * max(0, _W * 2 - filled)
-        rows_out.append(f"\033[95m{bar}\033[0m {m.get('left', '')} "
-                        f"{m.get('mid', '')} {m.get('right', '')}")
+        lanes = [l for l in m.get("lanes", []) if isinstance(l, dict)]
+        if len(lanes) >= 2:      # one line per account, mirroring the strip
+            for l in lanes:
+                frac = float(l.get("frac", 0))
+                filled = min(_W * 2, round(_W * 2 * frac))
+                bar = "▰" * filled + "▱" * max(0, _W * 2 - filled)
+                soon = "*" if l.get("id") == m.get("soonest") else " "
+                rows_out.append(
+                    f"\033[95m{l.get('id', '?')} {bar}\033[0m "
+                    f"{l.get('mid', '')}  {l.get('clock', '')}{soon}")
+        else:
+            frac = float(m.get("frac", 0))
+            filled = min(_W * 2, round(_W * 2 * frac))
+            bar = "▰" * filled + "▱" * max(0, _W * 2 - filled)
+            rows_out.append(f"\033[95m{bar}\033[0m {m.get('left', '')} "
+                            f"{m.get('mid', '')} {m.get('right', '')}")
     rows_out.append(f"\033[2m{layout.summary}{pager}\033[0m")
     return "\n".join(rows_out)

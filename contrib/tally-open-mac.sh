@@ -28,9 +28,40 @@ SOCKET="${TALLY_TMUX_SOCKET:-/tmp/tmux-1000/cc}"
 # Nothing to open for the burn meter or any other non-session key.
 [[ "${TALLY_GROUP:-}" == "cc" ]] || exit 0
 
+# Activate whichever terminal app is running (shared by both paths below).
+activate_terminal() {
+  local app
+  for app in Ghostty iTerm2 iTerm WezTerm kitty Alacritty Terminal; do
+    if [[ "$(/usr/bin/osascript -e "application \"$app\" is running" 2>/dev/null)" == "true" ]]; then
+      /usr/bin/osascript -e "tell application \"$app\" to activate"
+      return 0
+    fi
+  done
+  return 1
+}
+
 if [[ -n "${TALLY_TMUX:-}" ]]; then
-  # "session:window.pane" — attach to the session, then select the exact pane.
   SESS="${TALLY_TMUX%%:*}"
+
+  # FIRST CHOICE: retarget an EXISTING attachment. If any tmux client is
+  # already attached to the socket (the usual case — a terminal window you
+  # keep open), flip the most recently active one to the pressed session and
+  # just bring the terminal app forward. No new windows, no new ssh logins.
+  if ssh -o BatchMode=yes "${HOST}" "
+        set -e
+        C=\$(tmux -S '${SOCKET}' list-clients -F '#{client_activity} #{client_name}' 2>/dev/null \
+            | sort -rn | awk 'NR==1{print \$2}')
+        [ -n \"\$C\" ] || exit 1
+        tmux -S '${SOCKET}' switch-client -c \"\$C\" -t '${SESS}'
+        tmux -S '${SOCKET}' select-window -t '${TALLY_TMUX%.*}'
+        tmux -S '${SOCKET}' select-pane -t '${TALLY_TMUX}'
+      " 2>/dev/null; then
+    activate_terminal
+    exit 0
+  fi
+
+  # No attached client anywhere: fall through and open a fresh window
+  # attached to the session, exact pane selected.
   REMOTE="tmux -S ${SOCKET} attach -t ${SESS} \\; select-pane -t ${TALLY_TMUX}"
 elif [[ -n "${TALLY_PROJECT:-}" ]]; then
   # No live pane: drop into the project directory instead of failing silently.
