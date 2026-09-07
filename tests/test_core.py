@@ -517,3 +517,30 @@ def test_tool_use_tail_is_working_not_attention(tmp_path):
     from tallydeck.sources.claude_sessions import _assistant_wants_input, _tail_lines
     assert _assistant_wants_input(_tail_lines(p)) is False
     assert _assistant_wants_input(_tail_lines(p2)) is True
+
+
+def test_guessed_pane_never_routes(tmp_path, monkeypatch):
+    """Directory matching sent every cwd=/home session to whichever pane sat
+    there — that is how every key opened `zephyr`. Only exact identity routes."""
+    proj = tmp_path / "-home-me"
+    proj.mkdir()
+    _write_jsonl(proj, "sess0001", [
+        {"type": "user", "cwd": "/home/me", "message": {"content": []}}])
+    src = ClaudeSessionsSource(root=str(tmp_path))
+    monkeypatch.setattr(src, "_panes",
+                        lambda: {"/home/me": "zephyr:1.1"})   # the trap
+    monkeypatch.setattr(src, "_session_panes", lambda: {})        # no identity
+    assert src.poll()[0].meta["tmux"] == ""
+
+
+def test_exact_pane_is_sticky_until_the_pane_dies(monkeypatch):
+    """The env scan only sees a session while a tool subprocess lives; the
+    mapping must survive the gaps between tool calls."""
+    src = ClaudeSessionsSource()
+    monkeypatch.setattr(src, "_session_panes", lambda: {"s1": "work:2.0"})
+    monkeypatch.setattr(src, "_panes", lambda: {"/x": "work:2.0"})
+    assert src._exact_pane("s1") == "work:2.0"
+    monkeypatch.setattr(src, "_session_panes", lambda: {})   # tool ended
+    assert src._exact_pane("s1") == "work:2.0"               # still known
+    monkeypatch.setattr(src, "_panes", lambda: {})           # pane gone
+    assert src._exact_pane("s1") == ""

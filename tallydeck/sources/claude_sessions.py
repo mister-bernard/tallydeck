@@ -231,8 +231,14 @@ class ClaudeSessionsSource(Source):
                 # ROUTING hint: it may be shared by several sessions, so it
                 # must never name the key or serve as a dedup identity
                 # (it briefly relabeled half the fleet 'tmp').
-                exact = self._session_panes().get(fp.stem)
-                pane = exact or self._pane_for(full)
+                exact = self._exact_pane(fp.stem)
+                # A GUESS MUST NEVER ROUTE. Directory matching sends every
+                # session whose cwd is /home/me to whichever pane
+                # happens to sit there — that is how every key ended up
+                # opening `zephyr`. No exact identity → no pane → the router
+                # offers to resume instead of teleporting you somewhere
+                # wrong.
+                pane = exact or ""
                 label = exact.split(":", 1)[0] if exact \
                     else (os.path.basename(full) or full)
                 signals.append(Signal(
@@ -280,6 +286,24 @@ class ClaudeSessionsSource(Source):
 
     def _tmux(self, *args) -> list[str]:
         return ["tmux", "-S", self.socket, *args]
+
+    def _exact_pane(self, session: str) -> str:
+        """Sticky exact identity. The env scan can only see a session while
+        one of its tool subprocesses is alive, so a session that resolved a
+        minute ago would otherwise 'lose' its pane between tool calls.
+        Remember what we learn; forget it when the pane is gone."""
+        memo = getattr(self, "_exact_memo", None)
+        if memo is None:
+            memo = self._exact_memo = {}
+        found = self._session_panes().get(session)
+        if found:
+            memo[session] = found
+            return found
+        remembered = memo.get(session)
+        if remembered and remembered in set(self._panes().values()):
+            return remembered
+        memo.pop(session, None)
+        return ""
 
     def _session_panes(self) -> dict[str, str]:
         """{session_uuid: pane target} — EXACT identity, via CLAUDE_SESSION_ID

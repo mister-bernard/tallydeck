@@ -4,9 +4,11 @@
 # The attention router, run INSIDE a floating tmux popup (80% x 70%) over
 # whatever the operator is viewing. The underlying view is NEVER touched:
 #
-#   Enter → the popup ITSELF becomes the session (nested attach). Work in
-#           it, then Ctrl-b d detaches and the popup vanishes — you're back
-#           exactly where you were.
+#   Enter → the popup ITSELF becomes the session, through a GROUPED session
+#           (tmux new-session -t): same windows, INDEPENDENT current-window
+#           selection. A plain `attach` shares the selection, so moving
+#           around in the popup dragged every other viewer of that session
+#           along with it. Ctrl-b d detaches; the group self-destroys.
 #   b     → link the pressed session's window into your current session's
 #           window list (reversible; the source session keeps it)
 #   r     → (paneless) resume the Claude session in a NEW tmux session,
@@ -18,6 +20,12 @@ TTY="${1:-}"; CUR="${2:-}"; TARGET="${3:-}"; UUID="${4:-}"
 PROJ="${5:-}"; LABEL="${6:-}"; STATE="${7:-}"; ACCT="${8:-}"
 SOCKET="${TALLY_TMUX_SOCKET:-/tmp/tmux-1000/cc}"
 T() { tmux -S "$SOCKET" "$@"; }
+
+# Terminals answer queries (e.g. the DA1 reply "^[[?1;2c") and those bytes
+# arrive as INPUT. Delivered into an attached Claude prompt they read as a
+# typed line and get submitted — a keypress here turning into an API call.
+# Drop anything already buffered before handing the tty over.
+drain_input() { while read -r -s -n 10000 -t 0.05 _ 2>/dev/null; do :; done; }
 export PYTHONPATH="$HOME/projects/tallydeck${PYTHONPATH:+:$PYTHONPATH}"
 
 # Which claude binary owns this session's history (account B has its own HOME).
@@ -37,11 +45,22 @@ read -r -n 1 -s -t 120 key 2>/dev/null || exit 0
 if [ -n "$TARGET" ]; then
   SESS="${TARGET%%:*}"
   case "$key" in
-    "")   # Enter: the popup becomes the session — no client is redirected
-      T select-window -t "${TARGET%.*}" 2>/dev/null
-      T select-pane -t "$TARGET" 2>/dev/null
+    "")   # Enter: view the session in a private group — nothing shared
+      GRP="_fl-${SESS}"
+      if ! T has-session -t "=$GRP" 2>/dev/null; then
+        T new-session -d -s "$GRP" -t "$SESS" 2>/dev/null
+        # The group exists only for this popup: it evaporates on detach
+        # instead of piling up phantom sessions on the socket.
+        T set-option -t "=$GRP" destroy-unattached on 2>/dev/null
+      fi
+      # Select the window ONLY in our own group; the original session's
+      # selection — what everyone else is looking at — is left alone. Pane
+      # focus is window-scoped and therefore shared, so it is not touched.
+      T select-window -t "=$GRP:${TARGET#*:}" 2>/dev/null \
+        || T select-window -t "=$GRP:${TARGET%%.*}" 2>/dev/null
+      drain_input
       unset TMUX
-      exec tmux -S "$SOCKET" attach -t "$SESS" ;;
+      exec tmux -S "$SOCKET" attach -t "=$GRP" ;;
     b|B)  # bring it into my window list
       WID=$(T display -p -t "$TARGET" '#{window_id}' 2>/dev/null)
       [ -n "$WID" ] || exit 0
@@ -58,6 +77,7 @@ elif { [ "$key" = "r" ] || [ "$key" = "R" ]; } && [ -n "$UUID" ]; then
     T new-session -d -s "$NAME" -c "${PROJ:-$HOME}" \
       "$BIN --resume '$UUID'; exec bash -l"
   fi
+  drain_input
   unset TMUX
   exec tmux -S "$SOCKET" attach -t "=$NAME"
 fi
