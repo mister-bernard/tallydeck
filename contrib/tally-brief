@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# tally-brief <session> <project> [label] [state] — landing brief, then wait.
+export PYTHONPATH="$HOME/projects/tallydeck${PYTHONPATH:+:$PYTHONPATH}"
+/usr/bin/python3 -m tallydeck.cli brief \
+  --session "${1:-}" --project "${2:-}" --label "${3:-}" --state "${4:-}"
+# Popup mode: hold until a key so the brief can be read, then vanish.
+if [ -n "${TALLY_POPUP:-}" ] || [ -t 0 ]; then
+  read -r -n 1 -s -t 120 _ 2>/dev/null || true
+fi

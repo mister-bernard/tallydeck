@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# tally-land <project> <session> [label] [state] — brief, then choose:
+#   r      → resume the Claude session right here (respond directly)
+#   enter  → shell in the project directory
+# Used by the deck's fresh-window fallback when no live tmux pane exists.
+export PYTHONPATH="$HOME/projects/tallydeck${PYTHONPATH:+:$PYTHONPATH}"
+PROJECT="${1:-$HOME}"; SESSION="${2:-}"; LABEL="${3:-}"; STATE="${4:-}"
+/usr/bin/python3 -m tallydeck.cli brief \
+  --session "$SESSION" --project "$PROJECT" --label "$LABEL" --state "$STATE"
+cd "$PROJECT" 2>/dev/null || cd "$HOME"
+if [ -n "$SESSION" ]; then
+  printf '  \033[1;96m[r]\033[0m resume this Claude session here · any other key → shell\n'
+  read -r -n 1 -s key 2>/dev/null || key=""
+  if [ "$key" = "r" ]; then
+    exec claude --resume "$SESSION"
+  fi
+fi
+exec bash -l

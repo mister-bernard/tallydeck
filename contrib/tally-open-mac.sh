@@ -176,13 +176,15 @@ fi
 # ── fallback: fresh window ───────────────────────────────────────────────────
 
 if [ -n "$TARGET" ]; then
-  # Brief first, then attach to the live pane — not a fresh shell beside it.
-  REMOTE="${BRIEF_CMD}; tmux -S ${SOCKET} attach -t $(q "$SESS") \\; select-pane -t $(q "$TARGET")"
+  # Attach to the live pane; once the attachment settles, the same overlay
+  # brief appears over it (and any key dismisses it) — one look everywhere.
+  REMOTE="tmux -S ${SOCKET} attach -t $(q "$SESS") \\; select-pane -t $(q "$TARGET")"
+  ( sleep 2; popup "$SESS" ) &
 elif [ -n "${TALLY_PROJECT:-}" ]; then
   # No live pane: drop into the project directory instead of failing silently.
   # Literal bash — the hub has no zsh, and a literal cannot be eaten by an
   # intermediate shell the way \$SHELL was.
-  REMOTE="${BRIEF_CMD}; cd $(q "$TALLY_PROJECT") && exec bash -l"
+  REMOTE="~/.local/bin/tally-land $(q "${TALLY_PROJECT}") $(q "${TALLY_SESSION:-}") $(q "${TALLY_LABEL:-}") $(q "${TALLY_STATE:-}")"
 else
   REMOTE="exec bash -l"
 fi
