@@ -10,14 +10,16 @@ try:
         # The hook runs inside the session's process tree — if it lives in a
         # tmux pane, the pane's session name is the name the operator uses.
         label = ""
+        pane = ""
         if os.environ.get("TMUX"):
             import subprocess
             try:
-                label = subprocess.run(
-                    ["tmux", "display", "-p", "#S"], capture_output=True,
-                    text=True, timeout=2).stdout.strip()
+                out = subprocess.run(
+                    ["tmux", "display", "-p", "#S|#S:#I.#P"],
+                    capture_output=True, text=True, timeout=2).stdout.strip()
+                label, _, pane = out.partition("|")
             except Exception:
-                label = ""
+                label = pane = ""
         msg = " ".join((d.get("message") or "needs input").split())
         p = os.path.expanduser("~/.tallydeck/signals")
         os.makedirs(p, exist_ok=True)
@@ -27,7 +29,7 @@ try:
                        "detail": msg, "priority": 900, "ttl": 1800,
                        "updated": time.time(),
                        "meta": {"session": d.get("session_id") or "",
-                                "project": cwd}}, fh)
+                                "project": cwd, "tmux": pane}}, fh)
 except Exception:
     pass
 sys.exit(0)

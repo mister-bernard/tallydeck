@@ -544,3 +544,17 @@ def test_exact_pane_is_sticky_until_the_pane_dies(monkeypatch):
     assert src._exact_pane("s1") == "work:2.0"               # still known
     monkeypatch.setattr(src, "_panes", lambda: {})           # pane gone
     assert src._exact_pane("s1") == ""
+
+
+def test_session_backed_signal_does_not_ack_on_short_press(tmp_path):
+    """Pressing a hook-raised ask must ROUTE, not silently clear the flash —
+    The operator pressed two flashing keys, saw nothing, and the alarms vanished."""
+    src = WatchDirSource(path=str(tmp_path))
+    (tmp_path / "ask-abc.json").write_text(json.dumps(
+        {"label": "batch job", "state": "blocked",
+         "meta": {"session": "abc-uuid", "project": "/x"}}))
+    sig = src.poll()[0]
+    assert src.on_press(sig) is False                  # short: untouched
+    assert json.loads((tmp_path / "ask-abc.json").read_text())["state"] == "blocked"
+    assert src.on_press(sig, long=True) is True        # long: explicit dismiss
+    assert not (tmp_path / "ask-abc.json").exists()

@@ -67,6 +67,10 @@ class WatchDirSource(Source):
         if long:
             fp.unlink(missing_ok=True)
             return True
+        if sig.meta.get("session"):
+            # Backed by a live session: the press routes the operator there.
+            # Auto-acking here cleared flashes the operator never actually saw.
+            return False
         if sig.state in (ATTENTION, BLOCKED):
             try:
                 d = json.loads(fp.read_text())

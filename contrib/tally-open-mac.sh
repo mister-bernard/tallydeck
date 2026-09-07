@@ -37,8 +37,12 @@ set -u
 HOST="${TALLY_SSH_HOST:-claw}"
 SOCKET="${TALLY_TMUX_SOCKET:-/tmp/tmux-1000/cc}"
 
-# Nothing to route for the burn meter or any other non-session key.
-[ "${TALLY_GROUP:-}" = "cc" ] || exit 0
+# Route session keys AND raised/hook signals that point at a session.
+# Anything else (burn meter etc.) has nothing to open.
+if [ "${TALLY_GROUP:-}" != "cc" ] \
+   && [ -z "${TALLY_TMUX:-}" ] && [ -z "${TALLY_SESSION:-}" ]; then
+  exit 0
+fi
 
 TARGET="${TALLY_TMUX:-}"
 SESS="${TARGET%%:*}"
