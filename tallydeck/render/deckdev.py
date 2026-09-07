@@ -63,6 +63,8 @@ class DeckSurface:
         self.deck.set_brightness(brightness)
         self.profile = _profile_for(self.deck)
         self._lock = threading.Lock()
+        self._drawn: dict[int, tuple] = {}   # key index → content fingerprint
+        self._leds: tuple | None = None
         self._on_key = None
         self._on_touch = None
         self.deck.set_key_callback(self._key_event)
@@ -99,19 +101,47 @@ class DeckSurface:
     def show(self, layout: Layout, lit: dict[str, bool]) -> None:
         with self._lock:
             for i, sig in enumerate(layout.keys[:self.profile.keys]):
-                img = draw_key(sig, self.profile.key_px,
-                               lit=bool(sig and lit.get(sig.id)))
+                is_lit = bool(sig and lit.get(sig.id))
+                # Skip HID writes for unchanged keys — flashing 2 of 8 keys
+                # should cost 2 updates per frame, not 8.
+                print_key = (None if sig is None else
+                             (sig.id, sig.state, sig.label, sig.sublabel,
+                              sig.progress, sig.color), is_lit)
+                if self._drawn.get(i) == print_key:
+                    continue
+                img = draw_key(sig, self.profile.key_px, lit=is_lit)
                 native = self._pil.to_native_key_format(
                     self.deck, self._pil.create_scaled_key_image(self.deck, img))
                 self.deck.set_key_image(i, native)
+                self._drawn[i] = print_key
             if self.profile.screen_px and hasattr(self.deck, "set_screen_image"):
-                scr = draw_screen(self.profile.screen_px, layout.summary,
-                                  layout.page, layout.pages)
-                try:
-                    self.deck.set_screen_image(
-                        self._pil.to_native_screen_format(self.deck, scr))
-                except Exception:
-                    pass
+                bar = (layout.summary, layout.page, layout.pages)
+                if self._drawn.get(-1) != bar:
+                    scr = draw_screen(self.profile.screen_px, layout.summary,
+                                      layout.page, layout.pages)
+                    try:
+                        self.deck.set_screen_image(
+                            self._pil.to_native_screen_format(self.deck, scr))
+                        self._drawn[-1] = bar
+                    except Exception:
+                        pass
+            self._touch_leds(layout)
+
+    def _touch_leds(self, layout: Layout) -> None:
+        """Neo touch points are RGB LEDs (set_key_color): use them as page
+        indicators — lit when there is a page in that direction."""
+        if self.profile.touch_points < 2 or not hasattr(self.deck, "set_key_color"):
+            return
+        left = (60, 44, 12) if layout.page > 0 else (0, 0, 0)
+        right = (60, 44, 12) if layout.page < layout.pages - 1 else (0, 0, 0)
+        if self._leds == (left, right):
+            return
+        try:
+            self.deck.set_key_color(self.profile.keys, *left)
+            self.deck.set_key_color(self.profile.keys + 1, *right)
+            self._leds = (left, right)
+        except Exception:
+            pass
 
     def close(self) -> None:
         try:

@@ -84,6 +84,52 @@ space on chrome. Geometry lives in `DeviceProfile`; the hardware surface
 asserts the real device matches at open time and adopts its geometry
 otherwise, so other decks (Mini/MK.2/XL) work by profile swap.
 
+## Field notes absorbed from prior art
+
+Distilled from a survey of ~8 agent-deck projects, Bitfocus Companion,
+and the Home Assistant deck integrations (2026-09):
+
+- **Epoch-aligned flash.** Blink phase derives from wall-clock epoch, not
+  per-key timers, so every flashing key everywhere blinks in unison.
+  Companion allocates one shared timer per interval for the same reason;
+  its in-source rationale: "to keep all intervals aligned amongst each
+  other and across restarts."
+- **Attention dwell.** Claude Code logs tool results as `user` records, so
+  a session's tail flaps assistant/user/assistant… mid-turn. Two prior
+  projects independently hit this as icon flicker. Our fix: an assistant
+  tail only counts as ATTENTION once the log has been quiet for
+  `dwell` seconds (default 15). Hysteresis is mandatory, not polish.
+- **Write suppression.** The hardware surface fingerprints each key's
+  content and skips unchanged HID writes; flashing 2 of 8 keys costs 2
+  updates per frame, not 8. (Companion goes further with content-hash
+  render caching; at our scale the fingerprint is enough.)
+- **Fail open.** Nothing in tallydeck sits in any agent's execution path.
+  If the hub or deck dies, agents proceed exactly as before — the deck is
+  a mirror, never a gate. (Agent Pager's hook design makes the same
+  promise; it's the right one.)
+- **Neo hardware truth** (cross-verified in the Python, Rust and Node
+  drivers): keys 96×96 JPEG flipped on both axes; info bar 248×58 via
+  `set_screen_image`; the two touch points are programmable RGB LEDs
+  (`set_key_color`) that report presses as key indices 8 and 9 — we use
+  them as lit page indicators. macOS needs `hidapi` (the library dlopens
+  `libhidapi.dylib`) and the Elgato app quit, including its menu-bar
+  helper, which holds the device exclusively.
+- **tmux gotcha:** a hub launched by systemd/launchd doesn't inherit the
+  login shell's `TMUX_TMPDIR`; sessions on a different tmux server are
+  invisible to it. Run the hub where your tmux lives, or export the var.
+
+Ideas noted for later, deliberately not in v0:
+- **Held-open permission requests** (agentsd): the hook holds the HTTP
+  response open and the deck press *is* the answer — the difference
+  between an attention router and a status light. Perfect fit for a
+  future Claude Code PermissionRequest-hook source.
+- **Alert semantics** (hwinfo-streamdeck): hysteresis / dwell / cooldown /
+  snooze as four explicit knobs. We ship dwell only.
+- **A "Waiting" key** (agent-vitals): one key dark until *any* session
+  blocks on you, then names it; press to jump, press again to cycle.
+- **Companion Satellite / AgentDeck Surface Protocol v1** as alternate
+  transports, if this ever needs to render onto surfaces we don't own.
+
 ## Non-goals (v0)
 
 - No plugin for the official Elgato app — we drive HID directly; the Elgato

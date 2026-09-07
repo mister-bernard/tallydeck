@@ -139,14 +139,17 @@ def _write_jsonl(dirp, name, records):
 
 
 def test_claude_sessions_states(tmp_path):
+    import os
     proj = tmp_path / "-home-me-projects-widget"
     proj.mkdir()
-    _write_jsonl(proj, "abc12345", [
+    p = _write_jsonl(proj, "abc12345", [
         {"type": "user", "message": {"content": [
             {"type": "text", "text": "run the tests"}]}},
         {"type": "assistant", "message": {"content": [
             {"type": "text", "text": "Tests pass. What next?"}]}},
     ])
+    t = time.time() - 60                   # quiet past the dwell window
+    os.utime(p, (t, t))
     src = ClaudeSessionsSource(root=str(tmp_path))
     sigs = src.poll()
     assert len(sigs) == 1
@@ -155,6 +158,20 @@ def test_claude_sessions_states(tmp_path):
     assert s.label == "widget"
     assert "Tests pass" in s.detail
     assert s.meta["project"] == "/home/me/projects/widget"
+
+
+def test_claude_sessions_dwell_masks_midturn_flap(tmp_path):
+    """Tool results log as 'user' records, so mid-turn the tail flaps.
+    A FRESH assistant tail is Claude still working; only a quiet one is
+    truly waiting on the human."""
+    proj = tmp_path / "-home-me-projects-widget"
+    proj.mkdir()
+    _write_jsonl(proj, "abc12345", [{"type": "assistant",
+                                     "message": {"content": []}}])
+    assert ClaudeSessionsSource(
+        root=str(tmp_path)).poll()[0].state == WORKING
+    assert ClaudeSessionsSource(
+        root=str(tmp_path), dwell=0).poll()[0].state == ATTENTION
 
 
 def test_claude_sessions_one_key_per_project(tmp_path):

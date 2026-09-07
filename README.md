@@ -160,9 +160,26 @@ tally --demo png -o /tmp/deck.png   # visual check without hardware
 
 ## Prior art & credits
 
+This corner of the design space is busy; tallydeck exists because none of
+these had the exact shape we wanted (multi-source attention model, SSH-pipe
+transport, zero server ports), but several taught it things — see
+[docs/DESIGN.md](docs/DESIGN.md) for what was borrowed from whom.
+
 - [Bitfocus Companion](https://bitfocus.io/companion) — the deck-as-control-
   surface heavyweight; its *feedbacks* (state → key look) vs *actions*
-  (press → command) split inspired the source/surface separation here.
+  (press → command) split inspired the source/surface separation here, and
+  its epoch-aligned blink timers inspired ours.
+- [AgentDeck](https://github.com/puritysb/AgentDeck) — the most complete
+  agent-status deck (many ingests, many surfaces, a published Surface
+  Protocol). If you want a big ecosystem rather than a small pipe, start
+  there.
+- [agentsd](https://github.com/paultyng/agentsd),
+  [muxplex-deck](https://github.com/bkrabach/muxplex-deck),
+  [streamdeck-cmux](https://github.com/gonzaloserrano/streamdeck-cmux),
+  [agent-vitals](https://github.com/tapparello/agent-vitals) — adjacent
+  takes on agents/tmux → deck, each with an idea worth reading.
+- [home-assistant-streamdeck-yaml](https://github.com/basnijholt/home-assistant-streamdeck-yaml)
+  — the cleanest state-subscription model on a deck anywhere.
 - [python-elgato-streamdeck](https://github.com/abcminiuser/python-elgato-streamdeck)
   — the HID library under the hardware surface.
 - Broadcast tally systems, for the name and the philosophy: one lamp, one

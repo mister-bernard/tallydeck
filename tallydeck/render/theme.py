@@ -45,7 +45,13 @@ FRAME_INTERVAL = 0.1       # renderer tick while anything is flashing
 
 
 def flash_lit(state: str, t: float) -> bool:
-    """Is a flashing key 'lit' at monotonic time t?"""
+    """Is a flashing key 'lit' at epoch time t?
+
+    t is wall-clock epoch, not monotonic, on purpose: phase derives from
+    absolute time, so every flashing key — across processes, machines and
+    restarts — blinks in unison. Synchronized blinkers read as one alarm;
+    unsynchronized ones read as noise. (Idea borrowed from Bitfocus
+    Companion's epoch-aligned blink timers.)"""
     phase = (t % FLASH_PERIOD) / FLASH_PERIOD
     if state == BLOCKED:                       # ▮▮·▮▮····  double pulse
         return phase < 0.18 or 0.30 < phase < 0.48

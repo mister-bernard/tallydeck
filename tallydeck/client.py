@@ -143,7 +143,8 @@ def run(link, surface, view: View, poll_every: float = 2.0,
             layout = view.layout(signals)
             key_map = layout.keys
             flashing = [s for s in layout.keys if s and s.wants_flash]
-            lit = {s.id: theme.flash_lit(s.state, now) for s in flashing}
+            wall = time.time()   # epoch, so all surfaces blink in phase
+            lit = {s.id: theme.flash_lit(s.state, wall) for s in flashing}
 
             frame = ([(s.id, s.state, s.label, s.sublabel, s.progress)
                       if s else None for s in layout.keys],

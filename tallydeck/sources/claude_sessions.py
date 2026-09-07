@@ -89,6 +89,11 @@ class ClaudeSessionsSource(Source):
         super().__init__(**opts)
         self.root = Path(opts.get("root", Path.home() / ".claude" / "projects"))
         self.stale = float(opts.get("stale", 1800))
+        # Dwell: tool results are logged as "user" records, so mid-turn the
+        # tail flaps assistant/user/assistant… Only a log that has been
+        # QUIET for `dwell` seconds with an assistant tail is truly waiting
+        # on the human; a fresh assistant tail is just Claude still working.
+        self.dwell = float(opts.get("dwell", 15))
 
     def poll(self) -> list[Signal]:
         signals: list[Signal] = []
@@ -108,6 +113,8 @@ class ClaudeSessionsSource(Source):
                 lines = _tail_lines(fp)
                 last = _last_record_type(lines)
                 state = {"user": WORKING, "assistant": ATTENTION}.get(last, IDLE)
+                if state == ATTENTION and (now - mtime) < self.dwell:
+                    state = WORKING
                 # Full readable path, kept for tmux matching on press.
                 full = "/" + proj_dir.name.lstrip("-").replace("-", "/")
                 signals.append(Signal(
