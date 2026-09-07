@@ -605,5 +605,6 @@ def test_space_done_mutes_until_the_session_asks_again(tmp_path, monkeypatch):
     src = ClaudeSessionsSource(root=str(tmp_path))
     assert src.poll()[0].state == IDLE              # muted
     os.utime(p, None)                               # session asks anew (log moves)
-    assert ClaudeSessionsSource(root=str(tmp_path)).poll()[0].state == ATTENTION
+    assert ClaudeSessionsSource(
+        root=str(tmp_path), dwell=0).poll()[0].state == ATTENTION
     assert not ack.exists()                         # ack retired itself
