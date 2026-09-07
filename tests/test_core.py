@@ -451,7 +451,7 @@ def test_brief_reports_session_and_repo(tmp_path):
              "verify the row counts against staging before deploying."}]}}])
     out = build("sess1234", str(tmp_path), "widget", roots=[tmp_path],
                 state="attention")
-    assert "widget" in out and "attention" in out
+    assert "widget" in out and "ATTENTION" in out   # styled header
     assert "verify the row counts" in out
     assert "WHERE IT LEFT OFF" in out
 

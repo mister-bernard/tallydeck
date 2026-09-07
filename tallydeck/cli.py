@@ -143,7 +143,7 @@ def cmd_raise(cfg, args):
 
 def cmd_brief(cfg, args):
     """Print the landing brief for a session (hub-side; shown in a popup)."""
-    from .brief import build
+    from .brief import build_cached
     roots = []
     for spec in cfg["sources"]:
         if spec.get("kind") == "claude-sessions":
@@ -151,8 +151,8 @@ def cmd_brief(cfg, args):
                 roots.append(Path(str(r.get("path", ""))).expanduser())
             if spec.get("root"):
                 roots.append(Path(str(spec["root"])).expanduser())
-    print(build(args.session or "", args.project or "", args.label or "",
-                roots or None, args.state or ""))
+    print(build_cached(args.session or "", args.project or "",
+                       args.label or "", roots or None, args.state or ""))
 
 
 def cmd_clear(cfg, args):

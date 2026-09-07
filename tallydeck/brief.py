@@ -1,10 +1,13 @@
 """Brief: what is this session doing, and what does it want from me.
 
-Printed into a tmux popup when you press a key, so landing in a session
-starts with context instead of a bare prompt. Everything here is read
-from artifacts that already exist — the session log, git, the task
-queue — so a brief costs nothing to keep current and lies only when
-those sources do.
+Rendered into a tmux popup when a deck key is pressed, so landing in a
+session starts with context instead of a bare prompt. Everything is read
+from artifacts that already exist — the session log, git, the task queue —
+so a brief costs nothing to keep current and lies only when those do.
+
+Cached per session keyed on the log's (mtime, size): the brief is a pure
+function of the log, so that key is correctness, not a staleness gamble.
+The task-queue lookup (the slow part) is cached for a minute globally.
 """
 
 from __future__ import annotations
@@ -15,19 +18,40 @@ import subprocess
 import time
 from pathlib import Path
 
-WIDTH = 76
+WIDTH = 74
+CACHE_DIR = Path.home() / ".tallydeck" / "cache"
+
+# ── palette (matches the deck) ───────────────────────────────────────────────
+
+R = "\033[0m"
+BOLD = "\033[1m"
+DIM = "\033[2m"
+TITLE = "\033[1;38;2;242;246;255m"          # bright white, bold
+PATH = "\033[38;2;110;116;138m"             # cool gray
+RULE = "\033[38;2;44;48;62m"
+EARLIER = "\033[38;2;120;126;148m"
+STATE_C = {
+    "blocked": ("\033[38;2;229;72;77m", "●"),
+    "attention": ("\033[38;2;255;178;36m", "●"),
+    "working": ("\033[38;2;62;155;255m", "●"),
+    "success": ("\033[38;2;67;183;93m", "●"),
+    "idle": ("\033[38;2;110;116;138m", "○"),
+    "offline": ("\033[38;2;70;74;90m", "○"),
+}
+CYAN = "\033[38;2;0;229;255m"
 
 
-def _wrap(text: str, width: int = WIDTH, indent: str = "  ") -> list[str]:
-    out, line = [], indent
+def _wrap(text: str, width: int, prefix: str = "") -> list[str]:
+    out, line = [], ""
     for word in text.split():
-        if len(line) + len(word) + 1 > width and line.strip():
-            out.append(line)
-            line = indent + word
+        cand = f"{line} {word}".strip()
+        if len(cand) > width and line:
+            out.append(prefix + line)
+            line = word
         else:
-            line = f"{line} {word}" if line.strip() else indent + word
-    if line.strip():
-        out.append(line)
+            line = cand
+    if line:
+        out.append(prefix + line)
     return out
 
 
@@ -39,7 +63,6 @@ def _session_file(session: str, roots: list[Path]) -> Path | None:
 
 
 def _last_texts(path: Path, want: int = 2, tail: int = 400_000) -> list[str]:
-    """Most recent assistant messages, newest first."""
     try:
         size = path.stat().st_size
         with open(path, "rb") as fh:
@@ -69,9 +92,9 @@ def _last_texts(path: Path, want: int = 2, tail: int = 400_000) -> list[str]:
     return out
 
 
-def _git(project: str) -> list[str]:
+def _git(project: str) -> str:
     if not os.path.isdir(os.path.join(project, ".git")):
-        return []
+        return ""
     def run(*args):
         try:
             r = subprocess.run(["git", "-C", project, *args],
@@ -79,80 +102,138 @@ def _git(project: str) -> list[str]:
             return r.stdout.strip() if r.returncode == 0 else ""
         except (OSError, subprocess.TimeoutExpired):
             return ""
-    out = []
     branch = run("rev-parse", "--abbrev-ref", "HEAD")
+    if not branch:
+        return ""
+    dirty = len([x for x in run("status", "--porcelain").splitlines()
+                 if x.strip()])
     last = run("log", "-1", "--format=%h %s (%cr)")
-    dirty = run("status", "--porcelain")
-    if branch:
-        n = len([x for x in dirty.splitlines() if x.strip()])
-        out.append(f"  branch {branch}" +
-                   (f" · {n} uncommitted file{'s' if n != 1 else ''}"
-                    if n else " · clean"))
+    parts = [branch, f"{dirty} uncommitted" if dirty else "clean"]
     if last:
-        out.append(f"  last   {last}")
-    return out
+        parts.append(last[:44])
+    return "  ·  ".join(parts)
 
 
-def _tasks(project: str, limit: int = 4) -> list[str]:
-    """Open queue items mentioning this project, newest first."""
-    runner = Path.home() / "bin" / "my-task-queue.py"
-    if not runner.is_file():
-        return []
+def _tasks(project: str, limit: int = 3) -> list[str]:
+    """Open queue items mentioning this project — via a 60s global cache,
+    because spawning the runner is the slowest thing a brief does."""
     name = os.path.basename(project.rstrip("/"))
     if not name:
         return []
+    cache = CACHE_DIR / "tasks.txt"
+    text = ""
     try:
-        r = subprocess.run(["python3", str(runner), "list"],
-                           capture_output=True, text=True, timeout=8)
-    except (OSError, subprocess.TimeoutExpired):
-        return []
-    hits = [ln.strip() for ln in r.stdout.splitlines()
-            if name.lower() in ln.lower()][:limit]
-    return [f"  {h[:WIDTH - 2]}" for h in hits]
+        if cache.is_file() and time.time() - cache.stat().st_mtime < 60:
+            text = cache.read_text()
+    except OSError:
+        pass
+    if not text:
+        runner = Path.home() / "bin" / "my-task-queue.py"
+        if not runner.is_file():
+            return []
+        try:
+            r = subprocess.run(["python3", str(runner), "list"],
+                               capture_output=True, text=True, timeout=8)
+            text = r.stdout
+            CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            cache.write_text(text)
+        except (OSError, subprocess.TimeoutExpired):
+            return []
+    hits = []
+    for ln in text.splitlines():
+        if name.lower() in ln.lower():
+            # strip runner chrome down to the readable tail
+            body = ln.strip()
+            if "—" in body:
+                body = body.split("—", 1)[1].strip()
+            hits.append(body[:WIDTH - 6])
+        if len(hits) >= limit:
+            break
+    return hits
 
+
+def _age(seconds: float) -> str:
+    s = int(seconds)
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m"
+    return f"{s // 3600}h{(s % 3600) // 60:02d}"
+
+
+# ── rendering ────────────────────────────────────────────────────────────────
 
 def build(session: str, project: str, label: str = "",
           roots: list[Path] | None = None, state: str = "") -> str:
     roots = roots or [Path.home() / ".claude" / "projects"]
     title = label or os.path.basename(project.rstrip("/")) or project
-    L: list[str] = []
-    L.append("")
-    L.append(f"  \033[1;96m{title}\033[0m   \033[2m{project}\033[0m")
-    if state:
-        L.append(f"  \033[2mstate\033[0m  {state}")
-    L.append("")
+    sc, dot = STATE_C.get(state, STATE_C["idle"])
+    rule = f"  {RULE}{'─' * WIDTH}{R}"
+    pad = "  "
+    L: list[str] = [""]
 
     fp = _session_file(session, roots) if session else None
+    quiet = f" · quiet {_age(time.time() - fp.stat().st_mtime)}" if fp else ""
+
+    # header: state dot, name, state chip
+    chip = f"{sc}{state.upper()}{R}{DIM}{quiet}{R}" if state else ""
+    L.append(f"{pad}{sc}{dot}{R}  {TITLE}{title}{R}   {chip}")
+    L.append(f"{pad}   {PATH}{project}{R}")
+    L.append(rule)
+
+    # the ask / where it left off — a block quote in the state color
     if fp:
-        age = time.time() - fp.stat().st_mtime
-        mins = int(age // 60)
-        L.append(f"  \033[1mWHERE IT LEFT OFF\033[0m  "
-                 f"\033[2m({mins}m ago)\033[0m" if mins else
-                 "  \033[1mWHERE IT LEFT OFF\033[0m")
         texts = _last_texts(fp)
+        L.append(f"{pad}{BOLD}WHERE IT LEFT OFF{R}")
+        L.append("")
         if texts:
-            L += _wrap(texts[0][:600])
+            for ln in _wrap(texts[0][:640], WIDTH - 4):
+                L.append(f"{pad}{sc}▌{R} {ln}")
             if len(texts) > 1:
                 L.append("")
-                L.append("  \033[2mbefore that:\033[0m")
-                L += ["\033[2m" + x + "\033[0m"
-                      for x in _wrap(texts[1][:280])]
+                for ln in _wrap(texts[1][:240], WIDTH - 6):
+                    L.append(f"{pad}  {EARLIER}{ln}{R}")
         else:
-            L.append("  (no assistant messages in the recent log)")
+            L.append(f"{pad}{DIM}(no recent messages in the log){R}")
         L.append("")
 
     git = _git(project)
-    if git:
-        L.append("  \033[1mREPO\033[0m")
-        L += git
-        L.append("")
-
     tasks = _tasks(project)
-    if tasks:
-        L.append("  \033[1mOPEN TASKS\033[0m")
-        L += tasks
+    if git or tasks:
+        L.append(rule)
+    if git:
+        L.append(f"{pad}{DIM}repo {R} {git}")
+    for t in tasks:
+        L.append(f"{pad}{DIM}task {R} {CYAN}▸{R} {t}")
+    if git or tasks:
         L.append("")
 
-    L.append("  \033[2many key → the live session\033[0m")
-    L.append("")
     return "\n".join(L)
+
+
+def build_cached(session: str, project: str, label: str = "",
+                 roots: list[Path] | None = None, state: str = "") -> str:
+    """Cache keyed on the session log's identity — same log, same brief."""
+    roots = roots or [Path.home() / ".claude" / "projects"]
+    fp = _session_file(session, roots) if session else None
+    if fp is None:
+        return build(session, project, label, roots, state)
+    try:
+        st = fp.stat()
+        stamp = f"{st.st_mtime_ns}:{st.st_size}:{state}"
+    except OSError:
+        return build(session, project, label, roots, state)
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache = CACHE_DIR / f"brief-{session[:8]}.ans"
+    try:
+        head, _, body = cache.read_text().partition("\n")
+        if head == stamp:
+            return body
+    except OSError:
+        pass
+    out = build(session, project, label, roots, state)
+    try:
+        cache.write_text(stamp + "\n" + out)
+    except OSError:
+        pass
+    return out
