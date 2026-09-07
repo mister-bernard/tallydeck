@@ -56,6 +56,32 @@ def _last_record_type(lines: list[str]) -> str:
     return ""
 
 
+def _assistant_wants_input(lines: list[str]) -> bool:
+    """An assistant tail only means "your move" if the turn actually ENDED.
+
+    A tail whose last assistant record carries tool_use (or stop_reason
+    "tool_use") is a session waiting on a TOOL — e.g. a long test run — and
+    flagging it flashed autonomous workers as needing the human (the operator hit this:
+    'running the fork suite' shown as attention)."""
+    for ln in reversed(lines):
+        try:
+            rec = json.loads(ln)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(rec, dict) or rec.get("type") != "assistant":
+            continue
+        msg = rec.get("message") or {}
+        if msg.get("stop_reason") == "tool_use":
+            return False
+        content = msg.get("content", [])
+        if isinstance(content, list) and content:
+            last = content[-1]
+            if isinstance(last, dict) and last.get("type") == "tool_use":
+                return False
+        return True
+    return True
+
+
 def _snippet(lines: list[str], limit: int = 120) -> str:
     for ln in reversed(lines):
         try:
@@ -185,7 +211,8 @@ class ClaudeSessionsSource(Source):
                 lines = _tail_lines(fp)
                 last = _last_record_type(lines)
                 state = {"user": WORKING, "assistant": ATTENTION}.get(last, IDLE)
-                if state == ATTENTION and (now - mtime) < self.dwell:
+                if state == ATTENTION and ((now - mtime) < self.dwell
+                                           or not _assistant_wants_input(lines)):
                     state = WORKING
                 # Real cwd from the records; munged-name reconstruction only
                 # as a fallback for logs that never carried one.

@@ -488,3 +488,32 @@ def test_marble_cache_reuses_by_heat_bucket():
     a = marble.card_bg((32, 32), "cc/c", "idle", (86, 90, 100), 0.50)
     b = marble.card_bg((32, 32), "cc/c", "idle", (86, 90, 100), 0.52)
     assert a is b                            # same bucket → same cached image
+
+
+def test_tool_use_tail_is_working_not_attention(tmp_path):
+    """A quiet assistant tail that ends in tool_use = a tool still running
+    (long test suite, bake) — NOT 'your move'. The operator hit this: an autonomous
+    worker flashing attention while running its fork suite."""
+    import os
+    proj = tmp_path / "-home-me-projects-widget"
+    proj.mkdir()
+    p = _write_jsonl(proj, "abc12345", [
+        {"type": "assistant", "message": {
+            "stop_reason": "tool_use",
+            "content": [{"type": "text", "text": "Running the fork suite."},
+                        {"type": "tool_use", "name": "Bash", "input": {}}]}}])
+    t = time.time() - 120                     # well past dwell
+    os.utime(p, (t, t))
+    assert ClaudeSessionsSource(root=str(tmp_path)).poll()[0].state == WORKING
+    # but a genuinely ended turn stays attention
+    p2 = _write_jsonl(proj, "def67890", [
+        {"type": "assistant", "message": {
+            "stop_reason": "end_turn",
+            "content": [{"type": "text", "text": "Done. What next?"}]}}])
+    os.utime(p2, (t, t))
+    states = {s.meta["session"]: s.state
+              for s in ClaudeSessionsSource(root=str(tmp_path), dwell=0).poll()}
+    # one key per project keeps the newest; check directly instead
+    from tallydeck.sources.claude_sessions import _assistant_wants_input, _tail_lines
+    assert _assistant_wants_input(_tail_lines(p)) is False
+    assert _assistant_wants_input(_tail_lines(p2)) is True
