@@ -13,7 +13,7 @@
 # THE MODEL (the operator's design)
 # ----------------------
 # A press never hijacks your view. It finds the tmux client you are actually
-# looking at and drops a FULL-SCREEN popup over it — the attention router:
+# looking at and drops a floating popup (80% x 70%) over it — the router:
 #
 #   Enter → switch this view to the pressed session
 #   b     → bring the pressed session's window INTO your current session
@@ -164,7 +164,7 @@ EOF
       focus_by_token "TALLY[$PICK_TTY]"
       ROUTE="~/.local/bin/tally-route $(q "$PICK_TTY") $(q "$PICK_SESS") $(q "$TARGET") $(q "${TALLY_SESSION:-}") $(q "${TALLY_PROJECT:-}") $(q "${TALLY_LABEL:-}") $(q "${TALLY_STATE:-}") $(q "${TALLY_ACCOUNT:-}")"
       ssh -o BatchMode=yes "$HOST" \
-        "tmux -S '$SOCKET' display-popup -c $(q "$PICK_TTY") -w 100% -h 100% -E $(q "$ROUTE")" \
+        "tmux -S '$SOCKET' display-popup -c $(q "$PICK_TTY") -w 80% -h 70% -E $(q "$ROUTE")" \
         >/dev/null 2>&1 &
       exit 0
     fi
