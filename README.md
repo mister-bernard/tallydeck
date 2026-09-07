@@ -39,7 +39,11 @@ anything:
 
 ## Quick start (no hardware needed)
 
+Needs Python **3.11+** — macOS's stock `/usr/bin/python3` (3.9) is too old:
+`brew install python@3.13` first and build the venv with `python3.13`.
+
 ```bash
+python3.13 -m venv .venv && source .venv/bin/activate
 pip install -e .
 tally --demo term        # live demo fleet in your terminal
 tally --demo png -o deck.png
