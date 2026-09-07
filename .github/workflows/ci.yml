@@ -1,0 +1,32 @@
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.11", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+      - name: render demo deck
+        run: |
+          python -c "
+          from tallydeck.sources.demo import DemoSource
+          from tallydeck.devices import NEO
+          from tallydeck.view import View
+          from tallydeck.render.png import render_png
+          lay = View(profile=NEO).layout(DemoSource().poll())
+          render_png(NEO, lay).save('deck-ci.png')
+          "
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deck-${{ matrix.os }}-py${{ matrix.python }}
+          path: deck-ci.png
