@@ -217,6 +217,9 @@ class ClaudeSessionsSource(Source):
                     continue
                 lines = _tail_lines(fp)
                 last = _last_record_type(lines)
+                exact = self._exact_pane(fp.stem)
+                oneshot = bool(exact) and \
+                    exact.split(":", 1)[0] in self.oneshot_sessions
                 state = {"user": WORKING, "assistant": ATTENTION}.get(last, IDLE)
                 if state == ATTENTION and ((now - mtime) < self.dwell
                                            or not _assistant_wants_input(lines)):
@@ -244,7 +247,6 @@ class ClaudeSessionsSource(Source):
                 # ROUTING hint: it may be shared by several sessions, so it
                 # must never name the key or serve as a dedup identity
                 # (it briefly relabeled half the fleet 'tmp').
-                exact = self._exact_pane(fp.stem)
                 # A GUESS MUST NEVER ROUTE. Directory matching sends every
                 # session whose cwd is /home/me to whichever pane
                 # happens to sit there — that is how every key ended up
@@ -252,8 +254,6 @@ class ClaudeSessionsSource(Source):
                 # offers to resume instead of teleporting you somewhere
                 # wrong.
                 pane = exact or ""
-                oneshot = bool(exact) and \
-                    exact.split(":", 1)[0] in self.oneshot_sessions
                 label = exact.split(":", 1)[0] if exact \
                     else (os.path.basename(full) or full)
                 signals.append(Signal(
