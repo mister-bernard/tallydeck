@@ -100,18 +100,20 @@ class DeckSurface:
     # ── drawing ──────────────────────────────────────────────────────────────
 
     def show(self, layout: Layout, lit: dict[str, bool],
-             t: float = 0.0) -> None:
+             t: float = 0.0, pressed: frozenset = frozenset()) -> None:
         with self._lock:
             for i, sig in enumerate(layout.keys[:self.profile.keys]):
                 is_lit = bool(sig and lit.get(sig.id))
+                is_pressed = i in pressed
                 # Skip HID writes for unchanged keys — flashing 2 of 8 keys
                 # should cost 2 updates per frame, not 8.
                 print_key = (None if sig is None else
                              (sig.id, sig.state, sig.label, sig.sublabel,
-                              sig.progress, sig.color), is_lit)
+                              sig.progress, sig.color), is_lit, is_pressed)
                 if self._drawn.get(i) == print_key:
                     continue
-                img = draw_key(sig, self.profile.key_px, lit=is_lit)
+                img = draw_key(sig, self.profile.key_px, lit=is_lit,
+                               pressed=is_pressed)
                 native = self._pil.to_native_key_format(
                     self.deck, self._pil.create_scaled_key_image(self.deck, img))
                 self.deck.set_key_image(i, native)
@@ -131,15 +133,43 @@ class DeckSurface:
                         self._drawn[-1] = bar
                     except Exception:
                         pass
-            self._touch_leds(layout)
+            self._touch_leds(layout, lit)
 
-    def _touch_leds(self, layout: Layout) -> None:
-        """Neo touch points are RGB LEDs (set_key_color): use them as page
-        indicators — lit when there is a page in that direction."""
+    def _touch_leds(self, layout: Layout, lit: dict[str, bool]) -> None:
+        """Neo touch points are RGB LEDs (set_key_color).
+
+        With multiple pages they are paging arrows: lit amber when a page
+        exists in that direction. On a single page they become ambient
+        indicators — left is the fleet urgency beacon (red = blocked,
+        amber = attention, blinking in phase with the keys; faint blue =
+        all working), right tracks the burn meter (cool → hot with frac,
+        molten red past target)."""
         if self.profile.touch_points < 2 or not hasattr(self.deck, "set_key_color"):
             return
-        left = (60, 44, 12) if layout.page > 0 else (0, 0, 0)
-        right = (60, 44, 12) if layout.page < layout.pages - 1 else (0, 0, 0)
+        if layout.pages > 1:
+            left = (70, 52, 14) if layout.page > 0 else (0, 0, 0)
+            right = (70, 52, 14) if layout.page < layout.pages - 1 else (0, 0, 0)
+        else:
+            states = {s.state for s in layout.keys if s}
+            if "blocked" in states or "attention" in states:
+                on = any(lit.values()) if lit else True
+                color = (229, 72, 77) if "blocked" in states else (255, 178, 36)
+                left = color if on else (10, 6, 2)
+            elif "working" in states:
+                left = (8, 20, 46)
+            else:
+                left = (0, 0, 0)
+            m = layout.meter
+            if m is not None:
+                frac = float(m.meta.get("frac", 0.0))
+                if frac > 1.0:
+                    right = (229, 60, 40)
+                else:
+                    from .meter import RAMP_NORMAL, _lerp3
+                    right = tuple(round(c * 0.45)
+                                  for c in _lerp3(RAMP_NORMAL, min(1.0, frac)))
+            else:
+                right = (0, 0, 0)
         if self._leds == (left, right):
             return
         try:

@@ -108,24 +108,30 @@ def run(link, surface, view: View, poll_every: float = 2.0,
         once: bool = False) -> None:
     """Drive `surface` from `link` until interrupted (or one frame if once)."""
     pressed_at: dict[int, float] = {}
+    held: set[int] = set()
     key_map: list[Signal | None] = []
+    wake = threading.Event()      # poked by input so feedback is instant
 
     def on_key(index: int, down: bool) -> None:
         if down:
             pressed_at[index] = time.monotonic()
-            return
-        t0 = pressed_at.pop(index, None)
-        if t0 is None or index >= len(key_map):
-            return
-        sig = key_map[index]
-        if sig is not None:
-            link.press(sig.id, long=(time.monotonic() - t0) >= LONG_PRESS)
+            held.add(index)
+        else:
+            held.discard(index)
+            t0 = pressed_at.pop(index, None)
+            if t0 is not None and index < len(key_map):
+                sig = key_map[index]
+                if sig is not None:
+                    link.press(sig.id,
+                               long=(time.monotonic() - t0) >= LONG_PRESS)
+        wake.set()
 
     def on_touch(direction: int) -> None:
         if direction > 0:
             view.page_next()
         else:
             view.page_prev()
+        wake.set()
 
     if hasattr(surface, "set_callbacks"):
         surface.set_callbacks(on_key=on_key, on_touch=on_touch)
@@ -147,22 +153,27 @@ def run(link, surface, view: View, poll_every: float = 2.0,
             lit = {s.id: theme.flash_lit(s.state, wall) for s in flashing}
 
             m = layout.meter
+            pressed = frozenset(held)
             frame = ([(s.id, s.state, s.label, s.sublabel, s.progress)
                       if s else None for s in layout.keys],
-                     tuple(sorted(lit.items())), layout.summary,
+                     tuple(sorted(lit.items())), pressed, layout.summary,
                      layout.page, layout.pages,
                      None if m is None else tuple(sorted(
                          (k, v) for k, v in m.meta.items()
                          if isinstance(v, (str, int, float, bool)))),
                      int(wall * 0.5) if m is not None else 0)  # meter hatch tick
             if frame != prev_frame:
-                surface.show(layout, lit, t=wall)
+                surface.show(layout, lit, t=wall, pressed=pressed)
                 prev_frame = frame
 
             if once:
                 return
-            time.sleep(theme.FRAME_INTERVAL if flashing
-                       else min(0.25, poll_every / 4))
+            # A press interrupts the sleep so ring feedback is immediate;
+            # a press also forces a re-poll so acks/state changes land fast.
+            if wake.wait(theme.FRAME_INTERVAL if flashing
+                         else min(0.25, poll_every / 4)):
+                wake.clear()
+                last_poll = 0.0
     except KeyboardInterrupt:
         pass
     finally:

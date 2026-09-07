@@ -101,6 +101,19 @@ def test_hub_merges_and_survives_broken_source():
     assert sigs[0].state == BLOCKED        # ranked output
 
 
+def test_demo_press_acks_rearms_and_dismisses():
+    hub = Hub([DemoSource()], log=lambda m: None)
+    hub.poll()
+    hub.press("demo/arb")                      # short press: ack
+    arb = [s for s in hub.poll() if s.id == "demo/arb"][0]
+    assert arb.state == SUCCESS and "acked" in arb.sublabel
+    hub.press("demo/arb")                      # press again: re-arm
+    assert [s for s in hub.poll()
+            if s.id == "demo/arb"][0].state == ATTENTION
+    hub.press("demo/relay", long=True)         # long press: dismiss
+    assert not [s for s in hub.poll() if s.id == "demo/relay"]
+
+
 def test_hub_press_unknown_id_is_safe():
     hub = Hub([DemoSource()], log=lambda m: None)
     hub.poll()

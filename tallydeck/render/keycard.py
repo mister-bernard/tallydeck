@@ -36,8 +36,10 @@ def _truncate(draw: ImageDraw.ImageDraw, text: str, font, max_w: int) -> str:
     return text + "…"
 
 
-def draw_key(sig: Signal | None, px: int, lit: bool = False) -> Image.Image:
-    """Render one key face at px × px. `lit` = flash flood frame."""
+def draw_key(sig: Signal | None, px: int, lit: bool = False,
+             pressed: bool = False) -> Image.Image:
+    """Render one key face at px × px. `lit` = flash flood frame,
+    `pressed` = finger currently down (bright ring, instant feedback)."""
     s = px * SS
     img = Image.new("RGB", (s, s), theme.BG_EMPTY)
     d = ImageDraw.Draw(img)
@@ -46,6 +48,8 @@ def draw_key(sig: Signal | None, px: int, lit: bool = False) -> Image.Image:
         r = max(2, s // 32)
         d.ellipse([(s - r) // 2, (s - r) // 2,
                    (s + r) // 2, (s + r) // 2], fill=theme.TRACK)
+        if pressed:
+            _press_ring(d, s, theme.FG_DIM)
         return img.resize((px, px), Image.LANCZOS)
 
     color = sig.color or theme.STATE_COLOR.get(sig.state, theme.STATE_COLOR["idle"])
@@ -94,7 +98,16 @@ def draw_key(sig: Signal | None, px: int, lit: bool = False) -> Image.Image:
             d.rounded_rectangle([x0, y0, x0 + w, y0 + h],
                                 radius=h // 2, fill=fill)
 
+    if pressed:
+        _press_ring(d, s, theme.FLOOD_TEXT if lit else "#F2F6FF")
+
     return img.resize((px, px), Image.LANCZOS)
+
+
+def _press_ring(d: ImageDraw.ImageDraw, s: int, color) -> None:
+    w = max(2, round(s * 0.045))
+    d.rounded_rectangle([w // 2, w // 2, s - 1 - w // 2, s - 1 - w // 2],
+                        radius=round(s * 0.09), outline=color, width=w)
 
 
 def draw_screen(size: tuple[int, int], summary: str,
