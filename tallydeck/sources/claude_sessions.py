@@ -89,8 +89,12 @@ _NEGATED_RE = re.compile(
     r"\b(no|not|nothing|none|never|n't|without)\b[^.!?]{0,60}?"
     r"\b(sign[- ]?off|approval|decision|input|answer|confirm|blocked)\b", re.I)
 
+# "your call" only counts when it LEADS the ask ("Your call: A or B", "your
+# call — …", "your call?"); "…is a bigger cleanup and your call, not something
+# I'd do" is a deferral inside a report and painted a finished turn amber
+# (G, 2026-09-08: "I don't see anything to do").
 _ASK_RE = re.compile(
-    r"\b(should i|shall i|your call|please (confirm|approve|advise|choose|pick)"
+    r"\b(should i|shall i|(?:^|[.!]\s+)your call\b|your call\s*[:?—-]|please (confirm|approve|advise|choose|pick)"
     r"|sign[- ]?off|awaiting your|waiting (on|for) your?\b"
     r"|needs? your (decision|approval|input|answer|go|ok|sign)"
     r"|blocked on you|go/no[- ]go|(decision|approval|sign[- ]?off) needed"
@@ -121,7 +125,8 @@ def asks_question(text: str) -> bool:
     # finished turn amber, which is what G reported on 2026-09-08 ("it's putting
     # that in orange when it says 'done for this turn'"). A real ask is addressed to
     # the reader: "I need your sign-off", not "G's sign-off".
-    window = text[-600:]
+    # An ask lives in the LAST paragraph; a phrase further up is narration.
+    window = tail[-600:]
     kept = [snt for snt in re.split(r"(?<=[.!?])\s+", window)
             if not _THIRD_PERSON_RE.search(snt) and not _NEGATED_RE.search(snt)]
     return bool(_ASK_RE.search(" ".join(kept)))

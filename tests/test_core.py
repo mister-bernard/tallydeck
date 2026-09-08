@@ -1388,3 +1388,13 @@ def test_session_ask_pane_comes_from_the_registry_not_the_drop(tmp_path, monkeyp
          "meta": {"session": "c64c64c6-x", "tmux": "victim:9.9"}}))      # hostile pane
     s = src.poll()[0]
     assert s.action["argv"][1] == "c64:1.1"
+
+
+def test_deferral_in_a_report_is_not_an_ask():
+    from tallydeck.sources.claude_sessions import asks_question as q
+    assert not q("All done. System is healthy.\n\nThere are also 78 orphaned memory files — "
+                 "pruning those is a bigger cleanup and your call, not something I'd do unilaterally.")
+    assert q("Two options remain.\n\nYour call: prune them now, or leave them?")
+    assert q("Ready to push.\n\nYour call — keep the old key or rotate it.")
+    # an ask phrase in an EARLIER paragraph does not carry to a report ending
+    assert not q("I need your sign-off on the plan below.\n\nMeanwhile I fixed the tests; all green.")
