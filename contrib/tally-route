@@ -71,8 +71,17 @@ ensure_resurrected() {
   --ask "$ASK"
 
 LIVE=""; [ -n "$TARGET" ] && LIVE=1
+# A raised flag that carries an ask is a QUESTION, not a place to go. It inherits the
+# tmux target of whichever session raised it, so without this the router offered
+# "open floating / tab here / split here" and a press landed G in the transcript of
+# the session that asked — not in the question. (G, 2026-09-08: "I pressed the Aurora
+# button and it opened up this chat rather than the actual Aurora interface.")
+ASKABLE=""; case "$SIGID" in sig/*) [ -n "$ASK" ] && ASKABLE=1 ;; esac
 printf '  \033[38;2;44;48;62m%s\033[0m\n' "──────────────────────────────────────────────────────────────────────────"
-if [ -n "$LIVE" ] || [ -n "$UUID" ]; then
+if [ -n "$ASKABLE" ]; then
+  printf '  \033[1;38;2;0;229;255ma\033[0m ANSWER IT    \033[1;38;2;0;229;255m␣\033[0m done (retire)%s    \033[2mother dismisses\033[0m\n' \
+    "$([ -n "$LIVE" ] && printf '    \033[1;38;2;0;229;255m⏎\033[0m go to the session that asked')"
+elif [ -n "$LIVE" ] || [ -n "$UUID" ]; then
   printf '  \033[1;38;2;0;229;255m⏎\033[0m open floating%s    \033[1;38;2;0;229;255mt\033[0m tab here    \033[1;38;2;0;229;255ms\033[0m split here    \033[1;38;2;0;229;255m␣\033[0m done (mute)    \033[2mother dismisses\033[0m\n' \
     "$([ -n "$LIVE" ] || printf '\033[2m (resumes)\033[0m')"
 else
@@ -83,6 +92,12 @@ IFS= read -r -n 1 -s -t 120 key 2>/dev/null || exit 0
 
 SESS="${TARGET%%:*}"
 case "$key" in
+  a|A)  # ANSWER — show the full question and capture a reply
+    if [ -n "$ASKABLE" ]; then
+      /home/openclaw/scripts/tally-decide.sh "${SIGID#sig/}"
+      exit 0
+    fi
+    exit 0 ;;
   " ")  # DONE — inbox-style: mute this alert until the session asks anew
     STATE_DIR="${TALLYDECK_STATE:-$HOME/.tallydeck}"
     if [ -n "$UUID" ]; then

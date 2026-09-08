@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# tally-decide.sh — show a raised deck decision and capture G's answer.
+#
+# G, 2026-09-08: "I pressed the Aurora button and it opened up this chat rather than
+# the actual Aurora interface. I want a tmux pop-up that has the actual questions I
+# need to answer."
+#
+# Before this, pressing an attention key attached you to whichever pane RAISED the
+# flag — which is the session that asked the question, not the question itself. For a
+# decision flag that is useless: you land in a transcript and still have to go hunting
+# for what you were being asked.
+#
+# This reads the signal's own `detail` (which already carries the question, the options
+# and the recommendation), shows it, takes an answer, records it, and clears the flag so
+# the key stops flashing. Answers are delivered to G's Telegram session so the agent that
+# raised the question actually learns the outcome — a decision nobody is told about is
+# the same as no decision.
+#
+# Usage:  tally-decide.sh <signal-id>          # e.g. aurora-sphere-polarity
+#         tally-decide.sh --list               # what is currently asking
+set -uo pipefail
+
+SIGNALS="${TALLYDECK_SIGNALS:-$HOME/.tallydeck/signals}"
+LOG="${TALLY_DECISION_LOG:-$HOME/.openclaw/state/tally-decisions.log}"
+TG=/home/openclaw/scripts/tg-send-logged.sh
+G_CHAT=39172309
+TALLY_BIN="${TALLY_BIN:-$HOME/.local/bin/tally}"
+
+if [ "${1:-}" = "--list" ] || [ -z "${1:-}" ]; then
+  echo "Raised decisions:"
+  found=0
+  for f in "$SIGNALS"/*.json; do
+    [ -e "$f" ] || continue
+    case "$f" in *.bak.*) continue ;; esac
+    id=$(basename "$f" .json)
+    lbl=$(python3 -c "import json,sys;d=json.load(open(sys.argv[1]));print(d.get('label',''),'-',d.get('sublabel',''))" "$f" 2>/dev/null)
+    printf '  %-28s %s\n' "$id" "$lbl"; found=1
+  done
+  [ "$found" = 1 ] || echo "  (none)"
+  exit 0
+fi
+
+ID="$1"
+F="$SIGNALS/$ID.json"
+[ -f "$F" ] || { echo "No such raised decision: $ID"; echo; "$0" --list; sleep 4; exit 1; }
+
+# Render. Wrapped to the popup width rather than dumped raw — the detail field is a
+# paragraph, and an unwrapped paragraph in an 80-column popup is unreadable.
+COLS=$(tput cols 2>/dev/null || echo 80); [ "$COLS" -gt 100 ] && COLS=100
+python3 - "$F" "$COLS" <<'PY'
+import json, sys, textwrap
+d = json.load(open(sys.argv[1])); w = int(sys.argv[2]) - 4
+def block(text, indent=""):
+    for para in str(text).split("\n"):
+        for line in textwrap.wrap(para, w - len(indent)) or [""]:
+            print(indent + line)
+print("=" * (w + 2))
+print(f"  {d.get('label','?').upper()}  —  decision needed")
+print("=" * (w + 2)); print()
+block(d.get("sublabel", ""), "  "); print()
+if d.get("detail"):
+    block(d["detail"], "  ")
+print()
+PY
+
+echo "──────────────────────────────────────────────────"
+echo "Type your answer (a number, a word, or a sentence)."
+echo "Enter alone = leave it raised and decide later."
+echo
+printf 'answer> '
+read -r ANSWER
+
+if [ -z "${ANSWER// /}" ]; then
+  echo; echo "Left raised. Nothing recorded."
+  sleep 2; exit 0
+fi
+
+TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+mkdir -p "$(dirname "$LOG")"
+printf '[%s] %s :: %s\n' "$TS" "$ID" "$ANSWER" >> "$LOG"
+
+# Tell the fleet. Routing it through G's own session means it lands in the same place
+# he'd have typed it, so whichever agent raised the flag picks it up as a normal reply.
+"$TG" "$G_CHAT" tally-decide "DECISION — $ID
+
+$ANSWER
+
+(answered from the deck popup at $TS)" >/dev/null 2>&1 \
+  || echo "warning: could not deliver the answer to Telegram — it is still in $LOG"
+
+# Clear the flag last: if anything above failed, the key keeps flashing rather than
+# silently losing the question.
+if [ -x "$TALLY_BIN" ]; then
+  "$TALLY_BIN" clear "$ID" >/dev/null 2>&1 || rm -f "$F"
+else
+  rm -f "$F"
+fi
+
+echo
+echo "Recorded: $ANSWER"
+echo "Flag cleared. Sent to the session that asked."
+sleep 2
