@@ -412,9 +412,13 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--status", action="store_true")
     sub.add_parser("unhush", help="resume phone notifications")
 
-    for name, help_ in (("spawn", "start a task as its own tmux session (own deck key)"),
-                        ("offer", "ask G: run this in a dedicated session? then spawn on yes")):
-        sp = sub.add_parser(name, help=help_)
+    for name, help_, usage in (
+            ("spawn", "start a task as its own tmux session (own deck key)",
+             "tally spawn <slug> [-c cwd] [-a A|B] [-p file|-] [\"task text\"]"),
+            ("offer", "ask G: run this in a dedicated session? then spawn on yes",
+             "tally offer <slug> \"<one-line summary>\" [-c cwd] [-a A|B] [-p file|-] [\"task text\"]")):
+        # add_help=False: --help reaches the helper, which prints its real usage
+        sp = sub.add_parser(name, help=help_, usage=usage, add_help=False)
         sp.add_argument("rest", nargs=argparse.REMAINDER)
 
     sp = sub.add_parser("wait", help="block until a raised flag is answered")

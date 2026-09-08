@@ -18,7 +18,9 @@ CLAUDE_A="${CLAUDE_BIN:-$HOME/.local/bin/claude}"
 CLAUDE_B="${CLAUDE_BIN_B:-$HOME/.local/bin/claude-b}"
 T() { tmux -S "$SOCKET" "$@"; }
 
-SLUG="${1:?usage: tally-spawn <slug> [-c cwd] [-a A|B] [-p file|-] [task]}"; shift
+usage() { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; }
+case "${1:-}" in ""|-h|--help) usage >&2; exit 2 ;; esac
+SLUG="$1"; shift
 case "$SLUG" in *[!A-Za-z0-9._-]*|.*) echo "tally-spawn: bad slug '$SLUG'" >&2; exit 2 ;; esac
 CWD="$HOME"; ACCT="A"; TASK=""
 while [ $# -gt 0 ]; do

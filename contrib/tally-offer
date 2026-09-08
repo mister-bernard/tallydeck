@@ -76,8 +76,8 @@ def current_pane() -> str:
 def main(argv: list[str]) -> int:
     if argv and argv[0] == "--wait":                       # the detached waiter
         return waiter(*argv[1:])
-    if len(argv) < 2:
-        print(__doc__); return 2
+    if len(argv) < 2 or argv[0] in ("-h", "--help"):
+        print(__doc__, file=sys.stderr); return 2
     slug, summary = argv[0], argv[1]
     rest = argv[2:]
     cwd, acct, task = os.getcwd(), "A", ""
