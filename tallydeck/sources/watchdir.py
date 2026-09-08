@@ -68,15 +68,35 @@ class WatchDirSource(Source):
         if not self.path.is_dir():
             return signals
         for fp in sorted(self.path.glob("*.json")):
+            # glob cannot yield a separator, but "..json" has stem "." and a stem is
+            # about to become a path component on the answering side. Refuse anything
+            # that is not a plain name.
+            stem = fp.stem
+            if not stem or stem in (".", "..") or "/" in stem or stem.startswith("."):
+                continue
             try:
                 d = json.loads(fp.read_text())
-                d.setdefault("id", f"{self.group}/{fp.stem}")
-                d.setdefault("label", fp.stem)
+                # This directory is a DROP BOX — anything that can write a file here
+                # gets a key on the deck. Two fields must therefore come from the
+                # filesystem, never from the file's own contents:
+                #
+                #   action — a file-supplied {"type":"cmd","argv":[...]} would be run
+                #     by the hub on the next press. That is arbitrary execution from a
+                #     dropped file, and it contradicts the hub's "actions are defined
+                #     by the source" posture. The source attaches its own below.
+                #   id — setdefault kept an id from inside the file, so
+                #     {"id":"sig/../../../tmp/x"} walked out of the answers directory
+                #     on the hub side.
+                #
+                # Both found by Opus in openclaw-a5's audit of the Signal-answer path.
+                d.pop("action", None)
+                d["id"] = f"{self.group}/{stem}"
+                d.setdefault("label", stem)
                 d.setdefault("updated", fp.stat().st_mtime)
                 sig = Signal.from_dict(d)
             except (OSError, ValueError, json.JSONDecodeError):
                 # A malformed drop becomes a visible complaint, not silence.
-                sig = Signal(id=f"{self.group}/{fp.stem}", label=fp.stem,
+                sig = Signal(id=f"{self.group}/{stem}", label=stem,
                              sublabel="bad json", state=BLOCKED)
             sig.meta["file"] = str(fp)
             # A raised flag that carries a `detail` is a QUESTION, so make pressing it
@@ -91,10 +111,10 @@ class WatchDirSource(Source):
             # never reads, and the session would sit there blocked regardless. Those keys
             # keep the default routing, which takes you to the pane. Only agent-raised
             # flags get the answer-here treatment.
-            is_session_ask = fp.stem.startswith("ask-")
+            is_session_ask = stem.startswith("ask-")
             if sig.action is None and not is_session_ask and (sig.detail or "").strip():
                 sig.action = {"type": "cmd",
-                              "argv": [self._decide_cmd(), fp.stem]}
+                              "argv": [self._decide_cmd(), stem]}
             if sig.expired():
                 fp.unlink(missing_ok=True)
                 continue
