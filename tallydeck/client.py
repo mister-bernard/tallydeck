@@ -22,6 +22,7 @@ import time
 
 from .hub import Hub
 from .signal import Signal
+from .render import fx
 from .view import View
 from .render import theme
 
@@ -119,6 +120,8 @@ def run(link, surface, view: View, poll_every: float = 2.0,
     """
     pressed_at: dict[int, float] = {}
     held: set[int] = set()
+    fx_at: dict[int, float] = {}       # key index → when its fireworks began
+    hold: dict[str, float] = {}        # signal id → flash held off until (mono)
     key_map: list[Signal | None] = []
     wake = threading.Event()      # poked by input so feedback is instant
 
@@ -159,6 +162,12 @@ def run(link, surface, view: View, poll_every: float = 2.0,
                     long = (time.monotonic() - t0) >= LONG_PRESS
                     link.press(sig.id, long=long)
                     local_action(sig, long)
+                    # The key answers the press itself: fireworks, and the
+                    # blinking stops right away. The hub confirms the popup
+                    # opened a poll or two later (meta.opened) and keeps it
+                    # steady from there; this local hold bridges the gap.
+                    fx_at[index] = time.monotonic()
+                    hold[sig.id] = time.monotonic() + 6.0
         wake.set()
 
     pages_now = [1]   # updated each frame; touch behavior depends on it
@@ -206,7 +215,14 @@ def run(link, surface, view: View, poll_every: float = 2.0,
             key_map = layout.keys
             pages_now[0] = layout.pages
             mural_now[0] = layout.mural
-            flashing = [s for s in layout.keys if s and s.wants_flash]
+            mono = time.monotonic()
+            for k in [k for k, t0 in fx_at.items() if mono - t0 > fx.LENGTH]:
+                fx_at.pop(k, None)
+            for k in [k for k, until in hold.items() if mono > until]:
+                hold.pop(k, None)
+            fx_phase = {k: (mono - t0) / fx.LENGTH for k, t0 in fx_at.items()}
+            flashing = [s for s in layout.keys if s and s.wants_flash
+                        and s.id not in hold and not s.meta.get("opened")]
             wall = time.time()   # epoch, so all surfaces blink in phase
             lit = {s.id: theme.flash_lit(s.state, wall) for s in flashing}
 
@@ -222,19 +238,20 @@ def run(link, surface, view: View, poll_every: float = 2.0,
                          if isinstance(v, (str, int, float, bool)))),
                      int(wall * 0.5) if m is not None else 0,  # meter hatch tick
                      ("mural", int(wall)) if layout.mural else None,  # cursor
+                     tuple(sorted((k, int(p * 14)) for k, p in fx_phase.items())),
                      int(wall / 2) if any(
                          s and s.state in ("attention", "blocked")
                          and len(s.sublabel) > 55 for s in layout.keys)
                      else 0)                                    # ask page tick
             if frame != prev_frame:
-                surface.show(layout, lit, t=wall, pressed=pressed)
+                surface.show(layout, lit, t=wall, pressed=pressed, fx=fx_phase)
                 prev_frame = frame
 
             if once:
                 return
             # A press interrupts the sleep so ring feedback is immediate;
             # a press also forces a re-poll so acks/state changes land fast.
-            if wake.wait(theme.FRAME_INTERVAL if flashing
+            if wake.wait(theme.FRAME_INTERVAL if (flashing or fx_phase)
                          else min(0.25, poll_every / 4)):
                 wake.clear()
                 last_poll = 0.0

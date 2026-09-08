@@ -36,7 +36,13 @@ HEAT = [(0.00, (6, 7, 12)), (0.35, (28, 24, 74)), (0.65, (96, 42, 140)),
         (0.85, (190, 72, 96)), (1.00, (238, 132, 48))]
 
 HEAT_BUCKETS = 8          # cache granularity for the continuous heat value
-CEILING = 0.20            # max composite luminance under the text
+CEILING = 0.20            # max composite luminance under the text (cold)
+# Hot cards are BRIGHTER, not just warmer: the ceiling climbs with burn
+# heat, so the busiest session on the deck glows and the idle ones recede.
+# 0.40 (sRGB-weighted) keeps white label text above AA against the base;
+# the sublabel switches from dim gray to full white on hot cards for the
+# same reason (keycard.py).
+CEILING_HOT = 0.37
 _CACHE_MAX = 512
 
 
@@ -224,7 +230,8 @@ def card_bg(size: tuple[int, int], card_id: str, state: str,
     if hit is not None:
         _cache.move_to_end(key)
         return hit
-    base, lo, hi = plan(bucket / (HEAT_BUCKETS - 1))
+    burn = bucket / (HEAT_BUCKETS - 1)
+    base, lo, hi = plan(burn, ceiling=CEILING + (CEILING_HOT - CEILING) * burn)
     img = swirl(size, card_id, state, tint, lo=lo, hi=hi, base=base)
     _cache[key] = img
     while len(_cache) > _CACHE_MAX:

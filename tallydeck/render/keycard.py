@@ -110,7 +110,9 @@ def draw_key(sig: Signal | None, px: int, lit: bool = False,
                       theme.hex_rgb(color), heat).copy()
         d = ImageDraw.Draw(img)
         fg = theme.FG_DIM if muted else theme.FG
-        sub = theme.FG_DIM
+        # Hot cards glow: dim gray would sink into the ember, so the
+        # sublabel steps up to full white once the card is bright.
+        sub = theme.FG if heat >= 0.45 and not muted else theme.FG_DIM
         bar = theme.mix(color, theme.BG, 0.55) if muted else color
         track = theme.TRACK
         fill = color
@@ -175,9 +177,23 @@ def draw_key(sig: Signal | None, px: int, lit: bool = False,
                     y0d = s - round(s * 0.05) - r_
                     d.ellipse([x0d, y0d, x0d + r_, y0d + r_],
                               fill=fill if pi == pg else track)
+        elif d.textlength(sig.sublabel, font=f_sub) <= s - 2 * pad:
+            d.text((pad, y2), sig.sublabel, font=f_sub, fill=sub)
         else:
-            d.text((pad, y2), _truncate(d, sig.sublabel, f_sub, s - 2 * pad),
-                   font=f_sub, fill=sub)
+            # Wrap rather than amputate: "3m · 1704k/m" lost its burn rate
+            # to an ellipsis on the hottest key of the fleet — the one
+            # number that key exists to show.
+            parts = [p_.strip() for p_ in sig.sublabel.split(" · ")]
+            if len(parts) > 1 and all(
+                    d.textlength(p_, font=f_sub) <= s - 2 * pad for p_ in parts):
+                lines = [parts[0], " · ".join(parts[1:])]   # break at the dot
+                if d.textlength(lines[1], font=f_sub) > s - 2 * pad:
+                    lines = parts[:2]
+            else:
+                lines = _wrap2(d, sig.sublabel, f_sub, s - 2 * pad)
+            for i, ln in enumerate(lines[:2]):
+                d.text((pad, y2 + i * round(s * 0.145)), ln,
+                       font=f_sub, fill=sub)
 
     # progress
     if sig.progress is not None:

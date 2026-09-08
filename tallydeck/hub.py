@@ -30,6 +30,7 @@ from .sources.base import Source
 
 PROTOCOL_VERSION = 1
 KEEPALIVE = 20.0
+OPEN_AFTER = 0.7      # s an action must survive to count as "opened"
 
 
 class Hub:
@@ -40,6 +41,11 @@ class Hub:
         self.tick = tick
         self.log = log
         self._table: dict[str, Signal] = {}
+        # Press actions in flight: signal id → (Popen, started). A decide
+        # popup blocks its command until the operator answers, so a process
+        # still alive after a beat means the popup is UP — the key can stop
+        # shouting. A quick exit means it failed to open; keep flashing.
+        self._inflight: dict[str, tuple] = {}
 
     # ── state assembly ───────────────────────────────────────────────────────
 
@@ -59,6 +65,15 @@ class Hub:
         self._table = {
             sid: s for sid, s in fresh.items() if not s.expired(now)
         }
+        for sid in list(self._inflight):
+            proc, started = self._inflight[sid]
+            if proc.poll() is not None or sid not in self._table:
+                self._inflight.pop(sid, None)
+                continue
+            if now - started > OPEN_AFTER:
+                s = self._table[sid]
+                s.meta["opened"] = True
+                s.flash = False          # steady while the popup is up
         return rank(list(self._table.values()))
 
     def snapshot_line(self, signals: list[Signal]) -> str:
@@ -84,8 +99,9 @@ class Hub:
             argv = [str(a) for a in act["argv"]]
             self.log(f"[hub] press {sid} → {' '.join(argv)}")
             try:
-                subprocess.Popen(argv, stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.DEVNULL)
+                proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL)
+                self._inflight[sid] = (proc, time.time())
             except OSError as e:
                 self.log(f"[hub] action failed: {e}")
         else:

@@ -479,9 +479,14 @@ def test_marble_luminance_ceiling_holds_across_heat():
             L = 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
             w = min(w, 1.05 / (L + 0.05))
         return w
-    for heat in (0.0, 0.5, 1.0):
-        img = card_bg((64, 64), "cc/x", "working", (229, 72, 77), heat)
-        assert worst_contrast(img) > 7.0     # white text stays comfortably AAA
+    cold = card_bg((64, 64), "cc/x", "working", (229, 72, 77), 0.0)
+    hot = card_bg((64, 64), "cc/x", "working", (229, 72, 77), 1.0)
+    assert worst_contrast(cold) > 7.0        # cold: white text comfortably AAA
+    assert worst_contrast(hot) > 4.5         # hot: brighter, still AA for white
+    # and hot really is brighter — the whole point (G: "background images
+    # should be more or less bright according to how hot the sessions are")
+    mean = lambda im: sum(sum(p) for p in im.getdata()) / (3 * 64 * 64)
+    assert mean(hot) > mean(cold) * 1.6
 
 
 def test_marble_cache_reuses_by_heat_bucket():
@@ -859,3 +864,81 @@ def test_mural_tiles_cover_every_key_and_render_everywhere(tmp_path):
     img = render_png(NEO, lay, scale=1, t=0)
     assert img.size[0] > 0
     assert "all quiet" in render_term(NEO, lay)
+
+
+# ── press feedback: fireworks, and steady once the popup is up ───────────────
+
+def test_fireworks_overlay_keeps_size_and_changes_the_face():
+    from tallydeck.render.fx import fireworks
+    from tallydeck.render.keycard import draw_key
+    sig = Signal(id="sig/x", label="Aurora", state=ATTENTION)
+    face = draw_key(sig, 96)
+    burst = fireworks(face, 0.15, "#FFB224", seed="sig/x")
+    assert burst.size == face.size
+    assert list(burst.getdata()) != list(face.getdata())
+    late = fireworks(face, 0.98, "#FFB224", seed="sig/x")
+    assert late.size == face.size
+
+
+def test_hub_marks_a_press_whose_popup_is_up_as_opened(tmp_path):
+    """A decide popup blocks its command until answered: a press action
+    still alive after a beat means the popup is UP — the key stops
+    shouting (flash=False, meta.opened). A quick exit keeps it flashing."""
+    import sys, time as _t
+    from tallydeck import hub as hubmod
+    src = WatchDirSource(path=str(tmp_path))
+    (tmp_path / "slow.json").write_text(json.dumps(
+        {"label": "slow", "state": "attention", "detail": "q?",
+         "action": {"type": "cmd", "argv": [sys.executable, "-c", "import time; time.sleep(5)"]}}))
+    (tmp_path / "fast.json").write_text(json.dumps(
+        {"label": "fast", "state": "attention", "detail": "q?",
+         "action": {"type": "cmd", "argv": [sys.executable, "-c", "pass"]}}))
+    h = Hub([src], log=lambda m: None)
+    h.poll()
+    h.press("sig/slow"); h.press("sig/fast")
+    _t.sleep(hubmod.OPEN_AFTER + 0.4)
+    by = {s.id: s for s in h.poll()}
+    assert by["sig/slow"].meta.get("opened") is True
+    assert by["sig/slow"].wants_flash is False
+    assert not by["sig/fast"].meta.get("opened")
+    assert by["sig/fast"].wants_flash is True
+    for proc, _ in list(h._inflight.values()):
+        proc.kill()
+
+
+def test_raise_carries_markdown_and_options(tmp_path, monkeypatch):
+    from tallydeck import cli
+    monkeypatch.setenv("TALLYDECK_STATE", str(tmp_path))
+    monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
+    monkeypatch.delenv("TMUX", raising=False)
+    md = tmp_path / "ask.md"
+    md.write_text("## Pick one\n\n| a | b |\n|:--|:--|\n| 1 | 2 |\n")
+    cli.main(["raise", "pick", "--state", "attention", "--label", "Pick",
+              "--sublabel", "Which?", "--markdown", str(md),
+              "--options", "A · first | B · second"])
+    d = json.loads((tmp_path / "signals" / "pick.json").read_text())
+    assert d["meta"]["markdown"].startswith("## Pick one")
+    assert d["meta"]["options"] == ["A · first", "B · second"]
+    sig = WatchDirSource(path=str(tmp_path / "signals")).poll()[0]
+    assert sig.meta["options"][1] == "B · second"
+
+
+def test_raise_update_keeps_label_and_never_routes_to_the_raisers_pane(tmp_path, monkeypatch):
+    """`tally raise <id> --markdown …` on an existing flag must keep its label,
+    and a raised QUESTION must not carry the raising session's tmux pane —
+    that pane target made a press attach the operator to the agent's
+    transcript instead of asking (G, 2026-09-08)."""
+    from tallydeck import cli
+    monkeypatch.setenv("TALLYDECK_STATE", str(tmp_path))
+    monkeypatch.setenv("CLAUDE_SESSION_ID", "cafe0000-0000-4000-8000-000000000000")
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/cc,1,2")
+    cli.main(["raise", "q", "--state", "attention", "--label", "Big Q",
+              "--sublabel", "which?"])
+    cli.main(["raise", "q", "--options", "A|B"])
+    d = json.loads((tmp_path / "signals" / "q.json").read_text())
+    assert d["label"] == "Big Q"
+    assert "tmux" not in d["meta"]
+    assert d["meta"]["session"].startswith("cafe")
+    cli.main(["raise", "q", "--tmux", "work:1.1"])
+    d = json.loads((tmp_path / "signals" / "q.json").read_text())
+    assert d["meta"]["tmux"] == "work:1.1"        # explicit opt-in still works

@@ -191,15 +191,21 @@ def cmd_raise(cfg, args):
         meta["project"] = args.project
     elif "project" not in meta and sid:
         meta["project"] = os.getcwd()
+    # The raiser's tmux pane is deliberately NOT stamped unless asked for.
+    # A raised flag is a question; a pane target on it made a press attach
+    # the operator to the agent's transcript instead of asking the question
+    # (G, 2026-09-08: "opened a new window loading the tmux window, not
+    # even that session or a question about it"). --tmux opts back in.
     if args.tmux:
         meta["tmux"] = args.tmux
-    elif "tmux" not in meta and os.environ.get("TMUX"):
-        try:
-            meta["tmux"] = subprocess.run(
-                ["tmux", "display", "-p", "#S:#I.#P"], capture_output=True,
-                text=True, timeout=2).stdout.strip()
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+    else:
+        meta.pop("tmux", None)
+    if args.markdown:
+        src = sys.stdin.read() if args.markdown == "-" else \
+            Path(args.markdown).expanduser().read_text()
+        meta["markdown"] = src.strip()
+    if args.options:
+        meta["options"] = [o.strip() for o in args.options.split("|") if o.strip()]
     if args.account:
         meta["account"] = args.account
     elif "account" not in meta and sid:
@@ -288,6 +294,12 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--project", help="project path (default: cwd)")
     sp.add_argument("--tmux", help="tmux pane target (default: this pane)")
     sp.add_argument("--account", help="account badge, e.g. A or B")
+    sp.add_argument("--markdown", metavar="FILE|-",
+                    help="full ask as Markdown (headings, tables, lists…); "
+                         "the decide popup renders it. '-' reads stdin")
+    sp.add_argument("--options", metavar="A|B|C",
+                    help="answer options, pipe-separated; the popup shows "
+                         "them as numbered cards")
 
     sp = sub.add_parser("clear", help="remove a raised signal")
     sp.add_argument("id")

@@ -1,106 +1,343 @@
-#!/usr/bin/env bash
-# tally-decide.sh — show a raised deck decision and capture G's answer.
-#
-# G, 2026-09-08: "I pressed the Aurora button and it opened up this chat rather than
-# the actual Aurora interface. I want a tmux pop-up that has the actual questions I
-# need to answer."
-#
-# Before this, pressing an attention key attached you to whichever pane RAISED the
-# flag — which is the session that asked the question, not the question itself. For a
-# decision flag that is useless: you land in a transcript and still have to go hunting
-# for what you were being asked.
-#
-# This reads the signal's own `detail` (which already carries the question, the options
-# and the recommendation), shows it, takes an answer, records it, and clears the flag so
-# the key stops flashing. Answers are delivered to G's Telegram session so the agent that
-# raised the question actually learns the outcome — a decision nobody is told about is
-# the same as no decision.
-#
-# Usage:  tally-decide.sh <signal-id>          # e.g. aurora-sphere-polarity
-#         tally-decide.sh --list               # what is currently asking
-set -uo pipefail
+#!/usr/bin/python3
+"""tally-decide — show a raised deck decision as a proper TUI and capture the answer.
 
-SIGNALS="${TALLYDECK_SIGNALS:-$HOME/.tallydeck/signals}"
-LOG="${TALLY_DECISION_LOG:-$HOME/.openclaw/state/tally-decisions.log}"
-TG=/home/openclaw/scripts/tg-send-logged.sh
-G_CHAT=39172309
-TALLY_BIN="${TALLY_BIN:-$HOME/.local/bin/tally}"
+    tally-decide <signal-id>        e.g. mobile-popups
+    tally-decide --list             what is currently asking
 
-if [ "${1:-}" = "--list" ] || [ -z "${1:-}" ]; then
-  echo "Raised decisions:"
-  found=0
-  for f in "$SIGNALS"/*.json; do
-    [ -e "$f" ] || continue
-    case "$f" in *.bak.*) continue ;; esac
-    id=$(basename "$f" .json)
-    lbl=$(python3 -c "import json,sys;d=json.load(open(sys.argv[1]));print(d.get('label',''),'-',d.get('sublabel',''))" "$f" 2>/dev/null)
-    printf '  %-28s %s\n' "$id" "$lbl"; found=1
-  done
-  [ "$found" = 1 ] || echo "  (none)"
-  exit 0
-fi
+Runs inside the tmux popup the hub opens on a key press (tally-popup-decide), or
+in any terminal. Renders the signal's FULL ask — `meta.markdown` when the raiser
+supplied one (headings, tables, bold, lists, <details>), else sublabel + detail —
+plus option cards when `meta.options` is set. A digit picks an option, `a` opens a
+free-text answer, Enter leaves the flag raised, Esc/q dismisses.
 
-ID="$1"
-F="$SIGNALS/$ID.json"
-[ -f "$F" ] || { echo "No such raised decision: $ID"; echo; "$0" --list; sleep 4; exit 1; }
+On an answer: fireworks, "recorded", then the same contract as before — append to
+the decisions log, deliver to G's Telegram session so the raising agent learns the
+outcome, write ~/.tallydeck/answers/<id>.json, and clear the flag LAST so a failure
+above keeps the key flashing rather than silently losing the question.
+"""
+from __future__ import annotations
 
-# Render. Wrapped to the popup width rather than dumped raw — the detail field is a
-# paragraph, and an unwrapped paragraph in an 80-column popup is unreadable.
-COLS=$(tput cols 2>/dev/null || echo 80); [ "$COLS" -gt 100 ] && COLS=100
-python3 - "$F" "$COLS" <<'PY'
-import json, sys, textwrap
-d = json.load(open(sys.argv[1])); w = int(sys.argv[2]) - 4
-def block(text, indent=""):
-    for para in str(text).split("\n"):
-        for line in textwrap.wrap(para, w - len(indent)) or [""]:
-            print(indent + line)
-print("=" * (w + 2))
-print(f"  {d.get('label','?').upper()}  —  decision needed")
-print("=" * (w + 2)); print()
-sub = str(d.get("sublabel", "")).strip()
-det = str(d.get("detail", "")).strip()
-block(sub, "  "); print()
-# `tally raise` promotes sublabel into detail when no --detail was given, so on a
-# bare raise the two are the same string — printing both just says it twice.
-if det and det != sub:
-    block(det, "  ")
-print()
-PY
+import json
+import math
+import os
+import random
+import subprocess
+import sys
+import time
+from pathlib import Path
 
-echo "──────────────────────────────────────────────────"
-echo "Type your answer (a number, a word, or a sentence)."
-echo "Enter alone = leave it raised and decide later."
-echo
-printf 'answer> '
-read -r ANSWER
+from rich import box
+from rich.align import Align
+from rich.columns import Columns
+from rich.console import Console, Group
+from rich.live import Live
+from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.rule import Rule
+from rich.table import Table
+from rich.text import Text
+from rich.theme import Theme
 
-if [ -z "${ANSWER// /}" ]; then
-  echo; echo "Left raised. Nothing recorded."
-  sleep 2; exit 0
-fi
+INDIGO, AMBER, FG, DIM, GREEN = "#7B88FF", "#FFB224", "#F2F3F5", "#8B8F98", "#43B75D"
+THEME = Theme({
+    "markdown.h1": f"bold {AMBER}", "markdown.h1.border": DIM,
+    "markdown.h2": f"bold {AMBER}", "markdown.h3": f"bold {FG}",
+    "markdown.strong": f"bold {FG}", "markdown.em": f"italic {INDIGO}",
+    "markdown.code": f"{INDIGO} on #1A1C24", "markdown.item.bullet": f"bold {AMBER}",
+    "markdown.hr": DIM, "markdown.block_quote": DIM, "markdown.link": INDIGO,
+    "table.header": f"bold {INDIGO}", "table.border": DIM,
+})
+G_CHAT = os.environ.get("TALLY_DECISION_CHAT", "39172309")
+TG = os.environ.get("TALLY_TG_SEND", "/home/openclaw/scripts/tg-send-logged.sh")
 
-TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-mkdir -p "$(dirname "$LOG")"
-printf '[%s] %s :: %s\n' "$TS" "$ID" "$ANSWER" >> "$LOG"
 
-# Tell the fleet. Routing it through G's own session means it lands in the same place
-# he'd have typed it, so whichever agent raised the flag picks it up as a normal reply.
-"$TG" "$G_CHAT" tally-decide "DECISION — $ID
+def state_dir() -> Path:
+    env = os.environ.get("TALLYDECK_STATE")
+    if env:
+        return Path(env).expanduser()
+    try:
+        import pwd
+        return Path(pwd.getpwuid(os.getuid()).pw_dir) / ".tallydeck"
+    except Exception:
+        return Path.home() / ".tallydeck"
 
-$ANSWER
 
-(answered from the deck popup at $TS)" >/dev/null 2>&1 \
-  || echo "warning: could not deliver the answer to Telegram — it is still in $LOG"
+SIGNALS = Path(os.environ.get("TALLYDECK_SIGNALS", state_dir() / "signals"))
+ANSWERS = state_dir() / "answers"
+LOG = Path(os.environ.get("TALLY_DECISION_LOG",
+                          "/home/openclaw/.openclaw/state/tally-decisions.log"))
+TALLY_BIN = os.environ.get("TALLY_BIN", str(Path(__file__).resolve().parent / "tally"))
 
-# Clear the flag last: if anything above failed, the key keeps flashing rather than
-# silently losing the question.
-if [ -x "$TALLY_BIN" ]; then
-  "$TALLY_BIN" clear "$ID" >/dev/null 2>&1 || rm -f "$F"
-else
-  rm -f "$F"
-fi
+console = Console(color_system="truecolor", theme=THEME)
 
-echo
-echo "Recorded: $ANSWER"
-echo "Flag cleared. Sent to the session that asked."
-sleep 2
+
+# ── pieces ───────────────────────────────────────────────────────────────────
+
+def _age(seconds: float) -> str:
+    s = int(seconds)
+    return f"{s}s" if s < 60 else f"{s // 60}m" if s < 3600 else f"{s // 3600}h{(s % 3600) // 60:02d}"
+
+
+def _gradient_rule(width: int, a=(123, 136, 255), b=(255, 178, 36)) -> Text:
+    t = Text()
+    for i in range(width):
+        k = i / max(1, width - 1)
+        rgb = tuple(int(a[j] * (1 - k) + b[j] * k) for j in range(3))
+        t.append("━", style=f"rgb({rgb[0]},{rgb[1]},{rgb[2]})")
+    return t
+
+
+def _header(d: dict, width: int) -> Group:
+    state = str(d.get("state", "attention"))
+    chip = Text(f" ◆ {'BLOCKED' if state == 'blocked' else 'DECISION'} ",
+                style=f"bold black on {AMBER if state != 'blocked' else '#E5484D'}")
+    title = Text(f"  {d.get('label', '?')}", style=f"bold {FG}")
+    meta = Text(f"   raised {_age(time.time() - float(d.get('updated', time.time())))} ago",
+                style=DIM)
+    right = Text("· tallydeck", style=DIM)
+    line = Table.grid(expand=True)
+    line.add_column(justify="left")
+    line.add_column(justify="right")
+    line.add_row(Text.assemble(chip, title, meta), right)
+    return Group(_gradient_rule(width), line, _gradient_rule(width))
+
+
+def _body(d: dict) -> Panel:
+    md = str((d.get("meta") or {}).get("markdown") or "").strip()
+    if md:
+        content = Markdown(md, code_theme="monokai", inline_code_theme="monokai")
+    else:
+        sub = str(d.get("sublabel", "")).strip()
+        det = str(d.get("detail", "")).strip()
+        parts = [f"## {sub}" if sub else ""]
+        if det and det != sub:
+            parts.append(det)
+        content = Markdown("\n\n".join(p for p in parts if p))
+    return Panel(content, box=box.ROUNDED, border_style=INDIGO,
+                 padding=(1, 3), title=Text("the ask", style=DIM),
+                 title_align="left")
+
+
+def _options(opts: list[str]):
+    """Option cards in an even grid, three to a row."""
+    if not opts:
+        return None
+    cards = []
+    for i, o in enumerate(opts[:9], 1):
+        key = Text(f" {i} ", style=f"bold black on {AMBER}")
+        body = Text.assemble(key, Text("  " + o, style=f"bold {FG}"))
+        cards.append(Panel(body, box=box.ROUNDED, border_style=INDIGO if i == 1 else DIM,
+                           padding=(0, 1), expand=True))
+    per = 3 if len(cards) > 2 else len(cards)
+    grid = Table.grid(expand=True, padding=(0, 1))
+    for _ in range(per):
+        grid.add_column(ratio=1)
+    for r in range(0, len(cards), per):
+        row = cards[r:r + per]
+        grid.add_row(*(row + [Text("")] * (per - len(row))))
+    return grid
+
+
+def _footer(has_opts: bool, msg: str = "") -> Text:
+    t = Text()
+    if msg:
+        t.append(msg + "   ", style=f"bold {AMBER}")
+    if has_opts:
+        t.append(" 1-9 ", style=f"bold black on {INDIGO}")
+        t.append(" pick   ", style=DIM)
+    t.append(" a ", style=f"bold black on {INDIGO}")
+    t.append(" answer in words   ", style=DIM)
+    t.append(" ⏎ ", style=f"bold black on {DIM}")
+    t.append(" leave it raised   ", style=DIM)
+    t.append(" esc ", style=f"bold black on {DIM}")
+    t.append(" dismiss", style=DIM)
+    return t
+
+
+def screen(d: dict, opts: list[str], msg: str = "") -> Group:
+    w = console.width
+    parts = [_header(d, w), Text(""), _body(d)]
+    o = _options(opts)
+    if o is not None:
+        parts += [Text(""), o]
+    parts += [Text(""), _footer(bool(opts), msg)]
+    return Group(*parts)
+
+
+# ── input ────────────────────────────────────────────────────────────────────
+
+def _getkey(timeout: float = 300.0, gone=None) -> str:
+    """One keypress, raw; '' on timeout or when `gone()` turns true (the
+    same question is shown on every attached terminal — once it is answered
+    on one, the others fold quietly). Drains terminal query replies first."""
+    import select, termios, tty
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        while select.select([fd], [], [], 0.05)[0]:      # drain DA1 etc.
+            os.read(fd, 4096)
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if select.select([fd], [], [], 0.5)[0]:
+                return os.read(fd, 16).decode("utf-8", "ignore")
+            if gone is not None and gone():
+                return ""
+        return ""
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def _reveal(renderable) -> None:
+    """Materialize: the screen prints in top-down over ~0.3 s."""
+    with console.capture() as cap:
+        console.print(renderable)
+    lines = cap.get().split("\n")
+    console.clear()
+    for ln in lines:
+        sys.stdout.write(ln + "\n")
+        sys.stdout.flush()
+        time.sleep(min(0.012, 0.35 / max(1, len(lines))))
+
+
+def _fireworks(seconds: float = 1.1) -> None:
+    """A burst over the whole popup, then it clears itself."""
+    w, h = console.width, max(10, console.height - 2)
+    rnd = random.Random(7)
+    bursts = [(rnd.uniform(0.25, 0.75) * w, rnd.uniform(0.3, 0.6) * h,
+               rnd.uniform(0.0, 0.35), [(rnd.uniform(0, 2 * math.pi), rnd.uniform(0.35, 1.0))
+                                        for _ in range(26)])
+              for _ in range(4)]
+    glyphs = "✦✧·∘•*+"
+    t0 = time.time()
+    with Live(console=console, refresh_per_second=30, transient=True, screen=True) as live:
+        while True:
+            el = time.time() - t0
+            if el > seconds:
+                break
+            grid = [[" "] * w for _ in range(h)]
+            styles = [[None] * w for _ in range(h)]
+            for bx, by, delay, parts in bursts:
+                p = (el - delay) / (seconds - delay)
+                if p < 0:
+                    continue
+                for ang, spd in parts:
+                    r = (1 - (1 - p) ** 2) * spd * min(w, h * 2) * 0.28
+                    x = int(bx + math.cos(ang) * r)
+                    y = int(by + math.sin(ang) * r * 0.5 + p * p * 3)   # gravity
+                    if 0 <= x < w and 0 <= y < h:
+                        k = max(0.0, 1 - p)
+                        col = (int(255 * k + 123 * (1 - k)), int(178 * k + 136 * (1 - k)),
+                               int(36 * k + 255 * (1 - k)))
+                        grid[y][x] = glyphs[min(len(glyphs) - 1, int(p * len(glyphs)))]
+                        styles[y][x] = f"rgb({col[0]},{col[1]},{col[2]})"
+            out = Text()
+            for y in range(h):
+                for x in range(w):
+                    out.append(grid[y][x], style=styles[y][x])
+                out.append("\n")
+            live.update(out)
+            time.sleep(1 / 30)
+
+
+def _recorded(d: dict, answer: str) -> Group:
+    big = Text.assemble(("  ✓  ", f"bold {GREEN}"), ("recorded", f"bold {FG}"))
+    ans = Panel(Text(answer, style=f"bold {AMBER}"), box=box.HEAVY, border_style=GREEN,
+                padding=(1, 3))
+    return Group(_gradient_rule(console.width), Text(""), big, Text(""), ans, Text(""),
+                 Text("sent to the session that asked · flag cleared", style=DIM))
+
+
+# ── main ─────────────────────────────────────────────────────────────────────
+
+def list_raised() -> int:
+    t = Table(box=box.SIMPLE, header_style=DIM)
+    t.add_column("id"); t.add_column("label"); t.add_column("ask")
+    n = 0
+    for f in sorted(SIGNALS.glob("*.json")):
+        try:
+            d = json.loads(f.read_text())
+        except Exception:
+            continue
+        t.add_row(f.stem, str(d.get("label", "")), str(d.get("sublabel", ""))[:60]); n += 1
+    console.print(t if n else Text("(nothing raised)", style=DIM))
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    if not argv or argv[0] == "--list":
+        return list_raised()
+    sid = argv[0]
+    f = SIGNALS / f"{sid}.json"
+    if not f.is_file():
+        console.print(Text(f"No such raised decision: {sid}", style="bold red"))
+        list_raised(); time.sleep(3); return 1
+    d = json.loads(f.read_text())
+    opts = [str(o) for o in ((d.get("meta") or {}).get("options") or [])]
+
+    _reveal(screen(d, opts))
+    msg = ""
+    answer = ""
+    while True:
+        key = _getkey(gone=lambda: not f.exists())
+        if key in ("", "\x1b", "q", "Q"):
+            console.clear(); return 0                      # dismiss, flag stays
+        if key in ("\r", "\n"):
+            console.clear()
+            console.print(Text("left raised — decide later", style=DIM)); time.sleep(0.8)
+            return 0
+        if key.isdigit() and opts and 1 <= int(key) <= len(opts):
+            answer = f"{key} — {opts[int(key) - 1]}"
+            break
+        if key in ("a", "A", "/", " "):
+            console.clear(); console.print(screen(d, opts, "your answer:"))
+            try:
+                console.print(Text("› ", style=f"bold {AMBER}"), end="")
+                answer = input().strip()
+            except (EOFError, KeyboardInterrupt):
+                answer = ""
+            if answer and not f.exists():
+                console.clear()
+                console.print(Text("already answered elsewhere", style=DIM)); time.sleep(1)
+                return 0
+            if answer:
+                break
+            _reveal(screen(d, opts)); continue
+        msg = "1-9 picks an option · a to type" if opts else "a to type an answer"
+        console.clear(); console.print(screen(d, opts, msg))
+
+    ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    LOG.parent.mkdir(parents=True, exist_ok=True)
+    with open(LOG, "a") as fh:
+        fh.write(f"[{ts}] {sid} :: {answer}\n")
+    ANSWERS.mkdir(parents=True, exist_ok=True)
+    (ANSWERS / f"{sid}.json").write_text(json.dumps(
+        {"id": sid, "answer": answer, "at": ts, "label": d.get("label", "")}))
+
+    _fireworks()
+    console.clear(); console.print(_recorded(d, answer))
+
+    delivered = True
+    if os.access(TG, os.X_OK):
+        r = subprocess.run([TG, G_CHAT, "tally-decide",
+                            f"DECISION — {d.get('label', sid)} ({sid})\n\n{answer}\n\n"
+                            f"(answered from the deck popup at {ts})"],
+                           capture_output=True, text=True, timeout=30)
+        delivered = r.returncode == 0
+    if not delivered:
+        console.print(Text(f"warning: Telegram delivery failed — answer is in {LOG}",
+                           style="bold red"))
+    # clear LAST: anything failing above keeps the key flashing
+    if os.access(TALLY_BIN, os.X_OK):
+        subprocess.run([TALLY_BIN, "clear", sid], capture_output=True, timeout=10)
+    if f.exists():
+        f.unlink(missing_ok=True)
+    time.sleep(1.6)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except KeyboardInterrupt:
+        sys.exit(0)

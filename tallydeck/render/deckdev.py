@@ -100,7 +100,9 @@ class DeckSurface:
     # ── drawing ──────────────────────────────────────────────────────────────
 
     def show(self, layout: Layout, lit: dict[str, bool],
-             t: float = 0.0, pressed: frozenset = frozenset()) -> None:
+             t: float = 0.0, pressed: frozenset = frozenset(),
+             fx: dict | None = None) -> None:
+        fx = fx or {}
         with self._lock:
             askpage = int(t / 2)
             if layout.mural:
@@ -123,16 +125,21 @@ class DeckSurface:
                              and len(sig.sublabel) > 55)   # ~2+ pages
                 # Skip HID writes for unchanged keys — flashing 2 of 8 keys
                 # should cost 2 updates per frame, not 8.
+                fxp = int(fx[i] * 14) if i in fx else -1
                 print_key = (None if sig is None else
                              (sig.id, sig.state, sig.label, sig.sublabel,
                               sig.progress, sig.color,
                               round(float(sig.meta.get('heat', 0) or 0), 2)),
-                             is_lit, is_pressed, askpage if paged else 0)
+                             is_lit, is_pressed, askpage if paged else 0, fxp)
                 if self._drawn.get(i) == print_key:
                     continue
                 img = draw_key(sig, self.profile.key_px, lit=is_lit,
                                pressed=is_pressed,
                                askpage=askpage if paged else 0)
+                if fxp >= 0 and sig is not None:
+                    from .fx import fireworks
+                    img = fireworks(img, fx[i], sig.color or theme.STATE_COLOR.get(
+                        sig.state, theme.STATE_COLOR["idle"]), seed=sig.id)
                 native = self._pil.to_native_key_format(
                     self.deck, self._pil.create_scaled_key_image(self.deck, img))
                 self.deck.set_key_image(i, native)

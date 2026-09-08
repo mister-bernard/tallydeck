@@ -33,9 +33,12 @@ def _screen_face(profile: DeviceProfile, layout: Layout, t: float):
 
 def render_png(profile: DeviceProfile, layout: Layout,
                lit: dict[str, bool] | None = None,
-               scale: int = 2, t: float = 0.0) -> Image.Image:
-    """Render the deck face. `lit` maps signal id → flash frame on/off."""
+               scale: int = 2, t: float = 0.0,
+               fx: dict | None = None) -> Image.Image:
+    """Render the deck face. `lit` maps signal id → flash frame on/off;
+    `fx` maps key index → fireworks phase 0..1."""
     lit = lit or {}
+    fx = fx or {}
     kp = profile.key_px * scale
     gap, bez = GAP * scale, BEZEL * scale
 
@@ -65,7 +68,12 @@ def render_png(profile: DeviceProfile, layout: Layout,
         else:
             face = draw_key(sig, profile.key_px,
                             lit=bool(sig and lit.get(sig.id)),
-                            askpage=int(t / 2)).resize((kp, kp))
+                            askpage=int(t / 2))
+            if i in fx and sig is not None:
+                from .fx import fireworks
+                face = fireworks(face, fx[i], sig.color or theme.STATE_COLOR.get(
+                    sig.state, theme.STATE_COLOR["idle"]), seed=sig.id)
+            face = face.resize((kp, kp))
         img.paste(face, (x, y))
         d.rounded_rectangle([x - 1, y - 1, x + kp, y + kp],
                             radius=6 * scale, outline="#000000", width=scale)
