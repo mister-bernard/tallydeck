@@ -38,9 +38,109 @@ custom TCP protocol.
 
 ## Why press-by-id only
 
-The client never sends commands, argv, or paths — only `{"press", id}`.
-All execution happens hub-side, from the hub's own config and sources. A
-compromised or buggy client can, at worst, ack signals and focus tmux panes.
+The client never sends commands, argv, or paths — only `{"press", id}`
+and `{"answer", id, text}`. All execution happens hub-side, from the
+hub's own config and sources; a file dropped into the watch directory
+cannot smuggle an `action` in (the source strips it and attaches its own).
+An answer is accepted only for a question the hub currently has raised,
+never for a live session's own prompt, and a bare digit must index the
+question's option list. A compromised or buggy client can, at worst,
+answer questions the operator was already being asked.
+
+## Presses are hub-side popups
+
+Client-side routing (read the Mac's window titles, ssh back, fall through
+to a fresh terminal window) depended on the deck machine's configuration,
+permissions and process version, and every one of those failed in turn.
+The hub runs tmux, so it puts the popup up itself: a session key runs
+`contrib/tally-popup-route`, a raised question `contrib/tally-popup-decide`,
+each opening on every attached client active in the last 12 h (mosh ghosts
+are weeks old; `_fl-*` floating sessions are never targets). The same popup
+folds on the other terminals once the operator acts in one (a marker file
+the popups poll). A press action still alive after 0.7 s means "the popup
+is up": the key stops flashing until it closes. The Mac script's only
+remaining job is to bring the terminal app forward.
+
+Pane identity is durable: the PostToolUse hook records each session's
+tmux pane from inside the pane (`~/.tallydeck/panes/`), because the live
+process-tree scan only sees a session while a tool subprocess is alive —
+keys kept "losing" their pane between tool calls. For a permission
+prompt the pane a press lands in comes from that registry, never from the
+dropped file, so a hostile drop cannot steer the operator into a pane of
+its choosing.
+
+## Decisions: one answer file, many surfaces
+
+A raised question (`tally raise --options … --markdown …`) can be answered
+from the deck popup, from Signal, from a bare option number on Telegram,
+or from a native Mac notification. Every surface writes the same
+`~/.tallydeck/answers/<id>.json`, created exclusively (`os.link`): the
+first writer wins, the second learns it lost, and nothing is ever
+overwritten. All JSON state is written atomically (temp + replace) so a
+concurrent reader never sees a torn file; `tally wait` treats an unreadable
+or empty file as "not yet" and ignores an answer older than its flag.
+`tally raise` archives last round's answer for a reused slug. The flag is
+cleared LAST, and never outlives its answer.
+
+The answer is delivered to the session that asked — pasted into its pane
+(recorded at raise time; the process-tree scan is the fallback) — not to
+the operator's chat: he pressed the key, he knows.
+
+## Deck first, phone when away
+
+`contrib/tally-notify` sends a raised question to Signal only while no
+deck is connected: the hub touches `hub.alive` every 5 s on its own thread
+(a hung poll must not look like "unplugged"), and a live `tally serve`
+process counts too. Unplug the deck and any question still raised goes to
+the phone; plug it back in and the phone goes quiet. Options are numbered
+in the message and the operator replies with the number or quotes the
+message to answer in words. The chat router (Telegraph) runs the matcher
+(`contrib/tally-answer`) before normal routing, for Signal DMs from the
+operator only while something is pending. Its rules are deliberately
+narrow, because an unrelated message eaten as an answer is the worst
+outcome the system can produce: an implicit answer is an OPTION only
+(`1`, `b`), within an hour of the send; words need the question named
+(`[id] …`, `id: …`) or a quote of the tagged message; a quote of anything
+else belongs to someone else's conversation; several pending → a nudge,
+never a swallow. On Telegram the operator is replying to an agent's own
+message, so the hook only observes: a bare digit records the answer and
+clears the key, the message still routes. `hush` / `hush 2h` / `unhush`
+pause the phone; `~/.tallydeck/answer-quiet` kills both directions with
+no restart. Permission prompts and turns that ended with a question are
+announced once each, notify-only — that answer belongs in the session.
+
+## Dedicated sessions
+
+Work is meant to run in its own tmux session with its own key, decided
+about from the deck rather than watched. `tally spawn <slug>` starts a
+task that way (claude receives the task as its first prompt; the session
+source labels the key by tmux session). `tally offer <slug> "<summary>"`
+is the "run this in a dedicated session?" prompt as one command: it
+raises a two-option decision, returns at once, and a detached waiter
+spawns on yes, pasting the outcome back into the offering pane. The
+judgment "will this run for a while?" belongs to the agent in the
+operator's main session, guided by the convention in that workspace's
+AGENTS.md.
+
+## Reload and reconnect
+
+The hub checks its own source tree every 5 s and `exec`s itself when it
+changed (never mid-popup); `exec` keeps fds 0/1 — the ssh pipe — so a
+`git pull` on the host reaches the deck with no client action. The deck
+client re-spawns its connect command with a 3 s backoff if the hub dies,
+keeping the last snapshot on the keys. Together these ended the "quit and
+relaunch the deck after every fix" loop.
+
+## The quiet-deck mural
+
+When nothing is blocked, asking, or working, the eight keys become one
+canvas: a fedora-and-magnifier portrait, block lettering across the top
+row, a blinking prompt bottom-right — characters on a 4×7 px cell grid,
+sampled from drawn silhouettes onto a density ramp, indigo to amber.
+Pictures may cross the bezels between keys; text must not (a line of
+words across a bezel loses letters), so lettering stays within one key
+row and caption lines each sit inside one key. Any press peeks at the
+plain grid for 20 s.
 
 ## Flash design
 

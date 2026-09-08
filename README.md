@@ -163,8 +163,7 @@ of the tracked file: see `examples/config.example.toml` for the shape.
 The hub is reached by an **ssh alias**, never an address, so nothing
 host-specific lives in the repo. Name it whatever you like in the Mac's
 `~/.ssh/config` (the default the scripts expect is `claw`), then point
-`[client] connect` at that alias — or export `TALLY_SSH_HOST` to override
-it for `contrib/tally-open-mac.sh`. `ControlMaster` makes presses instant:
+`[client] connect` at that alias. `ControlMaster` makes presses instant:
 
 ```
 Host claw
@@ -175,17 +174,58 @@ Host claw
   ControlPersist 10m
 ```
 
-Grant the macOS **Automation** prompt on first press, and **Accessibility**
-for your terminal app (System Settings) so presses focus the exact window.
+Grant the macOS **Automation** prompt on first press: the Mac script's only
+job is to bring your terminal app forward. The popup itself is put up by
+the hub, on whichever tmux client(s) you have attached — nothing on the Mac
+routes, reads window titles, or opens fresh windows any more. (The old
+client-side routing survives behind `TALLY_LEGACY_ROUTING=1` for the one
+case with no tmux client attached anywhere.)
+
+### What a press does
+
+Every key press travels to the hub as an id, and the hub answers it with a
+popup on your attached terminal(s):
+
+| Key | Popup | Keys inside it |
+|:--|:--|:--|
+| a session (blue/green/orange) | the **router**: where it left off, repo state, matching tasks | ⏎ open floating · `t` tab here · `s` split here · `l` text me links · ␣ done (mute) |
+| a permission prompt (red) | the router, aimed at the waiting pane | ⏎ lands you at the prompt |
+| a raised question (orange/red) | the **decide** TUI: the full Markdown brief and numbered option cards | `1`–`9` pick · `a` answer in words · ⏎ leave it raised · Esc dismiss |
+
+The same popup appears on every attached terminal and folds on the others
+the moment you act in one. A pressed key throws fireworks and stops
+blinking; it stays steady while its popup is open. Answers to a raised
+question go to the session that asked (pasted into its pane) and to
+`~/.tallydeck/answers/<id>.json`, which `tally wait <id>` reads — never to
+your chat.
+
+### Phone
+
+`contrib/tally-notify` (a user service) sends a raised question to Signal
+**only while no deck is connected** (the hub leaves a heartbeat while one
+is), with its options numbered; reply with the number, or quote the message
+to answer in words. A chat-router hook (see `docs/DESIGN.md`) records the
+answer and clears the key; a bare option number on Telegram does the same
+without hijacking the message. Permission prompts and turns that ended with
+a question are announced once, notify-only. `hush` / `hush 2h` / `unhush`
+pause it; `~/.tallydeck/answer-quiet` is the kill switch for both directions.
+
+### Operations
+
+The hub re-executes itself when its source tree changes (a `git pull` on
+the host reaches the deck without touching the client) and the deck client
+reconnects if the hub dies, keeping the last frame on the keys meanwhile.
 
 ## How it works (the short version)
 
 `Signal` (one unit of attention) → **sources** (Claude session scanner,
 watch-directory, token-burn API, Claude Code hooks) → **hub** (merges,
-streams NDJSON over stdio — canonically behind `ssh`) → **view** (rank,
-sticky slots, pages) → **surfaces** (Stream Deck, terminal, PNG). Presses
-travel by signal-id only; nothing arriving over the wire is executed.
-Details: [docs/DESIGN.md](docs/DESIGN.md).
+streams NDJSON over stdio — canonically behind `ssh`; runs press actions
+and validates answers) → **view** (rank, sticky slots, pages, the mural)
+→ **surfaces** (Stream Deck, terminal, PNG). Presses travel by signal-id
+only; an answer is accepted only for a question the hub itself raised;
+nothing arriving over the wire is executed. Details:
+[docs/DESIGN.md](docs/DESIGN.md).
 
 ## Development
 
