@@ -296,6 +296,9 @@ def main(argv: list[str]) -> int:
     if argv[0] == "--deliver":
         return deliver(*argv[1:5])
     sid = argv[0]
+    import re as _re
+    if not _re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", sid) or ".." in sid:
+        console.print(Text(f"bad signal id: {sid!r}", style="bold red")); return 1
     f = SIGNALS / f"{sid}.json"
     if not f.is_file():
         console.print(Text(f"No such raised decision: {sid}", style="bold red"))
@@ -315,7 +318,7 @@ def main(argv: list[str]) -> int:
     msg = ""
     answer = ""
     while True:
-        key = _getkey(gone=lambda: not f.exists())
+        key = _getkey(gone=lambda: not f.exists() or (ANSWERS / f"{sid}.json").exists())
         if key in ("", "\x1b", "q", "Q"):
             console.clear(); return 0                      # dismiss, flag stays
         if key in ("\r", "\n"):
@@ -379,6 +382,9 @@ def deliver(sid: str, label: str, answer: str, ts: str) -> int:
     """Background half of an answer: Telegram first, clear the flag LAST.
     No-op unless the answer on disk is the one we were handed (a lost race
     must not deliver, and must not clear the winner's flag)."""
+    import re as _re
+    if not _re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", sid) or ".." in sid:
+        return 1
     f = SIGNALS / f"{sid}.json"
     try:
         cur = json.loads((ANSWERS / f"{sid}.json").read_text())
@@ -388,25 +394,36 @@ def deliver(sid: str, label: str, answer: str, ts: str) -> int:
         return 1
     delivered = False
     if os.access(TG, os.X_OK):
-        try:
-            r = subprocess.run([TG, G_CHAT, "tally-decide",
-                                f"DECISION — {label} ({sid})\n\n{answer}\n\n"
-                                f"(answered from the deck popup at {ts})"],
-                               capture_output=True, text=True, timeout=30)
-            delivered = r.returncode == 0
-        except (OSError, subprocess.TimeoutExpired):
-            delivered = False
+        for attempt in range(3):             # Telegram hiccups are common; retry
+            try:
+                r = subprocess.run([TG, G_CHAT, "tally-decide",
+                                    f"DECISION — {label} ({sid})\n\n{answer}\n\n"
+                                    f"(answered from the deck popup at {ts})"],
+                                   capture_output=True, text=True, timeout=30)
+                delivered = r.returncode == 0
+            except (OSError, subprocess.TimeoutExpired):
+                delivered = False
+            if delivered:
+                break
+            time.sleep(2 * (attempt + 1))
     elif os.environ.get("TALLY_TG_SEND") in ("", None) and not os.path.exists(TG):
         delivered = True                     # no Telegram on this host: nothing to deliver
     if not delivered:
-        with open(LOG, "a") as fh:
-            fh.write(f"[{ts}] {sid} :: WARNING delivery failed; flag left raised\n")
-        return 1
-    if os.access(TALLY_BIN, os.X_OK):
-        subprocess.run([TALLY_BIN, "clear", sid], capture_output=True, timeout=10)
+        # The answer FILE is the record (tally wait reads it); the Telegram
+        # note is a courtesy. A flag must never outlive its answer.
+        try:
+            with open(LOG, "a") as fh:
+                fh.write(f"[{ts}] {sid} :: WARNING Telegram delivery failed (answer recorded, flag cleared)\n")
+        except OSError:
+            pass
+    try:
+        if os.access(TALLY_BIN, os.X_OK):
+            subprocess.run([TALLY_BIN, "clear", sid], capture_output=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
     if f.exists():
         f.unlink(missing_ok=True)
-    return 0
+    return 0 if delivered else 1
 
 
 if __name__ == "__main__":

@@ -44,7 +44,7 @@ import time
 from pathlib import Path
 
 IMPLICIT_WINDOW = 3600       # s after the Signal went out that a bare "1" still counts
-MAX_ANSWER = 200
+MAX_ANSWER = 500              # same cap as hub.answer
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
@@ -70,6 +70,10 @@ def _read(fp: Path) -> dict | None:
 def _write_atomic(fp: Path, obj: dict, exclusive: bool = False) -> bool:
     import tempfile
     fp.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(fp.parent, 0o700)        # nobody else pre-creates an answer
+    except OSError:
+        pass
     fd, tmp = tempfile.mkstemp(prefix=f".{fp.name}.", dir=str(fp.parent))
     try:
         with os.fdopen(fd, "w") as fh:
@@ -95,7 +99,9 @@ def _load_pending(sd: Path) -> dict[str, dict]:
         if not SAFE_ID.match(fp.stem) or ".." in fp.stem:
             continue
         d = _read(fp)
-        if d and (sd / "signals" / f"{fp.stem}.json").is_file():     # still raised
+        # only questions that were actually SENT (a failed send is not a
+        # question G has) and are still raised
+        if d and d.get("sent_at") and (sd / "signals" / f"{fp.stem}.json").is_file():
             out[fp.stem] = d
     return out
 
@@ -151,6 +157,10 @@ def _resolve_answer(pending: dict, text: str, quote: str, now: float):
         opts = [str(o) for o in pending[sid].get("options") or []]
         ans = _option(body, opts) or (_free(body) if free_ok else None)
         return (sid, ans) if ans else (None, "not-an-answer")
+    if quote.strip():
+        # A quote-reply that did not name us is a reply to SOMEONE ELSE's
+        # message (an agent's "1 or 2?" on Signal) — never ours (audit P0-2).
+        return None, "not-an-answer"
     if len(pending) == 1:
         # Implicit: only an OPTION counts, and only for a while. Words with
         # nothing naming the question are a message to whoever G was
@@ -258,10 +268,11 @@ def resolve(msg: dict) -> dict:
     sid, answer = _resolve_answer(pending, text, quote, now)
     if sid is None:
         if answer == "ambiguous":
-            # A bare "1" with several questions pending is aimed at one of
-            # them, not at the pane — swallow it and ask which.
+            # Several questions pending: a bare "1"/"y" may be an answer to
+            # a PANE's question just as well. Nudge, but never swallow —
+            # the router sends the nudge and routes the message normally.
             which = ", ".join(pending)
-            return {"handled": True, "reason": "ambiguous",
+            return {"handled": False, "reason": "ambiguous",
                     "reply": f"Which one? Reply like “{next(iter(pending))} 1”. Pending: {which}"}
         return {"handled": False, "reason": answer}
 

@@ -72,9 +72,11 @@ class Hub:
         }
         for sid in list(self._inflight):
             proc, started = self._inflight[sid]
-            if proc.poll() is not None or sid not in self._table:
+            if proc.poll() is not None:          # reaped by poll(); no zombie
                 self._inflight.pop(sid, None)
                 continue
+            if sid not in self._table:
+                continue                         # popup outlives its flag; keep waiting
             if now - started > OPEN_AFTER:
                 s = self._table[sid]
                 s.meta["opened"] = True
@@ -104,7 +106,8 @@ class Hub:
             argv = [str(a) for a in act["argv"]]
             self.log(f"[hub] press {sid} → {' '.join(argv)}")
             try:
-                proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL,
+                proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL,
+                                        stdout=subprocess.DEVNULL,
                                         stderr=subprocess.DEVNULL)
                 self._inflight[sid] = (proc, time.time())
             except OSError as e:
@@ -120,6 +123,10 @@ class Hub:
         ask), and a bare digit must index its option list. Delivery and the
         flag clear go through tally-decide's own --deliver pass so every
         surface records answers the same way."""
+        from .paths import answer_quiet
+        if answer_quiet().exists():
+            self.log(f"[hub] answer for {sid} refused: answer-quiet")
+            return False
         sig = self._table.get(sid)
         text = " ".join(str(text).split())[:500]
         if sig is None or sig.group != "sig" or not text:

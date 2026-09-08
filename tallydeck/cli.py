@@ -168,12 +168,8 @@ def cmd_raise(cfg, args):
             old.rename(arch / f"{args.id}.{int(time.time())}.json")
         except OSError:
             old.unlink(missing_ok=True)
-    d = {}
-    if fp.is_file():
-        try:
-            d = json.loads(fp.read_text())
-        except json.JSONDecodeError:
-            d = {}
+    d = read_json(fp) if fp.is_file() else None
+    d = d or {}
     d["label"] = args.label or d.get("label", args.id)
     d["state"] = args.state or d.get("state", "attention")
     for k in ("sublabel", "detail", "color"):
@@ -320,6 +316,8 @@ def cmd_unhush(cfg, args):
 
 
 def cmd_clear(cfg, args):
+    if not safe_id(args.id):
+        sys.exit(f"bad signal id {args.id!r}")
     fp = signals_dir() / f"{args.id}.json"
     if fp.is_file():
         fp.unlink()

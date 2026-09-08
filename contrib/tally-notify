@@ -68,10 +68,12 @@ def compose(d: dict, sid: str) -> str:
     state = "BLOCKED" if d.get("state") == "blocked" else "DECISION"
     lines = [f"◆ {state} — {d.get('label', sid)}", ""]
     sub = str(d.get("sublabel", "")).strip()
-    det = str(d.get("detail", "")).strip()
+    det = " ".join(str(d.get("detail", "")).split())
     if sub:
         lines.append(sub)
     if det and det != sub:
+        if len(det) > 600:
+            det = det[:580].rsplit(" ", 1)[0] + " … (full brief on the deck)"
         lines += ["", det]
     opts = [str(o) for o in (meta.get("options") or [])]
     if opts:
@@ -174,11 +176,12 @@ def _write(fp: Path, obj: dict) -> None:
 
 def tick(sd: Path, to: str, dry: bool) -> None:
     signals, pending, answers = sd / "signals", sd / "pending", sd / "answers"
-    pending.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(sd, 0o700)
-    except OSError:
-        pass
+    for d_ in (sd, pending, answers):
+        try:
+            d_.mkdir(parents=True, exist_ok=True)
+            os.chmod(d_, 0o700)
+        except OSError:
+            pass
     now = time.time()
     at_deck = deck_connected(sd, now)
     if _last_presence["deck"] is not at_deck:
@@ -225,9 +228,13 @@ def tick(sd: Path, to: str, dry: bool) -> None:
                         BACKOFF_MAX, 5.0 * 2 ** int(prev.get("fails") or 0)):
                     continue
             elif prev.get("sent_at") and now - float(prev["sent_at"]) < RESEND_AFTER:
-                # Changed ask, too soon to nag — but the option list G will
-                # answer against must be the CURRENT one (audit P2-4).
-                _write(pf, {**prev, "digest": dg, "options": opts, "updated": upd})
+                # Changed ask, too soon to nag. PARK the change: the digest and
+                # option list G is answering against stay the ones that were
+                # SENT (a bare "2" must never be scored against a list he has
+                # not seen — round-2 P0-1); the stale digest keeps the change
+                # visible so the resend fires once RESEND_AFTER passes.
+                if prev.get("pending_digest") != dg:
+                    _write(pf, {**prev, "pending_digest": dg, "updated": upd})
                 continue
             if (answers / f"{sid}.json").is_file():
                 continue                 # answered on another surface; delivery in flight

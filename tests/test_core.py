@@ -1036,8 +1036,8 @@ def test_signal_reply_resolves_a_pending_question(tmp_path):
     assert a["via"] == "signal" and "recorded" in r["reply"]
     (tmp_path / "answers" / "popups.json").unlink()
     raise_("popups", ["A · Signal", "B · ntfy"]); raise_("disk", [])
-    r = run({"text": "1"})           # aimed at one of them, not the pane: swallowed + nudge
-    assert r["handled"] is True and r["reason"] == "ambiguous" and "Which one" in r["reply"]
+    r = run({"text": "1"})           # could be a pane's y/n: nudge, never swallow
+    assert r["handled"] is False and r["reason"] == "ambiguous" and "Which one" in r["reply"]
     r = run({"text": "disk: kill at 95%"})
     assert r["handled"] and r["id"] == "disk" and r["answer"] == "kill at 95%"
     (tmp_path / "answers" / "disk.json").unlink()
