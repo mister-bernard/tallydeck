@@ -455,7 +455,7 @@ def _parser() -> argparse.ArgumentParser:
     for name, help_, usage in (
             ("spawn", "start a task as its own tmux session (own deck key)",
              "tally spawn <slug> [-c cwd] [-a A|B|O] [--harness claude|codex] [-p file|-] [\"task text\"]"),
-            ("offer", "ask G: run this in a dedicated session? then spawn on yes",
+            ("offer", "compatibility name for spawn — starts it, asks nothing",
              "tally offer <slug> \"<one-line summary>\" [-c cwd] [-a A|B|O] [--harness claude|codex] [-p file|-] [\"task text\"]")):
         # add_help=False: --help reaches the helper, which prints its real usage
         sp = sub.add_parser(name, help=help_, usage=usage, add_help=False)

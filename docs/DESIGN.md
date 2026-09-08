@@ -115,12 +115,15 @@ Work is meant to run in its own tmux session with its own key, decided
 about from the deck rather than watched. `tally spawn <slug>` starts a
 task that way (claude receives the task as its first prompt; the session
 source labels the key by tmux session). `tally offer <slug> "<summary>"`
-is the "run this in a dedicated session?" prompt as one command: it
-raises a two-option decision, returns at once, and a detached waiter
-spawns on yes, pasting the outcome back into the offering pane. The
-judgment "will this run for a while?" belongs to the agent in the
-operator's main session, guided by the convention in that workspace's
-AGENTS.md.
+is the same command under its older name and now spawns immediately too.
+
+It used to raise a "dedicated session?" decision and wait for an answer
+before starting. That inverted the point: the operator had to answer a
+question before the work would begin, which is a blocker, not a saving
+(G, 2026-09-08). The judgment "does this deserve its own session?"
+belongs to the agent — spawn when it does, work inline when it doesn't,
+per the convention in that workspace's AGENTS.md. The new key appearing
+on the deck is the notification; nothing is raised and nothing waits.
 
 ## Reload and reconnect
 

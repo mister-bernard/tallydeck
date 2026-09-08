@@ -19,17 +19,18 @@ your phone, or a bare option number in chat.
   session (`<slug>`), with the calling harness fed the task as its first prompt. It appears
   as its own key as soon as it speaks; a second `<slug>` becomes `<slug>-2`.
 - **`tally offer <slug> "<one-line summary>" -c <dir> -p - <<'EOF' … EOF`** is
-  the "run this in a dedicated session?" prompt as one command: it raises a
-  two-option decision (deck popup; phone when the deck is unplugged; a bare
-  `1`/`2` on Telegram or Signal answers it), returns at once, and a detached
-  waiter spawns on *yes* — the outcome is pasted back into the offering pane
-  as a `[tally] …` line. The convention for agents lives in AGENTS.md.
+  the same thing under its older name, taking a summary as well as the task.
+  It used to raise a "dedicated session?" decision and hold the work until the
+  operator answered; that made the answer a precondition for anything starting,
+  so it now spawns straight away and asks nothing. Whether a task deserves its
+  own session is the agent's call — the convention lives in AGENTS.md. An agent
+  that wants the work here just does it here and never calls either command.
 - **Harness inheritance:** Codex callers launch Codex (account O); Claude
   callers launch Claude and preserve account A/B. Ordinary shell calls retain
   Claude A as the fallback. Both commands accept `--harness codex|claude` or
-  `-a A|B|O` to override this; conflicting overrides are rejected. Offers show
-  the selected harness/account and save that choice before waiting for an
-  answer. A missing executable fails explicitly instead of switching harnesses.
+  `-a A|B|O` to override this; conflicting overrides are rejected, and the
+  resolved harness/account is printed with the spawned session name. A missing
+  executable fails explicitly instead of switching harnesses.
 - **Phone fallback** covers session prompts too: with no deck connected, a
   permission prompt or a turn that ended with a question is announced once
   on Signal (notify-only — the answer belongs in that session). Raised

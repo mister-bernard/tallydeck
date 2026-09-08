@@ -1442,34 +1442,27 @@ def test_spawn_makes_its_own_tmux_session_with_the_task_as_first_prompt(tmp_path
         T("kill-server")
 
 
-def test_offer_raises_a_decision_and_spawns_on_yes(tmp_path):
+def test_offer_spawns_immediately_and_asks_nobody(tmp_path):
+    """The old offer raised a decision and held the work until it was answered,
+    which made the operator's answer a precondition for anything starting. It
+    spawns on the spot now: no signal raised, no waiter, no offer record."""
     import subprocess, os, sys, time as _t
     from pathlib import Path
     sock, T = _scratch_tmux()
     contrib = Path(__file__).resolve().parent.parent / "contrib"
     fake = tmp_path / "fakeclaude"; fake.write_text("#!/bin/sh\necho \"PROMPT:$2\"; sleep 20\n"); fake.chmod(0o755)
     env = dict(os.environ, TALLYDECK_STATE=str(tmp_path), TALLY_TMUX_SOCKET=sock, CLAUDE_BIN=str(fake),
-               TALLY_BIN=str(contrib / "tally"), TALLY_SPAWN_BIN=str(contrib / "tally-spawn"),
-               TALLY_OFFER_TIMEOUT="30")
+               TALLY_BIN=str(contrib / "tally"), TALLY_SPAWN_BIN=str(contrib / "tally-spawn"))
     env.pop("TMUX", None)
     try:
         r = subprocess.run([sys.executable, str(contrib / "tally-offer"), "big-job", "Rebuild the datum", "-a", "A", "-c", "/tmp",
-                            "-p", "-"], input="Full brief here.", capture_output=True, text=True, env=env, timeout=20)
+                            "-p", "-"], input="Full brief here.", capture_output=True, text=True, env=env, timeout=30)
         assert r.returncode == 0, r.stderr
-        d = json.loads((tmp_path / "signals" / "offer-big-job.json").read_text())
-        assert d["label"] == "Run separately?" and d["meta"]["options"][0].startswith("1 · Yes")
-        (tmp_path / "answers").mkdir(exist_ok=True)
-        _t.sleep(0.5)
-        (tmp_path / "answers" / "offer-big-job.json").write_text(json.dumps(
-            {"id": "offer-big-job", "answer": "1 — 1 · Yes, dedicated session",
-             "at": _t.strftime("%Y-%m-%dT%H:%M:%SZ", _t.gmtime()), "label": "Run separately?"}))
-        for _ in range(40):
-            if "big-job" in T("list-sessions", "-F", "#S").stdout:
-                break
-            _t.sleep(0.25)
-        assert "big-job" in T("list-sessions", "-F", "#S").stdout
+        assert "spawned big-job" in r.stdout                       # the caller learns the name at once
+        assert "big-job" in T("list-sessions", "-F", "#S").stdout  # already running, nothing answered
         _t.sleep(0.8)
         assert "PROMPT:Full brief here." in T("capture-pane", "-t", "big-job", "-p").stdout
+        assert not (tmp_path / "signals" / "offer-big-job.json").exists()
         assert not (tmp_path / "offers" / "big-job.json").exists()
     finally:
         T("kill-server")

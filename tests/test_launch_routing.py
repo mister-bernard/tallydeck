@@ -82,8 +82,7 @@ def isolated(tmp_path):
     env.update(TALLYDECK_STATE=str(tmp_path), TALLY_TMUX_SOCKET=sock,
                TALLY_ACCOUNTS_FILE=str(tmp_path / 'missing.json'),
                CLAUDE_BIN=str(fake), CLAUDE_BIN_B=str(fake), CODEX_BIN=str(fake),
-               TALLY_BIN=str(ROOT / 'contrib/tally'), TALLY_SPAWN_BIN=str(ROOT / 'contrib/tally-spawn'),
-               TALLY_OFFER_TIMEOUT='10')
+               TALLY_BIN=str(ROOT / 'contrib/tally'), TALLY_SPAWN_BIN=str(ROOT / 'contrib/tally-spawn'))
     tmux = ['tmux', '-S', sock]
     subprocess.run(tmux + ['-f', '/dev/null', 'new-session', '-d', '-s', 'bootstrap'], env=env, check=True)
     yield tmp_path, env, tmux, capture
@@ -127,42 +126,56 @@ def test_real_tmux_launch(isolated, markers, options, harness, account):
         assert rec['origin_session'] == 'parent-cx'
 
 
-def test_offer_freezes_codex_route_until_yes(isolated):
+def test_offer_spawns_the_caller_route_without_a_question(isolated):
     state, env, tmux, capture = isolated
     r = subprocess.run([str(ROOT / 'contrib/tally-offer'), 'offered', 'A task', '-c', str(state), '-p', '-'],
                        input='Full brief', text=True, capture_output=True,
-                       env=env | {'CODEX_THREAD_ID': 'parent-cx'}, timeout=15)
+                       env=env | {'CODEX_THREAD_ID': 'parent-cx'}, timeout=30)
     assert r.returncode == 0, r.stderr
-    offer = wait_json(state / 'offers/offered.json')
-    assert (offer['harness'], offer['account'], offer['origin_session']) == ('codex', 'O', 'parent-cx')
-    signal = wait_json(state / 'signals/offer-offered.json')
-    assert 'codex' in signal['detail'] and 'account O' in signal['detail']
-    (state / 'answers').mkdir(exist_ok=True)
-    time.sleep(.3)
-    (state / 'answers/offer-offered.json').write_text(json.dumps({'answer': '1 — Yes', 'at': time.time()}))
     got = wait_json(capture)
     assert got['env']['TALLY_HARNESS'] == 'codex'
     assert got['argv'][-1] == 'Full brief'
     rec = wait_json(state / 'spawned/offered.json')
-    assert rec['account'] == 'O'
+    assert (rec['account'], rec['harness'], rec['origin_session']) == ('O', 'codex', 'parent-cx')
+    assert 'codex' in r.stdout and 'account O' in r.stdout        # the route is reported, not negotiated
+    assert not (state / 'signals/offer-offered.json').exists()    # nothing raised on the deck
+    assert not (state / 'offers').exists()
 
 
-def test_waiter_passes_stored_override_even_under_other_harness(isolated, monkeypatch):
+def test_offer_hands_spawn_the_resolved_route_explicitly(isolated, monkeypatch):
+    """Whatever the caller's own markers say, spawn is told the route that was
+    resolved here — a second detection downstream could pick another harness."""
     state, env, _, _ = isolated
     loader = importlib.machinery.SourceFileLoader('test_offer_module', str(ROOT / 'contrib/tally-offer'))
     spec = importlib.util.spec_from_loader(loader.name, loader)
     mod = importlib.util.module_from_spec(spec)
     loader.exec_module(mod)
-    monkeypatch.setenv('TALLYDECK_STATE', str(state))
-    monkeypatch.setenv('CLAUDECODE', '1')
-    (state / 'offers').mkdir()
-    (state / 'offers/job.json').write_text(json.dumps({'pane': '', 'cwd': str(state), 'task': 'brief', 'harness': 'codex', 'account': 'O'}))
+    # The test runner itself carries this session's harness markers; the fixture
+    # env only omits them, it cannot unset them in our own process.
+    for k in ('CLAUDECODE', 'CLAUDE_SESSION_ID', 'CLAUDE_CODE_SESSION_ID', 'TALLY_HARNESS', 'TALLY_ACCOUNT'):
+        monkeypatch.delenv(k, raising=False)
+    for k, v in (env | {'CODEX_THREAD_ID': 'parent-cx'}).items():
+        monkeypatch.setenv(k, str(v))
     calls = []
     def fake_run(argv, **kwargs):
         calls.append(argv)
-        return subprocess.CompletedProcess(argv, 0, json.dumps({'answer': '1'}) if 'wait' in argv else 'job', '')
+        return subprocess.CompletedProcess(argv, 0, 'job', '')
     monkeypatch.setattr(mod.subprocess, 'run', fake_run)
-    monkeypatch.setattr(mod, 'paste', lambda *a: True)
-    assert mod.waiter('job') == 0
-    assert calls[1][calls[1].index('--harness') + 1] == 'codex'
-    assert calls[1][calls[1].index('-a') + 1] == 'O'
+    assert mod.main(['job', 'A task', '-c', str(state), 'brief text']) == 0
+    launch = calls[0]
+    assert launch[launch.index('--harness') + 1] == 'codex'
+    assert launch[launch.index('-a') + 1] == 'O'
+
+
+def test_offer_reports_a_failed_spawn_so_the_caller_can_run_it_inline(isolated, monkeypatch, capsys):
+    state, env, _, _ = isolated
+    loader = importlib.machinery.SourceFileLoader('test_offer_module_fail', str(ROOT / 'contrib/tally-offer'))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    for k, v in env.items():
+        monkeypatch.setenv(k, str(v))
+    monkeypatch.setattr(mod.subprocess, 'run',
+                        lambda argv, **kw: subprocess.CompletedProcess(argv, 1, '', 'tmux new-session failed'))
+    assert mod.main(['job', 'A task', '-c', str(state), 'brief text']) == 1
+    assert 'run it here instead' in capsys.readouterr().err
