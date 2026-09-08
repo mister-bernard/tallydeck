@@ -1002,3 +1002,67 @@ def test_notifier_is_inert_without_terminal_notifier(monkeypatch):
     n = Notifier(link=None)
     assert n.active is False
     n.offer([Signal(id="sig/q", label="Q", state=ATTENTION, detail="?")])   # no crash
+
+
+def test_signal_reply_resolves_a_pending_question(tmp_path):
+    """The inbound matcher: one pending question → a bare '1' is its answer;
+    a named id wins over ambiguity; several pending with no id is NOT
+    swallowed; a digit with no such option is not an answer."""
+    import subprocess, sys, os, time as _t
+    from pathlib import Path
+    script = Path(__file__).resolve().parent.parent / "contrib" / "tally-answer"
+    env = dict(os.environ, TALLYDECK_STATE=str(tmp_path), TALLY_DECIDE_BIN="/bin/true",
+               TALLY_DECISION_LOG=str(tmp_path / "log"))
+    def run(msg):
+        r = subprocess.run([sys.executable, str(script)], input=json.dumps(msg), text=True,
+                           capture_output=True, env=env, timeout=10, check=True)
+        return json.loads(r.stdout)
+    (tmp_path / "signals").mkdir(); (tmp_path / "pending").mkdir()
+    def raise_(sid, opts):
+        (tmp_path / "signals" / f"{sid}.json").write_text(json.dumps({"label": sid.title(), "state": "attention", "detail": "?"}))
+        (tmp_path / "pending" / f"{sid}.json").write_text(json.dumps({"id": sid, "label": sid.title(), "options": opts, "sent_at": _t.time()}))
+    assert run({"text": "1"})["handled"] is False                       # nothing pending
+    raise_("popups", ["A · Signal", "B · ntfy"])
+    assert run({"text": "7"})["handled"] is False                       # no option 7
+    r = run({"text": "b"})
+    assert r["handled"] and r["answer"] == "2 — B · ntfy"
+    a = json.loads((tmp_path / "answers" / "popups.json").read_text())
+    assert a["via"] == "signal" and "recorded" in r["reply"]
+    raise_("popups", ["A · Signal", "B · ntfy"]); raise_("disk", [])
+    r = run({"text": "1"})
+    assert r["handled"] is False and r["reason"] == "ambiguous" and "Which one" in r["reply"]
+    r = run({"text": "disk: kill at 95%"})
+    assert r["handled"] and r["id"] == "disk" and r["answer"] == "kill at 95%"
+    r = run({"text": "1", "replyContext": {"quoteText": "◆ DECISION — Popups … [popups]"}})
+    assert r["handled"] and r["id"] == "popups" and r["answer"].startswith("1 — A")
+
+
+def test_notifier_holds_fire_while_a_deck_is_connected(tmp_path):
+    """Deck first, phone when away: a fresh hub.alive means the question is
+    on the keys in front of the operator — no Signal. Stale → send."""
+    import subprocess, sys, os, time as _t
+    from pathlib import Path
+    script = Path(__file__).resolve().parent.parent / "contrib" / "tally-notify"
+    (tmp_path / "signals").mkdir()
+    (tmp_path / "signals" / "q.json").write_text(json.dumps(
+        {"label": "Q", "state": "attention", "detail": "?", "updated": _t.time(), "ttl": 3600}))
+    env = dict(os.environ, TALLYDECK_STATE=str(tmp_path))
+    def once():
+        r = subprocess.run([sys.executable, str(script), "--once", "--dry-run"],
+                           capture_output=True, text=True, env=env, timeout=15, check=True)
+        return r.stdout
+    (tmp_path / "hub.alive").touch()                       # deck connected
+    assert "DRY-RUN" not in once() and not (tmp_path / "pending" / "q.json").exists()
+    old = _t.time() - 120
+    os.utime(tmp_path / "hub.alive", (old, old))           # unplugged 2 min ago
+    out = once()
+    assert "DRY-RUN" in out and (tmp_path / "pending" / "q.json").exists()
+
+
+def test_hub_heartbeat_marks_presence(tmp_path, monkeypatch):
+    monkeypatch.setenv("TALLYDECK_STATE", str(tmp_path))
+    h = Hub([], log=lambda m: None)
+    h.heartbeat()
+    assert (tmp_path / "hub.alive").is_file()
+    h._clear_heartbeat()
+    assert not (tmp_path / "hub.alive").exists()

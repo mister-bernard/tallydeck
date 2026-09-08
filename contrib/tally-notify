@@ -15,10 +15,18 @@ must not become four messages. When a flag is answered (answer file present)
 a one-line confirmation goes out; when it just vanishes, the pending record
 is dropped quietly.
 
+DECK FIRST, PHONE WHEN AWAY (G, 2026-09-08): while a deck is connected the
+hub touches ~/.tallydeck/hub.alive every few seconds. While that heartbeat is
+fresh, nothing is sent — the question is on the keys in front of him. The
+moment the deck is unplugged (heartbeat stale) any question still raised goes
+to Signal, so work keeps moving while he is out. TALLY_ESCALATE_AFTER=<s>
+optionally sends anyway once a question has waited that long at the deck.
+
     tally-notify [--once] [--dry-run] [--every 2]
 
 Env: G_SIGNAL_NUMBER (recipient; from ~/.openclaw/.env), TALLY_SIGNAL_SEND
-(default /home/openclaw/scripts/signal-send-logged.sh), TALLYDECK_STATE.
+(default /home/openclaw/scripts/signal-send-logged.sh), TALLYDECK_STATE,
+TALLY_DECK_FRESH (s, default 20), TALLY_ESCALATE_AFTER (s, default 0 = never).
 """
 from __future__ import annotations
 
@@ -32,6 +40,8 @@ import time
 from pathlib import Path
 
 RESEND_AFTER = 600.0          # s before a CHANGED ask may go out again
+DECK_FRESH = float(os.environ.get("TALLY_DECK_FRESH", "20"))
+ESCALATE_AFTER = float(os.environ.get("TALLY_ESCALATE_AFTER", "0"))
 SEND = os.environ.get("TALLY_SIGNAL_SEND", "/home/openclaw/scripts/signal-send-logged.sh")
 LABEL = "tally-notify"
 
@@ -92,10 +102,25 @@ def send(to: str, text: str, dry: bool) -> bool:
         return False
 
 
+def deck_connected(sd: Path, now: float) -> bool:
+    try:
+        return now - (sd / "hub.alive").stat().st_mtime < DECK_FRESH
+    except OSError:
+        return False
+
+
+_last_presence: dict = {"deck": None}
+
+
 def tick(sd: Path, to: str, dry: bool) -> None:
     signals, pending, answers = sd / "signals", sd / "pending", sd / "answers"
     pending.mkdir(parents=True, exist_ok=True)
     now = time.time()
+    at_deck = deck_connected(sd, now)
+    if _last_presence["deck"] is not at_deck:
+        log("deck connected — questions stay on the keys" if at_deck
+            else "no deck — questions go to Signal")
+        _last_presence["deck"] = at_deck
     live: set[str] = set()
     for fp in sorted(signals.glob("*.json")):
         sid = fp.stem
@@ -123,6 +148,8 @@ def tick(sd: Path, to: str, dry: bool) -> None:
             continue                     # already told him this exact ask
         if prev and now - float(prev.get("sent_at", 0)) < RESEND_AFTER:
             continue                     # changed, but too soon to nag
+        if at_deck and not (ESCALATE_AFTER and now - upd > ESCALATE_AFTER):
+            continue                     # he is at the deck: it is on the keys
         if send(to, compose(d, sid), dry):
             pf.write_text(json.dumps({
                 "id": sid, "label": d.get("label", sid), "digest": dg,

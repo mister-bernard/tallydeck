@@ -30,10 +30,12 @@ import time
 
 from .signal import Signal, rank
 from .sources.base import Source
+from .paths import hub_alive
 
 PROTOCOL_VERSION = 1
 KEEPALIVE = 20.0
 OPEN_AFTER = 0.7      # s an action must survive to count as "opened"
+HEARTBEAT = 5.0       # s between hub.alive touches while a client is connected
 
 
 class Hub:
@@ -159,6 +161,26 @@ class Hub:
                 return cand
         return ""
 
+    # ── presence ─────────────────────────────────────────────────────────────
+
+    def heartbeat(self) -> None:
+        """Touch hub.alive: 'a deck is connected right now'. The Signal
+        notifier holds its fire while this is fresh — the operator is at
+        the desk, the question is on the keys, no need to buzz the phone.
+        Stale (or gone) means escalate."""
+        try:
+            p = hub_alive()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.touch()
+        except OSError:
+            pass
+
+    def _clear_heartbeat(self) -> None:
+        try:
+            hub_alive().unlink(missing_ok=True)
+        except OSError:
+            pass
+
     # ── stdio server ─────────────────────────────────────────────────────────
 
     def serve_stdio(self) -> None:
@@ -198,14 +220,21 @@ class Hub:
 
         last_sent = ""
         last_time = 0.0
-        while not stop.is_set():
-            signals = self.poll()
-            line = self.snapshot_line(signals)
-            now = time.time()
-            if line != last_sent or (now - last_time) > KEEPALIVE:
-                try:
-                    send(line)
-                except BrokenPipeError:
-                    break
-                last_sent, last_time = line, now
-            stop.wait(self.tick)
+        last_beat = 0.0
+        try:
+            while not stop.is_set():
+                signals = self.poll()
+                line = self.snapshot_line(signals)
+                now = time.time()
+                if line != last_sent or (now - last_time) > KEEPALIVE:
+                    try:
+                        send(line)
+                    except BrokenPipeError:
+                        break
+                    last_sent, last_time = line, now
+                if now - last_beat > HEARTBEAT:
+                    self.heartbeat()
+                    last_beat = now
+                stop.wait(self.tick)
+        finally:
+            self._clear_heartbeat()      # unplugged: the phone takes over

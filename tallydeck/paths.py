@@ -39,3 +39,11 @@ def acked_dir() -> Path:
 
 def cache_dir() -> Path:
     return state_dir() / "cache"
+
+
+def hub_alive() -> Path:
+    """Heartbeat the hub touches while a deck client is connected. Other
+    surfaces (the Signal notifier) read its mtime to know whether the
+    operator is at the deck — questions go there first, and to the phone
+    only when nobody is plugged in."""
+    return state_dir() / "hub.alive"
