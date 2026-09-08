@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# tally-spawn <slug> [-c cwd] [-a A|B] [-p task-file|-] ["task text"]
+#
+# Start a piece of work as ITS OWN tmux session, so it gets its own key on the
+# deck the moment its log appears (the session source labels keys by tmux
+# session name) and keeps chugging along without anyone reading its scroll.
+#
+#   tally spawn wires-nhd -c ~/projects/wires "Rebuild the NHD datum, run the suite, push."
+#   printf '%s' "$LONG_TASK" | tally spawn aurora-sim -c ~/aurora -p -
+#
+# The task is handed to claude as its first prompt. The session is recorded in
+# ~/.tallydeck/spawned/<slug>.json (target, cwd, account, when, who spawned it).
+# Slugs are unique per socket: a second "wires-nhd" becomes "wires-nhd-2".
+set -uo pipefail
+SOCKET="${TALLY_TMUX_SOCKET:-/tmp/tmux-1000/cc}"
+STATE="${TALLYDECK_STATE:-$(getent passwd "$(id -u)" | cut -d: -f6)/.tallydeck}"
+CLAUDE_A="${CLAUDE_BIN:-$HOME/.local/bin/claude}"
+CLAUDE_B="${CLAUDE_BIN_B:-$HOME/.local/bin/claude-b}"
+T() { tmux -S "$SOCKET" "$@"; }
+
+SLUG="${1:?usage: tally-spawn <slug> [-c cwd] [-a A|B] [-p file|-] [task]}"; shift
+case "$SLUG" in *[!A-Za-z0-9._-]*|.*) echo "tally-spawn: bad slug '$SLUG'" >&2; exit 2 ;; esac
+CWD="$HOME"; ACCT="A"; TASK=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -c) CWD="$2"; shift 2 ;;
+    -a) ACCT="$2"; shift 2 ;;
+    -p) if [ "$2" = "-" ]; then TASK="$(cat)"; else TASK="$(cat "$2")"; fi; shift 2 ;;
+    *)  TASK="$1"; shift ;;
+  esac
+done
+[ -n "$TASK" ] || { echo "tally-spawn: no task given" >&2; exit 2; }
+[ -d "$CWD" ] || { echo "tally-spawn: no such dir $CWD" >&2; exit 2; }
+
+BIN="$CLAUDE_A"; [ "$ACCT" = "B" ] && BIN="$CLAUDE_B"
+[ -x "$BIN" ] || { echo "tally-spawn: claude binary not found: $BIN" >&2; exit 2; }
+
+NAME="$SLUG"; n=2
+while T has-session -t "=$NAME" 2>/dev/null; do NAME="$SLUG-$n"; n=$((n+1)); done
+
+mkdir -p "$STATE/spawned" "$STATE/tasks"; chmod 700 "$STATE" 2>/dev/null
+TASKF="$STATE/tasks/$NAME.md"; umask 077; printf '%s\n' "$TASK" > "$TASKF"
+# The task rides in a file, never in argv: quoting survives, ps does not show it.
+T new-session -d -s "$NAME" -c "$CWD" \
+  -e "TALLY_TASK_FILE=$TASKF" -e "TALLY_CLAUDE_BIN=$BIN" -e "TALLY_SPAWNED=$NAME" \
+  'printf "\n=== tally spawn :: %s :: %s ===\n\n" "$TALLY_SPAWNED" "$(date -u +%FT%TZ)"; "$TALLY_CLAUDE_BIN" --dangerously-skip-permissions "$(cat "$TALLY_TASK_FILE")"; echo; echo "[tally-spawn] claude exited; shell remains."; exec bash -i' \
+  || { echo "tally-spawn: tmux new-session failed" >&2; exit 1; }
+
+python3 - "$STATE/spawned/$NAME.json" "$NAME" "$CWD" "$ACCT" "$TASKF" <<'PY'
+import json, os, sys, time
+p, name, cwd, acct, taskf = sys.argv[1:6]
+json.dump({"slug": name, "target": f"{name}:1.1", "cwd": cwd, "account": acct,
+           "task_file": taskf, "at": time.time(),
+           "origin_session": os.environ.get("CLAUDE_SESSION_ID", ""),
+           "origin_pane": os.environ.get("TMUX_PANE", "")}, open(p, "w"))
+PY
+echo "$NAME"

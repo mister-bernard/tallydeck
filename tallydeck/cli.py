@@ -325,6 +325,17 @@ def cmd_unhush(cfg, args):
           (f" — {n} question(s) raised" if n else ""))
 
 
+def cmd_passthrough(name: str):
+    """`tally spawn …` / `tally offer …` exec the contrib helper of that name."""
+    def run(cfg, args):
+        from .paths import contrib_bin
+        bin_ = contrib_bin(name)
+        if not bin_:
+            sys.exit(f"{name} helper not installed (contrib/{name})")
+        os.execv(bin_, [bin_] + list(args.rest))
+    return run
+
+
 def cmd_clear(cfg, args):
     if not safe_id(args.id):
         sys.exit(f"bad signal id {args.id!r}")
@@ -401,6 +412,11 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--status", action="store_true")
     sub.add_parser("unhush", help="resume phone notifications")
 
+    for name, help_ in (("spawn", "start a task as its own tmux session (own deck key)"),
+                        ("offer", "ask G: run this in a dedicated session? then spawn on yes")):
+        sp = sub.add_parser(name, help=help_)
+        sp.add_argument("rest", nargs=argparse.REMAINDER)
+
     sp = sub.add_parser("wait", help="block until a raised flag is answered")
     sp.add_argument("id")
     sp.add_argument("--timeout", type=float, default=0,
@@ -427,6 +443,7 @@ def main(argv: list[str] | None = None) -> None:
         "png": cmd_png, "deck": cmd_deck,
         "raise": cmd_raise, "clear": cmd_clear, "brief": cmd_brief,
         "wait": cmd_wait, "hush": cmd_hush, "unhush": cmd_unhush,
+        "spawn": cmd_passthrough("tally-spawn"), "offer": cmd_passthrough("tally-offer"),
     }[args.cmd](cfg, args)
 
 

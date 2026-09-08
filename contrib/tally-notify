@@ -15,6 +15,14 @@ must not become four messages. When a flag is answered (answer file present)
 a one-line confirmation goes out; when it just vanishes, the pending record
 is dropped quietly.
 
+SESSION PROMPTS TOO (G, 2026-09-08: "route notifications to Signal whenever
+there are prompts requiring my reply or input"): when no deck is connected, a
+live session that is waiting on him — a permission prompt (ask-<sid> file from
+the Notification hook) or a turn that ended with a question (the session
+source's ATTENTION) — is announced once per ask, notify-only: nothing is
+recorded from a reply, the answer belongs in that session. The deck source is
+imported from the checkout next to this script.
+
 DECK FIRST, PHONE WHEN AWAY (G, 2026-09-08): while a deck is connected the
 hub touches ~/.tallydeck/hub.alive every few seconds. While that heartbeat is
 fresh, nothing is sent — the question is on the keys in front of him. The
@@ -174,6 +182,57 @@ def _write(fp: Path, obj: dict) -> None:
     os.replace(tmp, fp)
 
 
+def _session_source():
+    """The deck's own session classifier, from the checkout beside us."""
+    try:
+        import sys as _s
+        root = str(Path(__file__).resolve().parent.parent)
+        if root not in _s.path:
+            _s.path.insert(0, root)
+        from tallydeck import config as cfgmod
+        from tallydeck.sources.claude_sessions import ClaudeSessionsSource
+        for spec in cfgmod.load().get("sources", []):
+            if spec.get("kind") == "claude-sessions":
+                spec = {k: v for k, v in spec.items() if k != "kind"}
+                return ClaudeSessionsSource(**spec)
+    except Exception as e:
+        log(f"session source unavailable: {e!r}")
+    return None
+
+
+_src = {"obj": None, "tried": False}
+
+
+def session_prompts(sd: Path, now: float) -> list[tuple[str, str, str, float]]:
+    """(key, label, text, when) for every live session waiting on the operator."""
+    out = []
+    signals = sd / "signals"
+    for fp in sorted(signals.glob("ask-*.json")):          # permission prompts (hook)
+        d = _read(fp) or {}
+        if d.get("state") not in ("attention", "blocked"):
+            continue
+        try:
+            upd = float(d.get("updated") or fp.stat().st_mtime)
+        except (TypeError, ValueError, OSError):
+            upd = now
+        out.append((fp.stem, str(d.get("label") or "claude"),
+                    "🔒 " + str(d.get("detail") or d.get("sublabel") or "needs your permission"), upd))
+    if os.environ.get("TALLY_NOTIFY_SESSIONS", "1") != "0":
+        if not _src["tried"]:
+            _src["obj"], _src["tried"] = _session_source(), True
+        src = _src["obj"]
+        if src is not None:
+            try:
+                for s in src.poll():
+                    if s.state == "attention" and not s.meta.get("oneshot"):
+                        snip = " ".join(str(s.detail or s.sublabel or "").split())[:400]
+                        out.append((f"cc-{s.meta.get('session', s.id)[:8]}", s.label,
+                                    "◆ " + (snip or "is waiting on you"), float(s.updated)))
+            except Exception as e:
+                log(f"session poll error: {e!r}")
+    return out
+
+
 def tick(sd: Path, to: str, dry: bool) -> None:
     signals, pending, answers = sd / "signals", sd / "pending", sd / "answers"
     for d_ in (sd, pending, answers):
@@ -252,6 +311,28 @@ def tick(sd: Path, to: str, dry: bool) -> None:
                             "fail_at": now, "fails": int(prev.get("fails") or 0) + 1})
         except Exception as e:
             log(f"skip {sid}: {e!r}")
+    # Live sessions waiting on him: announce once per ask (marker = the
+    # ask's own timestamp), only when the deck is away and not hushed.
+    ndir = sd / "notified"
+    ndir.mkdir(parents=True, exist_ok=True)
+    seen_keys = set()
+    if not at_deck and not hush_until and not quiet:
+        for key, label, text, when in session_prompts(sd, now):
+            seen_keys.add(key)
+            mk = ndir / key
+            try:
+                if mk.is_file() and abs(float(mk.read_text() or 0) - when) < 1.0:
+                    continue
+            except ValueError:
+                pass
+            sess = label
+            msg = f"{text}\n— {label}: answer at the deck or in tmux (attach -t {sess})"
+            if send(to, msg[:900], dry):
+                mk.write_text(str(when))
+                log(f"announced session prompt {key}")
+    for mk in ndir.iterdir():
+        if mk.name not in seen_keys and now - mk.stat().st_mtime > 3600:
+            mk.unlink(missing_ok=True)                  # ask long gone
     # flags that went away: confirm if answered, say so if withdrawn
     for pf in pending.glob("*.json"):
         sid = pf.stem

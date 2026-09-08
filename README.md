@@ -9,6 +9,28 @@ into the exact session that's asking — briefed, focused, ready to type.
 
 ---
 
+## Working through the deck
+
+The deck is meant to replace watching panes scroll. Work runs in its own
+tmux session with its own key; you decide when a key asks, from the deck,
+your phone, or a bare option number in chat.
+
+- **`tally spawn <slug> -c <dir> "<task>"`** starts the task as its own tmux
+  session (`<slug>`), claude fed the task as its first prompt. It appears
+  as its own key as soon as it speaks; a second `<slug>` becomes `<slug>-2`.
+- **`tally offer <slug> "<one-line summary>" -c <dir> -p - <<'EOF' … EOF`** is
+  the "run this in a dedicated session?" prompt as one command: it raises a
+  two-option decision (deck popup; phone when the deck is unplugged; a bare
+  `1`/`2` on Telegram or Signal answers it), returns at once, and a detached
+  waiter spawns on *yes* — the outcome is pasted back into the offering pane
+  as a `[tally] …` line. The convention for agents lives in AGENTS.md.
+- **Phone fallback** covers session prompts too: with no deck connected, a
+  permission prompt or a turn that ended with a question is announced once
+  on Signal (notify-only — the answer belongs in that session). Raised
+  questions stay fully answerable from the phone.
+- **`hush` / `hush 2h` / `unhush`** (as words on Signal or Telegram, or
+  `tally hush`) pause phone notifications; questions wait on the deck.
+
 ## Reading the deck
 
 ### The lights: orange vs red

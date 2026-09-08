@@ -1,0 +1,156 @@
+#!/usr/bin/python3
+"""tally-offer <slug> "<one-line summary>" [-c cwd] [-a A|B] [-p task-file|-] [task text]
+
+The "want me to run this in a dedicated session?" prompt, as one command.
+
+An agent in the operator's main chat (session G) that recognises a task will
+run for a while runs this INSTEAD of starting the work inline. It raises a
+decision on the deck (and phone/Telegram through the usual paths):
+
+    ◆ Run separately?  —  <summary>
+      1 · Yes, dedicated session     2 · No, here in G
+
+then returns at once so the chat stays responsive. A detached waiter holds for
+the answer (15 min): on 1 it runs `tally spawn <slug> …` and the new session
+appears as its own key; on 2 or timeout it says so. Either way the outcome is
+pasted back into the pane that offered, as a `[tally] …` line, so the agent
+there knows what to do next without polling.
+
+Task text: positional, -p file, or -p - (stdin); it is what the dedicated
+session receives as its first prompt.
+"""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+TALLY = os.environ.get("TALLY_BIN") or str(HERE / "tally")
+SPAWN = os.environ.get("TALLY_SPAWN_BIN") or str(HERE / "tally-spawn")
+WAIT_S = float(os.environ.get("TALLY_OFFER_TIMEOUT", "900"))
+TMUX_SOCKET = os.environ.get("TALLY_TMUX_SOCKET", "/tmp/tmux-1000/cc")
+
+
+def state_dir() -> Path:
+    env = os.environ.get("TALLYDECK_STATE")
+    if env:
+        return Path(env).expanduser()
+    try:
+        import pwd
+        return Path(pwd.getpwuid(os.getuid()).pw_dir) / ".tallydeck"
+    except Exception:
+        return Path.home() / ".tallydeck"
+
+
+def paste(target: str, text: str) -> bool:
+    import re
+    if not target:
+        return False
+    clean = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", " ", text).strip()
+    T = ["tmux", "-S", TMUX_SOCKET]
+    buf = f"tally-offer-{os.getpid()}-{int(time.time() * 1000)}"
+    try:
+        subprocess.run(T + ["load-buffer", "-b", buf, "-"], input=clean, text=True, check=True, timeout=5)
+        subprocess.run(T + ["paste-buffer", "-p", "-d", "-b", buf, "-t", target], check=True, timeout=5)
+        time.sleep(0.15)
+        subprocess.run(T + ["send-keys", "-t", target, "Enter"], check=True, timeout=5)
+        return True
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return False
+
+
+def current_pane() -> str:
+    if not os.environ.get("TMUX"):
+        return ""
+    try:
+        return subprocess.run(["tmux", "display", "-p", "#S:#I.#P"], capture_output=True,
+                              text=True, timeout=2).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def main(argv: list[str]) -> int:
+    if argv and argv[0] == "--wait":                       # the detached waiter
+        return waiter(*argv[1:])
+    if len(argv) < 2:
+        print(__doc__); return 2
+    slug, summary = argv[0], argv[1]
+    rest = argv[2:]
+    cwd, acct, task = os.getcwd(), "A", ""
+    i = 0
+    while i < len(rest):
+        a = rest[i]
+        if a == "-c": cwd = rest[i + 1]; i += 2
+        elif a == "-a": acct = rest[i + 1]; i += 2
+        elif a == "-p":
+            task = sys.stdin.read() if rest[i + 1] == "-" else Path(rest[i + 1]).read_text(); i += 2
+        else: task = a; i += 1
+    task = task.strip() or summary
+    sd = state_dir()
+    (sd / "offers").mkdir(parents=True, exist_ok=True)
+    os.chmod(sd, 0o700)
+    offer = sd / "offers" / f"{slug}.json"
+    offer.write_text(json.dumps({"slug": slug, "summary": summary, "task": task, "cwd": cwd,
+                                 "account": acct, "pane": current_pane(),
+                                 "origin_session": os.environ.get("CLAUDE_SESSION_ID", ""),
+                                 "at": time.time()}))
+    r = subprocess.run([TALLY, "raise", f"offer-{slug}", "--state", "attention",
+                        "--label", "Run separately?", "--sublabel", f"{summary} — dedicated session?",
+                        "--detail", f"{summary}\n\nRun this as its own session ({slug}) so it works on "
+                                    f"in parallel and shows up as its own key, or keep it here in G?",
+                        "--options", "1 · Yes, dedicated session|2 · No, here in G",
+                        "--ttl", str(int(WAIT_S)), "--priority", "500"],
+                       capture_output=True, text=True, timeout=15)
+    if r.returncode != 0:
+        print(f"tally-offer: raise failed: {r.stderr.strip()}", file=sys.stderr); return 1
+    subprocess.Popen([sys.executable, os.path.abspath(__file__), "--wait", slug],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+    print(f"offered: offer-{slug} (deck / phone / Telegram). I'll paste the outcome here.")
+    return 0
+
+
+def waiter(slug: str) -> int:
+    sd = state_dir()
+    offer = sd / "offers" / f"{slug}.json"
+    try:
+        o = json.loads(offer.read_text())
+    except (OSError, ValueError):
+        return 1
+    pane = str(o.get("pane") or "")
+    r = subprocess.run([TALLY, "wait", f"offer-{slug}", "--timeout", str(int(WAIT_S)), "--json", "--consume"],
+                       capture_output=True, text=True, timeout=WAIT_S + 30)
+    if r.returncode == 0:
+        try:
+            ans = str(json.loads(r.stdout).get("answer", ""))
+        except ValueError:
+            ans = r.stdout.strip()
+        if ans.strip().startswith("1"):
+            sp = subprocess.run([SPAWN, slug, "-c", o["cwd"], "-a", o.get("account", "A"), "-p", "-"],
+                                input=o["task"], capture_output=True, text=True, timeout=30)
+            if sp.returncode == 0:
+                name = sp.stdout.strip()
+                paste(pane, f"[tally] G said yes — spawned '{name}' as its own session/key (cwd {o['cwd']}). "
+                            f"Nothing more to do here; it reports on the deck.")
+            else:
+                paste(pane, f"[tally] G said yes, but spawn failed: {sp.stderr.strip()[:160]} — run it here.")
+        else:
+            paste(pane, f"[tally] G said: run it here in G ({ans}). Go ahead inline.")
+    elif r.returncode == 2:
+        paste(pane, f"[tally] the offer for '{slug}' was dismissed — run it here.")
+    else:
+        paste(pane, f"[tally] no answer to the '{slug}' offer in {int(WAIT_S // 60)} min — run it here, or re-offer.")
+        subprocess.run([TALLY, "clear", f"offer-{slug}"], capture_output=True, timeout=10)
+    try:
+        offer.unlink()
+    except OSError:
+        pass
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

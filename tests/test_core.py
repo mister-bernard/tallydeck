@@ -1398,3 +1398,95 @@ def test_deferral_in_a_report_is_not_an_ask():
     assert q("Ready to push.\n\nYour call — keep the old key or rotate it.")
     # an ask phrase in an EARLIER paragraph does not carry to a report ending
     assert not q("I need your sign-off on the plan below.\n\nMeanwhile I fixed the tests; all green.")
+
+
+# ── dedicated sessions: spawn / offer / phone fallback for session prompts ───
+
+def _scratch_tmux():
+    import subprocess, tempfile, os
+    sock = tempfile.mktemp(prefix="tally-test-", suffix=".sock", dir="/tmp")
+    return sock, (lambda *a: subprocess.run(["tmux", "-S", sock, *a], capture_output=True, text=True, timeout=10))
+
+
+def test_spawn_makes_its_own_tmux_session_with_the_task_as_first_prompt(tmp_path):
+    import subprocess, os, time as _t
+    from pathlib import Path
+    sock, T = _scratch_tmux()
+    fake = tmp_path / "fakeclaude"; fake.write_text("#!/bin/sh\necho \"PROMPT:$2\"; sleep 20\n"); fake.chmod(0o755)
+    spawn = Path(__file__).resolve().parent.parent / "contrib" / "tally-spawn"
+    env = dict(os.environ, TALLYDECK_STATE=str(tmp_path), TALLY_TMUX_SOCKET=sock, CLAUDE_BIN=str(fake))
+    try:
+        r = subprocess.run([str(spawn), "demo-task", "-c", "/tmp", "Build it, test it, push."],
+                           capture_output=True, text=True, env=env, timeout=20)
+        assert r.returncode == 0 and r.stdout.strip() == "demo-task", r.stderr
+        _t.sleep(0.8)
+        assert "PROMPT:Build it, test it, push." in T("capture-pane", "-t", "demo-task", "-p").stdout
+        rec = json.loads((tmp_path / "spawned" / "demo-task.json").read_text())
+        assert rec["target"] == "demo-task:1.1" and rec["cwd"] == "/tmp"
+        r2 = subprocess.run([str(spawn), "demo-task", "-c", "/tmp", "again"], capture_output=True, text=True, env=env, timeout=20)
+        assert r2.stdout.strip() == "demo-task-2"                 # unique slugs
+        assert subprocess.run([str(spawn), "../evil", "x"], capture_output=True, env=env).returncode == 2
+    finally:
+        T("kill-server")
+
+
+def test_offer_raises_a_decision_and_spawns_on_yes(tmp_path):
+    import subprocess, os, sys, time as _t
+    from pathlib import Path
+    sock, T = _scratch_tmux()
+    contrib = Path(__file__).resolve().parent.parent / "contrib"
+    fake = tmp_path / "fakeclaude"; fake.write_text("#!/bin/sh\necho \"PROMPT:$2\"; sleep 20\n"); fake.chmod(0o755)
+    env = dict(os.environ, TALLYDECK_STATE=str(tmp_path), TALLY_TMUX_SOCKET=sock, CLAUDE_BIN=str(fake),
+               TALLY_BIN=str(contrib / "tally"), TALLY_SPAWN_BIN=str(contrib / "tally-spawn"),
+               TALLY_OFFER_TIMEOUT="30")
+    env.pop("TMUX", None)
+    try:
+        r = subprocess.run([sys.executable, str(contrib / "tally-offer"), "big-job", "Rebuild the datum", "-c", "/tmp",
+                            "-p", "-"], input="Full brief here.", capture_output=True, text=True, env=env, timeout=20)
+        assert r.returncode == 0, r.stderr
+        d = json.loads((tmp_path / "signals" / "offer-big-job.json").read_text())
+        assert d["label"] == "Run separately?" and d["meta"]["options"][0].startswith("1 · Yes")
+        (tmp_path / "answers").mkdir(exist_ok=True)
+        _t.sleep(0.5)
+        (tmp_path / "answers" / "offer-big-job.json").write_text(json.dumps(
+            {"id": "offer-big-job", "answer": "1 — 1 · Yes, dedicated session",
+             "at": _t.strftime("%Y-%m-%dT%H:%M:%SZ", _t.gmtime()), "label": "Run separately?"}))
+        for _ in range(40):
+            if "big-job" in T("list-sessions", "-F", "#S").stdout:
+                break
+            _t.sleep(0.25)
+        assert "big-job" in T("list-sessions", "-F", "#S").stdout
+        _t.sleep(0.8)
+        assert "PROMPT:Full brief here." in T("capture-pane", "-t", "big-job", "-p").stdout
+        assert not (tmp_path / "offers" / "big-job.json").exists()
+    finally:
+        T("kill-server")
+
+
+def test_notifier_announces_session_prompts_when_the_deck_is_away(tmp_path):
+    """Permission prompts and ended-with-a-question turns reach the phone
+    once per ask when no deck is connected — notify-only, nothing pending."""
+    import subprocess, sys, os, time as _t
+    from pathlib import Path
+    script = Path(__file__).resolve().parent.parent / "contrib" / "tally-notify"
+    (tmp_path / "signals").mkdir()
+    (tmp_path / "signals" / "ask-c64c64c6.json").write_text(json.dumps(
+        {"label": "c64", "state": "blocked", "detail": "Claude needs your permission to use Bash",
+         "updated": _t.time(), "meta": {"session": "c64c64c6-x"}}))
+    root = tmp_path / "root" / "-home-me-projects-w"; root.mkdir(parents=True)
+    _write_jsonl(root, "asker001", [{"type": "assistant", "message": {"stop_reason": "end_turn",
+        "content": [{"type": "text", "text": "Two options. Which one do you want?"}]}}])
+    t0 = _t.time() - 120
+    os.utime(root / "asker001.jsonl", (t0, t0))
+    cfg = tmp_path / "cfg.toml"
+    cfg.write_text(f'[[sources]]\nkind = "claude-sessions"\nroots = [{{ label = "T", path = "{tmp_path / "root"}" }}]\n')
+    env = dict(os.environ, TALLYDECK_STATE=str(tmp_path), TALLY_DECK_PROC="0", TALLYDECK_CONFIG=str(cfg))
+    once = lambda: subprocess.run([sys.executable, str(script), "--once", "--dry-run"],
+                                  capture_output=True, text=True, env=env, timeout=20, check=True).stdout
+    out = once()
+    assert "needs your permission" in out and "Which one do you want" in out
+    assert not list((tmp_path / "pending").glob("ask-*"))        # notify-only: never answerable
+    assert "DRY-RUN" not in once()                                # announced once
+    (tmp_path / "hub.alive").touch()
+    os.utime(root / "asker001.jsonl", None)                       # a new ask, but deck is back
+    assert "Which one" not in once()
