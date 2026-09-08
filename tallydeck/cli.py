@@ -259,16 +259,21 @@ def cmd_brief(cfg, args):
     """Print the landing brief for a session (hub-side; shown in a popup)."""
     from .brief import build_cached
     roots = []
+    codex_roots = []
     for spec in cfg["sources"]:
         if spec.get("kind") == "claude-sessions":
             for r in spec.get("roots", []) or []:
                 roots.append(Path(str(r.get("path", ""))).expanduser())
             if spec.get("root"):
                 roots.append(Path(str(spec["root"])).expanduser())
+        elif spec.get("kind") == "codex-sessions":
+            if spec.get("root"):
+                codex_roots.append(Path(str(spec["root"])).expanduser())
     tasks_cmd = cfg.get("brief", {}).get("tasks_cmd") or None
     print(build_cached(args.session or "", args.project or "",
                        args.label or "", roots or None, args.state or "",
-                       tasks_cmd, ask=args.ask or ""))
+                       tasks_cmd, ask=args.ask or "",
+                       codex_roots=codex_roots or None))
 
 
 def cmd_wait(cfg, args):

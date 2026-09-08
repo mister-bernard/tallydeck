@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 
 from .paths import cache_dir
+from .sources.claude_sessions import _tail_lines, _load
 
 WIDTH = 74
 CACHE_DIR = cache_dir()
@@ -67,6 +68,32 @@ def _session_file(session: str, roots: list[Path]) -> Path | None:
     return None
 
 
+def _codex_session_file(session: str, roots: list[Path]) -> Path | None:
+    """Codex rollouts live at root/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl —
+    the uuid is a filename suffix, not the stem, so this can't reuse
+    `_session_file`'s glob."""
+    for root in roots:
+        for hit in root.rglob(f"rollout-*-{session}.jsonl"):
+            return hit
+    return None
+
+
+def _find_session(session: str, roots: list[Path],
+                   codex_roots: list[Path]) -> tuple[Path | None, str]:
+    """(path, kind) — kind picks which transcript parser reads it. Claude
+    checked first: cheap glob, and a session id collision across harnesses
+    is not a real-world case worth optimizing for."""
+    if not session:
+        return None, ""
+    fp = _session_file(session, roots)
+    if fp:
+        return fp, "claude"
+    fp = _codex_session_file(session, codex_roots)
+    if fp:
+        return fp, "codex"
+    return None, ""
+
+
 def _last_texts(path: Path, want: int = 2, tail: int = 400_000) -> list[str]:
     try:
         size = path.stat().st_size
@@ -92,6 +119,37 @@ def _last_texts(path: Path, want: int = 2, tail: int = 400_000) -> list[str]:
                 if len(txt) > 40:
                     out.append(txt)
                     break
+        if len(out) >= want:
+            break
+    return out
+
+
+def _last_texts_codex(path: Path, want: int = 2) -> list[str]:
+    """Same job as `_last_texts`, for Codex's record shapes: a completed
+    turn's answer lives in `event_msg/task_complete.last_agent_message`;
+    mid-turn (no task_complete yet) falls back to the last assistant
+    `response_item`. Mirrors `sources/codex_sessions.py::_last_agent_text`,
+    just collecting up to `want` instead of only the newest.
+
+    Codex writes a turn's final text TWICE — once as the `response_item`
+    itself, once summarized onto the `task_complete` event right after —
+    so consecutive duplicates are collapsed to one turn."""
+    out: list[str] = []
+    for ln in reversed(_tail_lines(path)):
+        rec = _load(ln)
+        if rec is None:
+            continue
+        p = rec.get("payload") if isinstance(rec.get("payload"), dict) else {}
+        text = ""
+        if rec.get("type") == "event_msg" and p.get("type") == "task_complete":
+            text = str(p.get("last_agent_message") or "")
+        elif rec.get("type") == "response_item" and p.get("type") == "message" \
+                and p.get("role") == "assistant":
+            text = " ".join(str(c.get("text", "")) for c in p.get("content", [])
+                            if isinstance(c, dict))
+        txt = " ".join(text.split())
+        if len(txt) > 40 and (not out or out[-1] != txt):
+            out.append(txt)
         if len(out) >= want:
             break
     return out
@@ -180,15 +238,17 @@ def _age(seconds: float) -> str:
 
 def build(session: str, project: str, label: str = "",
           roots: list[Path] | None = None, state: str = "",
-          tasks_cmd: list[str] | None = None, ask: str = "") -> str:
+          tasks_cmd: list[str] | None = None, ask: str = "",
+          codex_roots: list[Path] | None = None) -> str:
     roots = roots or [Path.home() / ".claude" / "projects"]
+    codex_roots = codex_roots or [Path.home() / ".codex" / "sessions"]
     title = label or os.path.basename(project.rstrip("/")) or project
     sc, dot = STATE_C.get(state, STATE_C["idle"])
     rule = f"  {RULE}{'─' * WIDTH}{R}"
     pad = "  "
     L: list[str] = [""]
 
-    fp = _session_file(session, roots) if session else None
+    fp, kind = _find_session(session, roots, codex_roots)
     quiet = f" · quiet {_age(time.time() - fp.stat().st_mtime)}" if fp else ""
 
     # header: state dot, name, state chip
@@ -209,7 +269,7 @@ def build(session: str, project: str, label: str = "",
 
     # the ask / where it left off — a block quote in the state color
     if fp:
-        texts = _last_texts(fp)
+        texts = _last_texts_codex(fp) if kind == "codex" else _last_texts(fp)
         L.append(f"{pad}{BOLD}WHERE IT LEFT OFF{R}")
         L.append("")
         if texts:
@@ -239,18 +299,21 @@ def build(session: str, project: str, label: str = "",
 
 def build_cached(session: str, project: str, label: str = "",
                  roots: list[Path] | None = None, state: str = "",
-                 tasks_cmd: list[str] | None = None, ask: str = "") -> str:
+                 tasks_cmd: list[str] | None = None, ask: str = "",
+                 codex_roots: list[Path] | None = None) -> str:
     """Cache keyed on the session log's identity — same log, same brief."""
     roots = roots or [Path.home() / ".claude" / "projects"]
-    fp = _session_file(session, roots) if session else None
+    codex_roots = codex_roots or [Path.home() / ".codex" / "sessions"]
+    args = (session, project, label, roots, state, tasks_cmd, ask, codex_roots)
+    fp, _ = _find_session(session, roots, codex_roots)
     if fp is None:
-        return build(session, project, label, roots, state, tasks_cmd, ask)
+        return build(*args)
     try:
         st = fp.stat()
         stamp = (f"{st.st_mtime_ns}:{st.st_size}:{state}:"
                  f"{zlib.crc32(ask.encode('utf-8', 'replace')):08x}")
     except OSError:
-        return build(session, project, label, roots, state, tasks_cmd, ask)
+        return build(*args)
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache = CACHE_DIR / f"brief-{session[:8]}.ans"
     try:
@@ -259,7 +322,7 @@ def build_cached(session: str, project: str, label: str = "",
             return body
     except OSError:
         pass
-    out = build(session, project, label, roots, state, tasks_cmd, ask)
+    out = build(*args)
     try:
         cache.write_text(stamp + "\n" + out)
     except OSError:
