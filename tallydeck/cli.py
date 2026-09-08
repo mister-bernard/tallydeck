@@ -25,7 +25,9 @@ from .devices import PROFILES
 from .hub import Hub
 from .signal import Signal, STATES, IDLE, rank
 from .sources import make as make_source
-from .paths import signals_dir, state_dir
+from .paths import (signals_dir, state_dir, hushed, set_hush, clear_hush,
+                    parse_duration, safe_id, write_json_atomic, read_json,
+                    private_dir)
 from .view import View
 from .client import LocalLink, PipeLink, run
 
@@ -153,9 +155,19 @@ def cmd_deck(cfg, args):
 
 
 def cmd_raise(cfg, args):
-    sdir = signals_dir()
-    sdir.mkdir(parents=True, exist_ok=True)
+    if not safe_id(args.id):
+        sys.exit(f"bad signal id {args.id!r}: letters, digits, . _ - only")
+    sdir = private_dir(signals_dir())
     fp = sdir / f"{args.id}.json"
+    # A fresh raise of a reused slug must not inherit last round's answer:
+    # `tally wait` would return it before the key even rendered. Archive.
+    old = state_dir() / "answers" / f"{args.id}.json"
+    if old.is_file() and not fp.is_file():
+        arch = private_dir(state_dir() / "answers" / ".archive")
+        try:
+            old.rename(arch / f"{args.id}.{int(time.time())}.json")
+        except OSError:
+            old.unlink(missing_ok=True)
     d = {}
     if fp.is_file():
         try:
@@ -222,7 +234,7 @@ def cmd_raise(cfg, args):
     if meta:
         d["meta"] = meta
     Signal.from_dict({**d, "id": args.id})     # validate before writing
-    fp.write_text(json.dumps(d, indent=2))
+    write_json_atomic(fp, d)
     print(fp)
 
 
@@ -249,16 +261,23 @@ def cmd_wait(cfg, args):
     waits here instead of depending on the operator's Telegram session to
     relay the outcome. Prints the answer; exit 0. Exit 1 on timeout, 2 if
     the flag vanished without an answer (dismissed / expired)."""
+    if not safe_id(args.id):
+        sys.exit(f"bad signal id {args.id!r}")
     adir = state_dir() / "answers"
     fp = adir / f"{args.id}.json"
     flag = signals_dir() / f"{args.id}.json"
     deadline = time.time() + args.timeout if args.timeout else None
     while True:
-        if fp.is_file():
+        d = read_json(fp) if fp.is_file() else None
+        # A torn or half-written file is "not yet", never "empty answer";
+        # an answer older than the flag it sits beside is last round's.
+        fresh = bool(d and d.get("answer"))
+        if fresh and flag.is_file():
             try:
-                d = json.loads(fp.read_text())
-            except json.JSONDecodeError:
-                d = {}
+                fresh = fp.stat().st_mtime >= flag.stat().st_mtime - 1
+            except OSError:
+                fresh = False
+        if fresh:
             if args.json:
                 print(json.dumps(d))
             else:
@@ -266,11 +285,38 @@ def cmd_wait(cfg, args):
             if args.consume:
                 fp.unlink(missing_ok=True)
             return
-        if not flag.is_file():
+        if not flag.is_file() and not fp.is_file():
             sys.exit(2)
         if deadline and time.time() > deadline:
             sys.exit(1)
         time.sleep(args.every)
+
+
+def _fmt_until(until: float) -> str:
+    if until == float("inf"):
+        return "until you say unhush"
+    return "until " + time.strftime("%H:%M", time.localtime(until))
+
+
+def cmd_hush(cfg, args):
+    """Do-not-disturb for decision notifications (phone). `tally hush`
+    = until unhush; `tally hush 2h` = timed. Prints the state."""
+    if args.status:
+        u = hushed()
+        print(f"hushed {_fmt_until(u)}" if u else "not hushed")
+        return
+    try:
+        secs = parse_duration(args.duration or "")
+    except ValueError as e:
+        sys.exit(str(e))
+    print(f"hushed {_fmt_until(set_hush(secs))}")
+
+
+def cmd_unhush(cfg, args):
+    was = clear_hush()
+    n = len([p for p in signals_dir().glob("*.json") if not p.stem.startswith("ask-")])
+    print(("unhushed" if was else "was not hushed") +
+          (f" — {n} question(s) raised" if n else ""))
 
 
 def cmd_clear(cfg, args):
@@ -342,6 +388,11 @@ def _parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("clear", help="remove a raised signal")
     sp.add_argument("id")
 
+    sp = sub.add_parser("hush", help="pause phone notifications (2h, 45m, or open-ended)")
+    sp.add_argument("duration", nargs="?", default="")
+    sp.add_argument("--status", action="store_true")
+    sub.add_parser("unhush", help="resume phone notifications")
+
     sp = sub.add_parser("wait", help="block until a raised flag is answered")
     sp.add_argument("id")
     sp.add_argument("--timeout", type=float, default=0,
@@ -367,7 +418,7 @@ def main(argv: list[str] | None = None) -> None:
         "serve": cmd_serve, "ls": cmd_ls, "term": cmd_term,
         "png": cmd_png, "deck": cmd_deck,
         "raise": cmd_raise, "clear": cmd_clear, "brief": cmd_brief,
-        "wait": cmd_wait,
+        "wait": cmd_wait, "hush": cmd_hush, "unhush": cmd_unhush,
     }[args.cmd](cfg, args)
 
 

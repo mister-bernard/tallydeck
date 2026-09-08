@@ -40,6 +40,8 @@ import time
 from pathlib import Path
 
 RESEND_AFTER = 600.0          # s before a CHANGED ask may go out again
+BACKOFF_MAX = 300.0           # s cap on retry spacing after a failed send
+SAFE_ID = __import__("re").compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 DECK_FRESH = float(os.environ.get("TALLY_DECK_FRESH", "20"))
 ESCALATE_AFTER = float(os.environ.get("TALLY_ESCALATE_AFTER", "0"))
 SEND = os.environ.get("TALLY_SIGNAL_SEND", "/home/openclaw/scripts/signal-send-logged.sh")
@@ -75,9 +77,9 @@ def compose(d: dict, sid: str) -> str:
     if opts:
         lines.append("")
         lines += [f"{i} · {o}" for i, o in enumerate(opts, 1)]
-        lines += ["", "Reply with the number, or a few words."]
+        lines += ["", "Reply with the number — or quote this message to answer in words."]
     else:
-        lines += ["", "Reply with a few words."]
+        lines += ["", "Quote this message to answer in words."]
     lines.append(f"[{sid}]")
     return "\n".join(lines)
 
@@ -102,6 +104,21 @@ def send(to: str, text: str, dry: bool) -> bool:
         return False
 
 
+def hushed(sd: Path, now: float):
+    """Lift epoch (inf = open-ended) while ~/.tallydeck/hush is in force."""
+    try:
+        d = json.loads((sd / "hush").read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    until = d.get("until")
+    if until is None:
+        return float("inf")
+    if float(until) <= now:
+        (sd / "hush").unlink(missing_ok=True)
+        return None
+    return float(until)
+
+
 def deck_connected(sd: Path, now: float) -> bool:
     try:
         return now - (sd / "hub.alive").stat().st_mtime < DECK_FRESH
@@ -112,66 +129,114 @@ def deck_connected(sd: Path, now: float) -> bool:
 _last_presence: dict = {"deck": None}
 
 
+def _read(fp: Path):
+    try:
+        d = json.loads(fp.read_text())
+    except (OSError, ValueError):
+        return None
+    return d if isinstance(d, dict) else None
+
+
+def _write(fp: Path, obj: dict) -> None:
+    import tempfile
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=f".{fp.name}.", dir=str(fp.parent))
+    with os.fdopen(fd, "w") as fh:
+        fh.write(json.dumps(obj))
+    os.replace(tmp, fp)
+
+
 def tick(sd: Path, to: str, dry: bool) -> None:
     signals, pending, answers = sd / "signals", sd / "pending", sd / "answers"
     pending.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(sd, 0o700)
+    except OSError:
+        pass
     now = time.time()
     at_deck = deck_connected(sd, now)
     if _last_presence["deck"] is not at_deck:
         log("deck connected — questions stay on the keys" if at_deck
             else "no deck — questions go to Signal")
         _last_presence["deck"] = at_deck
+    hush_until = hushed(sd, now)
+    if _last_presence.get("hush") != bool(hush_until):
+        log("hushed — holding notifications" if hush_until else "unhushed")
+        _last_presence["hush"] = bool(hush_until)
+    quiet = (sd / "answer-quiet").exists()
+    if _last_presence.get("quiet") != quiet:
+        log("answer-quiet present — phone path OFF" if quiet else "answer-quiet lifted")
+        _last_presence["quiet"] = quiet
     live: set[str] = set()
     for fp in sorted(signals.glob("*.json")):
         sid = fp.stem
-        if sid.startswith("ask-"):
-            continue                     # a live session's own prompt: not ours
+        if sid.startswith("ask-") or not SAFE_ID.match(sid) or ".." in sid:
+            continue                     # a live session's own prompt / not a name
+        # Everything about ONE file stays inside its own try: a single
+        # hand-written drop with "updated": null must not stop every other
+        # question from reaching the phone, forever (audit P2-3).
         try:
             d = json.loads(fp.read_text())
-        except (OSError, json.JSONDecodeError):
-            continue
-        if d.get("state") not in ("attention", "blocked") or not str(d.get("detail", "")).strip():
-            continue
-        ttl, upd = d.get("ttl"), float(d.get("updated", now))
-        if ttl is not None and now - upd > float(ttl):
-            continue                     # expired; the hub will reap it
-        live.add(sid)
-        pf = pending / f"{sid}.json"
-        prev = {}
-        if pf.is_file():
-            try:
-                prev = json.loads(pf.read_text())
-            except json.JSONDecodeError:
-                prev = {}
-        dg = digest(d)
-        if prev.get("digest") == dg:
-            continue                     # already told him this exact ask
-        if prev and now - float(prev.get("sent_at", 0)) < RESEND_AFTER:
-            continue                     # changed, but too soon to nag
-        if at_deck and not (ESCALATE_AFTER and now - upd > ESCALATE_AFTER):
-            continue                     # he is at the deck: it is on the keys
-        if send(to, compose(d, sid), dry):
-            pf.write_text(json.dumps({
-                "id": sid, "label": d.get("label", sid), "digest": dg,
-                "options": (d.get("meta") or {}).get("options") or [],
-                "sent_at": now, "updated": upd}))
-            log(f"notified {sid}")
-    # flags that went away: confirm if answered, else just forget
+            if not isinstance(d, dict):
+                continue
+            if d.get("state") not in ("attention", "blocked") \
+                    or not str(d.get("detail", "")).strip():
+                continue
+            ttl = d.get("ttl")
+            upd = float(d.get("updated") or now)
+            if ttl is not None and now - upd > float(ttl):
+                continue                 # expired; the hub will reap it
+            live.add(sid)
+            pf = pending / f"{sid}.json"
+            prev = _read(pf) or {}
+            dg = digest(d)
+            opts = (d.get("meta") or {}).get("options") or []
+            if prev.get("digest") == dg:
+                # Unchanged ask. Retry only a FAILED send, with backoff.
+                if prev.get("sent_at"):
+                    continue
+                if now - float(prev.get("fail_at") or 0) < min(
+                        BACKOFF_MAX, 5.0 * 2 ** int(prev.get("fails") or 0)):
+                    continue
+            elif prev.get("sent_at") and now - float(prev["sent_at"]) < RESEND_AFTER:
+                # Changed ask, too soon to nag — but the option list G will
+                # answer against must be the CURRENT one (audit P2-4).
+                _write(pf, {**prev, "digest": dg, "options": opts, "updated": upd})
+                continue
+            if (answers / f"{sid}.json").is_file():
+                continue                 # answered on another surface; delivery in flight
+            if quiet or hush_until:
+                continue                 # kill switch / do not disturb
+            if at_deck and not (ESCALATE_AFTER and now - upd > ESCALATE_AFTER):
+                continue                 # he is at the deck: it is on the keys
+            if send(to, compose(d, sid), dry):
+                _write(pf, {"id": sid, "label": d.get("label", sid), "digest": dg,
+                            "options": opts, "sent_at": now, "updated": upd})
+                log(f"notified {sid}")
+            else:
+                _write(pf, {"id": sid, "label": d.get("label", sid), "digest": dg,
+                            "options": opts, "sent_at": None, "updated": upd,
+                            "fail_at": now, "fails": int(prev.get("fails") or 0) + 1})
+        except Exception as e:
+            log(f"skip {sid}: {e!r}")
+    # flags that went away: confirm if answered, say so if withdrawn
     for pf in pending.glob("*.json"):
         sid = pf.stem
         if sid in live:
             continue
+        prev = _read(pf) or {}
         af = answers / f"{sid}.json"
-        if af.is_file():
-            try:
-                a = json.loads(af.read_text())
-                if not a.get("confirmed_signal"):
-                    label = a.get("label") or sid
-                    if send(to, f"✓ recorded — {label}: {a.get('answer', '')}", dry):
-                        a["confirmed_signal"] = time.time()
-                        af.write_text(json.dumps(a))
-            except (OSError, json.JSONDecodeError):
-                pass
+        a = _read(af) if af.is_file() else None
+        if a is not None:
+            if not a.get("confirmed_signal") and prev.get("sent_at"):
+                label = a.get("label") or sid
+                if quiet or send(to, f"✓ recorded — {label}: {a.get('answer', '')}", dry):
+                    a["confirmed_signal"] = time.time()
+                    _write(af, a)
+        elif prev.get("sent_at") and not quiet:
+            # He may still reply to a question that no longer exists; say so
+            # once rather than let that reply meet silence (audit P3).
+            send(to, f"— withdrawn: {prev.get('label') or sid} (expired or dismissed)", dry)
         pf.unlink(missing_ok=True)
 
 
@@ -186,7 +251,8 @@ def main() -> int:
         print("tally-notify: G_SIGNAL_NUMBER not set", file=sys.stderr)
         return 2
     sd = state_dir()
-    log(f"watching {sd / 'signals'} → Signal {to or '(dry-run)'}")
+    shown = ("…" + to[-4:]) if to else "(dry-run)"
+    log(f"watching {sd / 'signals'} → Signal {shown}")
     while True:
         try:
             tick(sd, to or "+0", a.dry_run)

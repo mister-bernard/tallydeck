@@ -41,6 +41,9 @@ class LocalLink:
     def press(self, sid: str, long: bool = False) -> None:
         self.hub.press(sid, long)
 
+    def answer(self, sid: str, text: str) -> None:
+        self.hub.answer(sid, text)
+
     def close(self) -> None:
         pass
 
@@ -151,9 +154,16 @@ class Notifier:
             t = threading.Thread(target=self._ask, args=(s.id, s.label, body),
                                  daemon=True)
             t.start()
-            self._threads.append(t)
+            self._threads = [x for x in self._threads if x.is_alive()] + [t]
         for sid in [k for k in self._seen if k not in live]:
             self._seen.pop(sid, None)
+            # Answered elsewhere / withdrawn: take the notification down so
+            # a stale reply cannot be typed into it hours later.
+            try:
+                subprocess.Popen([self.bin, "-remove", f"tally-{sid}"],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except OSError:
+                pass
 
     def _ask(self, sid: str, title: str, body: str) -> None:
         try:
@@ -239,6 +249,7 @@ def run(link, surface, view: View, poll_every: float = 2.0,
 
     pages_now = [1]   # updated each frame; touch behavior depends on it
     mural_now = [False]
+    signals: list[Signal] = []   # bound before callbacks can fire
     notifier = Notifier(link, log=getattr(link, "log", lambda m: None))
 
     _URGENCY = {"blocked": 2, "attention": 1}
@@ -270,7 +281,6 @@ def run(link, surface, view: View, poll_every: float = 2.0,
         surface.set_callbacks(on_key=on_key, on_touch=on_touch)
 
     last_poll = 0.0
-    signals: list[Signal] = []
     prev_frame = None
     try:
         while True:

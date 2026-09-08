@@ -1,0 +1,270 @@
+#!/usr/bin/python3
+"""tally-answer — resolve an inbound chat reply against pending deck questions.
+
+Called by the chat router (Telegraph) for a Signal DM from the operator BEFORE
+normal routing. Reads one JSON message on stdin:
+
+    {"text": "1", "userId": "+1555…", "chatId": "+1555…", "messageId": 171…,
+     "replyContext": {"messageId": 171…, "quoteText": "…"} | null}
+
+and prints one JSON result:
+
+    {"handled": true,  "id": "mobile-popups", "answer": "1 — A · …", "reply": "✓ …"}
+    {"handled": false, "reason": "no-pending" | "ambiguous" | "not-an-answer"}
+
+Control words (work even with nothing pending): "hush" / "hush 2h" / "hush 45m"
+pauses phone notifications (open-ended or timed); "unhush" resumes and lists
+what is waiting. Chosen to collide with nothing else G says to the fleet
+("stop", "quiet", "abort" all mean other things).
+
+Matching, most to least explicit:
+  1. the text names a pending id — "[mobile-popups] 1", "mobile-popups: 1",
+     "mobile-popups 1" — or quotes the message that carried "[mobile-popups]";
+  2. exactly ONE question is pending → a bare OPTION ("1", "b") within
+     IMPLICIT_WINDOW of its Signal send is its answer. Words alone are NOT —
+     an unrelated "check the deploy log" must reach the pane it was meant
+     for (audit P0). Words need the id or a quote of the tagged message;
+  3. several pending, no id → a bare option is ambiguous: not handled, but
+     `reply` carries a one-line "which one?"; the message still falls through.
+
+A handled answer is written to ~/.tallydeck/answers/<id>.json (the file every
+surface writes and `tally wait` reads), logged, and handed to
+tally-decide --deliver (Telegram note for the raising session, flag cleared
+LAST). A bare digit is mapped onto the option list; a digit with no such
+option is not an answer.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+IMPLICIT_WINDOW = 3600       # s after the Signal went out that a bare "1" still counts
+MAX_ANSWER = 200
+SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def state_dir() -> Path:
+    env = os.environ.get("TALLYDECK_STATE")
+    if env:
+        return Path(env).expanduser()
+    try:
+        import pwd
+        return Path(pwd.getpwuid(os.getuid()).pw_dir) / ".tallydeck"
+    except Exception:
+        return Path.home() / ".tallydeck"
+
+
+def _read(fp: Path) -> dict | None:
+    try:
+        d = json.loads(fp.read_text())
+    except (OSError, ValueError):
+        return None
+    return d if isinstance(d, dict) else None
+
+
+def _write_atomic(fp: Path, obj: dict, exclusive: bool = False) -> bool:
+    import tempfile
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=f".{fp.name}.", dir=str(fp.parent))
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(json.dumps(obj))
+        if exclusive:
+            try:
+                os.link(tmp, fp)
+            except FileExistsError:
+                return False
+            return True
+        os.replace(tmp, fp)
+        return True
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def _load_pending(sd: Path) -> dict[str, dict]:
+    out = {}
+    for fp in sorted((sd / "pending").glob("*.json")):
+        if not SAFE_ID.match(fp.stem) or ".." in fp.stem:
+            continue
+        d = _read(fp)
+        if d and (sd / "signals" / f"{fp.stem}.json").is_file():     # still raised
+            out[fp.stem] = d
+    return out
+
+
+def _option(answer: str, options: list[str]) -> str | None:
+    """A bare option index or letter → the option; None if it is not one.
+    A letter shared by two options is ambiguous and not an answer."""
+    a = " ".join(answer.split())
+    m = re.fullmatch(r"(\d{1,2})[.)]?", a)
+    if m:
+        n = int(m.group(1))
+        return f"{n} — {options[n - 1]}" if options and 1 <= n <= len(options) else None
+    m = re.fullmatch(r"([A-Za-z])[.)]?", a)
+    if m and options:
+        hits = [(i, o) for i, o in enumerate(options, 1)
+                if o.strip().upper().startswith(m.group(1).upper())]
+        return f"{hits[0][0]} — {hits[0][1]}" if len(hits) == 1 else None
+    return None
+
+
+def _free(answer: str) -> str | None:
+    a = " ".join(answer.split())
+    return a if a and len(a) <= MAX_ANSWER else None
+
+
+def _named(text: str, quote: str, pending: dict) -> tuple[str, str, bool] | None:
+    """(id, remaining text, free_text_ok) when the reply names a pending id.
+
+    Explicit forms allow words: "[wires] rotate it", "wires: rotate it",
+    "wires — rotate it", or a quote-reply to the message tagged "[wires]".
+    The bare form "wires 1" is only an answer when what follows is an
+    option; "wires done?" is a sentence that happens to start with a slug
+    and must reach the pane it was meant for."""
+    for sid in sorted(pending, key=len, reverse=True):
+        esc = re.escape(sid)
+        m = re.match(r"^\s*\[" + esc + r"\]\s*(.*)$", text, re.I | re.S) \
+            or re.match(r"^\s*" + esc + r"\s*[:\-—]\s*(.*)$", text, re.I | re.S)
+        if m:
+            return sid, m.group(1).strip(), True
+        if f"[{sid}]" in quote:
+            return sid, text.strip(), True
+        m = re.match(r"^\s*" + esc + r"\s+(\S+)\s*$", text, re.I)
+        if m:
+            return sid, m.group(1), False
+    return None
+
+
+def _resolve_answer(pending: dict, text: str, quote: str, now: float):
+    """(sid, answer) | (None, reason) | (None, "ambiguous")"""
+    hit = _named(text, quote, pending)
+    if hit:
+        sid, body, free_ok = hit
+        opts = [str(o) for o in pending[sid].get("options") or []]
+        ans = _option(body, opts) or (_free(body) if free_ok else None)
+        return (sid, ans) if ans else (None, "not-an-answer")
+    if len(pending) == 1:
+        # Implicit: only an OPTION counts, and only for a while. Words with
+        # nothing naming the question are a message to whoever G was
+        # talking to, not an answer — the audit's P0.
+        sid = next(iter(pending))
+        if now - float(pending[sid].get("sent_at") or 0) > IMPLICIT_WINDOW:
+            return None, "stale"
+        opts = [str(o) for o in pending[sid].get("options") or []]
+        ans = _option(text, opts)
+        return (sid, ans) if ans else (None, "not-an-answer")
+    if _option(text, ["x"] * 9) or re.fullmatch(r"\s*[A-Za-z]\s*", text):
+        return None, "ambiguous"
+    return None, "not-an-answer"
+
+
+def _hush_words(sd: Path, text: str) -> dict | None:
+    t = " ".join(text.split())
+    m = re.fullmatch(r"(?i)hush(?:\s+(\S+))?", t)
+    if m:
+        dur = (m.group(1) or "").strip()
+        secs = None
+        if dur:
+            mm = re.fullmatch(r"(\d+(?:\.\d+)?)\s*(h|hr|hrs|hour|hours|m|min|mins|minute|minutes|d|day|days)?", dur.lower())
+            if not mm:
+                return None                       # "hush puppies" is a sentence
+            secs = float(mm.group(1)) * {"h": 3600, "m": 60, "d": 86400}[(mm.group(2) or "m")[0]]
+        until = None if secs is None else time.time() + secs
+        _write_atomic(sd / "hush", {"until": until, "since": time.time()})
+        when = "until you say unhush" if until is None else \
+            "until " + time.strftime("%H:%M", time.localtime(until))
+        return {"handled": True, "hush": True,
+                "reply": f"🤫 hushed {when} — questions wait on the deck; nothing to your phone."}
+    if re.fullmatch(r"(?i)unhush", t):
+        (sd / "hush").unlink(missing_ok=True)
+        raised = [p.stem for p in (sd / "signals").glob("*.json") if not p.stem.startswith("ask-")]
+        tail = f" — {len(raised)} waiting: {', '.join(raised)}" if raised else " — nothing waiting"
+        return {"handled": True, "hush": False, "reply": "🔔 unhushed" + tail}
+    return None
+
+
+def _decide_bin() -> str:
+    env = os.environ.get("TALLY_DECIDE_BIN")
+    if env:
+        return env if os.access(env, os.X_OK) else ""
+    here = Path(__file__).resolve().parent / "tally-decide"
+    return str(here) if os.access(here, os.X_OK) else ""
+
+
+def resolve(msg: dict) -> dict:
+    sd = state_dir()
+    hw = _hush_words(sd, str(msg.get("text") or ""))
+    if hw:
+        return hw
+    if (sd / "answer-quiet").exists():
+        return {"handled": False, "reason": "quiet"}
+    pending = _load_pending(sd)
+    if not pending:
+        return {"handled": False, "reason": "no-pending"}
+    text = str(msg.get("text") or "")
+    quote = str((msg.get("replyContext") or {}).get("quoteText") or "")
+    now = time.time()
+
+    sid, answer = _resolve_answer(pending, text, quote, now)
+    if sid is None:
+        if answer == "ambiguous":
+            # A bare "1" with several questions pending is aimed at one of
+            # them, not at the pane — swallow it and ask which.
+            which = ", ".join(pending)
+            return {"handled": True, "reason": "ambiguous",
+                    "reply": f"Which one? Reply like “{next(iter(pending))} 1”. Pending: {which}"}
+        return {"handled": False, "reason": answer}
+
+    ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    label = str(pending[sid].get("label") or sid)
+    afile = sd / "answers" / f"{sid}.json"
+    rec = {"id": sid, "answer": answer, "at": ts, "label": label,
+           "via": "signal", "confirmed_signal": now}
+    if not _write_atomic(afile, rec, exclusive=True):
+        prev = _read(afile) or {}
+        return {"handled": True, "id": sid, "duplicate": True,
+                "reply": f"already answered — {label}: {prev.get('answer', '?')}"}
+    log = Path(os.environ.get("TALLY_DECISION_LOG",
+                              "/home/openclaw/.openclaw/state/tally-decisions.log"))
+    try:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with open(log, "a") as fh:
+            fh.write(f"[{ts}] {sid} :: {answer}  (signal)\n")
+    except OSError:
+        pass
+    decide = _decide_bin()
+    if decide:
+        try:
+            subprocess.Popen([decide, "--deliver", sid, label, answer, ts],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+        except OSError:
+            decide = ""
+    if not decide:
+        # No deliverer on this host: clear the flag ourselves rather than
+        # tell G "recorded" while the key keeps flashing forever.
+        (sd / "signals" / f"{sid}.json").unlink(missing_ok=True)
+    return {"handled": True, "id": sid, "answer": answer,
+            "reply": f"✓ recorded — {label}: {answer}"}
+
+
+def main() -> int:
+    try:
+        msg = json.load(sys.stdin)
+    except json.JSONDecodeError:
+        print(json.dumps({"handled": False, "reason": "bad-input"}))
+        return 0
+    print(json.dumps(resolve(msg if isinstance(msg, dict) else {})))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

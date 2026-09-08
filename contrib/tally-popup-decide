@@ -32,7 +32,7 @@ while IFS='|' read -r tty sess act; do
   case "$sess" in _fl-*) continue ;; esac
   [ $((NOW - ${act:-0})) -lt 43200 ] || continue          # ghost → skip
   log "popup for $ID on $tty ($sess)"
-  T display-popup -c "$tty" -w 90% -h 85% -E "$DECIDE $(printf '%q' "$ID")" 2>>"$LOG" &
+  T display-popup -c "$tty" -w 90% -h 85% -E "$(printf '%q' "$DECIDE") $(printf '%q' "$ID")" 2>>"$LOG" &
   PIDS+=($!)
 done < <(T list-clients -F '#{client_tty}|#{client_session}|#{client_activity}' 2>/dev/null)
 

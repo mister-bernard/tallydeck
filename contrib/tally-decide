@@ -70,6 +70,30 @@ LOG = Path(os.environ.get("TALLY_DECISION_LOG",
                           "/home/openclaw/.openclaw/state/tally-decisions.log"))
 TALLY_BIN = os.environ.get("TALLY_BIN", str(Path(__file__).resolve().parent / "tally"))
 
+
+def _write_atomic(fp: Path, obj: dict, exclusive: bool = False) -> bool:
+    """Temp file + os.replace (never a torn read); exclusive = first writer
+    wins via os.link, the loser gets False."""
+    import tempfile
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=f".{fp.name}.", dir=str(fp.parent))
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(json.dumps(obj))
+        if exclusive:
+            try:
+                os.link(tmp, fp)
+            except FileExistsError:
+                return False
+            return True
+        os.replace(tmp, fp)
+        return True
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
 console = Console(color_system="truecolor", theme=THEME)
 
 
@@ -276,7 +300,15 @@ def main(argv: list[str]) -> int:
     if not f.is_file():
         console.print(Text(f"No such raised decision: {sid}", style="bold red"))
         list_raised(); time.sleep(3); return 1
-    d = json.loads(f.read_text())
+    d = None
+    for _ in range(5):                       # a raise may be mid-rewrite
+        try:
+            d = json.loads(f.read_text())
+            break
+        except (OSError, ValueError):
+            time.sleep(0.1)
+    if not isinstance(d, dict):
+        console.print(Text(f"{sid}: unreadable flag", style="bold red")); time.sleep(2); return 1
     opts = [str(o) for o in ((d.get("meta") or {}).get("options") or [])]
 
     _reveal(screen(d, opts))
@@ -311,12 +343,27 @@ def main(argv: list[str]) -> int:
         console.clear(); console.print(screen(d, opts, msg))
 
     ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    LOG.parent.mkdir(parents=True, exist_ok=True)
-    with open(LOG, "a") as fh:
-        fh.write(f"[{ts}] {sid} :: {answer}\n")
-    ANSWERS.mkdir(parents=True, exist_ok=True)
-    (ANSWERS / f"{sid}.json").write_text(json.dumps(
-        {"id": sid, "answer": answer, "at": ts, "label": d.get("label", "")}))
+    # The answer file FIRST, exclusively: the first surface to answer wins,
+    # a second (other terminal, phone) learns it lost instead of overwriting.
+    if not _write_atomic(ANSWERS / f"{sid}.json",
+                         {"id": sid, "answer": answer, "at": ts,
+                          "label": d.get("label", ""), "via": "deck-popup"},
+                         exclusive=True):
+        prev = {}
+        try:
+            prev = json.loads((ANSWERS / f"{sid}.json").read_text())
+        except (OSError, ValueError):
+            pass
+        console.clear()
+        console.print(Text(f"already answered elsewhere: {prev.get('answer', '?')}", style=DIM))
+        time.sleep(1.2)
+        return 0
+    try:
+        LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(LOG, "a") as fh:
+            fh.write(f"[{ts}] {sid} :: {answer}\n")
+    except OSError:
+        pass                                 # the answer file is the record
 
     # Deliver + clear in a detached pass so the popup can vanish now.
     subprocess.Popen([sys.executable, os.path.abspath(__file__), "--deliver", sid,
@@ -329,9 +376,17 @@ def main(argv: list[str]) -> int:
 
 
 def deliver(sid: str, label: str, answer: str, ts: str) -> int:
-    """Background half of an answer: Telegram first, clear the flag LAST."""
+    """Background half of an answer: Telegram first, clear the flag LAST.
+    No-op unless the answer on disk is the one we were handed (a lost race
+    must not deliver, and must not clear the winner's flag)."""
     f = SIGNALS / f"{sid}.json"
-    delivered = True
+    try:
+        cur = json.loads((ANSWERS / f"{sid}.json").read_text())
+    except (OSError, ValueError):
+        cur = {}
+    if cur.get("at") != ts or cur.get("answer") != answer:
+        return 1
+    delivered = False
     if os.access(TG, os.X_OK):
         try:
             r = subprocess.run([TG, G_CHAT, "tally-decide",
@@ -341,6 +396,8 @@ def deliver(sid: str, label: str, answer: str, ts: str) -> int:
             delivered = r.returncode == 0
         except (OSError, subprocess.TimeoutExpired):
             delivered = False
+    elif os.environ.get("TALLY_TG_SEND") in ("", None) and not os.path.exists(TG):
+        delivered = True                     # no Telegram on this host: nothing to deliver
     if not delivered:
         with open(LOG, "a") as fh:
             fh.write(f"[{ts}] {sid} :: WARNING delivery failed; flag left raised\n")

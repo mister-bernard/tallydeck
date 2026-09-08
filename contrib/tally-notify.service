@@ -1,15 +1,23 @@
 # systemd --user unit: raised deck questions → the operator's phone over Signal.
+#
+#   printf 'G_SIGNAL_NUMBER=+1…\n' > ~/.tallydeck/notify.env && chmod 600 ~/.tallydeck/notify.env
 #   cp contrib/tally-notify.service ~/.config/systemd/user/ && systemctl --user enable --now tally-notify
+#
+# The env file holds ONE value. The daemon must not inherit a deploy cache full
+# of unrelated secrets, and systemd's env parser is not a shell — an `export`
+# line in a shared .env would keep the unit from starting at all (audit P2-9).
 [Unit]
 Description=tallydeck: push raised questions to Signal
-After=network.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
-EnvironmentFile=%h/.openclaw/.env
+EnvironmentFile=%h/.tallydeck/notify.env
 ExecStart=%h/projects/tallydeck/contrib/tally-notify --every 2
 Restart=always
-RestartSec=5
+RestartSec=10
 
 [Install]
 WantedBy=default.target

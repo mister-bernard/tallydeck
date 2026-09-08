@@ -125,7 +125,9 @@ class Hub:
         if sig is None or sig.group != "sig" or not text:
             return False
         stem = sid.split("/", 1)[-1]
-        if stem.startswith("ask-") or not (sig.detail or "").strip():
+        from .paths import safe_id
+        if not safe_id(stem) or stem.startswith("ask-") \
+                or not (sig.detail or "").strip():
             return False
         opts = [str(o) for o in (sig.meta.get("options") or [])]
         if text.isdigit():
@@ -133,13 +135,17 @@ class Hub:
             if not opts or not 1 <= n <= len(opts):
                 return False
             text = f"{n} — {opts[n - 1]}"
-        from .paths import state_dir
+        from .paths import state_dir, write_json_atomic, private_dir
         ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        adir = state_dir() / "answers"
-        adir.mkdir(parents=True, exist_ok=True)
-        (adir / f"{stem}.json").write_text(json.dumps(
-            {"id": stem, "answer": text, "at": ts, "label": sig.label,
-             "via": "deck-notification"}))
+        adir = private_dir(state_dir() / "answers")
+        # First surface to answer wins; a second answer is refused, not
+        # merged — two contradictory deliveries were the audit's P1-3.
+        if not write_json_atomic(adir / f"{stem}.json",
+                                 {"id": stem, "answer": text, "at": ts,
+                                  "label": sig.label, "via": "deck-notification"},
+                                 exclusive=True):
+            self.log(f"[hub] answer for {sid} refused: already answered")
+            return False
         decide = self._decide_bin()
         if decide:
             try:
@@ -218,9 +224,17 @@ class Hub:
 
         threading.Thread(target=reader, daemon=True).start()
 
+        # Presence on its own thread: a source that hangs a poll must not
+        # make the deck look unplugged and send the question to the phone
+        # while the operator is sitting right here (audit).
+        def beater() -> None:
+            while not stop.is_set():
+                self.heartbeat()
+                stop.wait(HEARTBEAT)
+
+        threading.Thread(target=beater, daemon=True).start()
         last_sent = ""
         last_time = 0.0
-        last_beat = 0.0
         try:
             while not stop.is_set():
                 signals = self.poll()
@@ -232,9 +246,7 @@ class Hub:
                     except BrokenPipeError:
                         break
                     last_sent, last_time = line, now
-                if now - last_beat > HEARTBEAT:
-                    self.heartbeat()
-                    last_beat = now
                 stop.wait(self.tick)
         finally:
+            stop.set()
             self._clear_heartbeat()      # unplugged: the phone takes over

@@ -886,14 +886,16 @@ def test_hub_marks_a_press_whose_popup_is_up_as_opened(tmp_path):
     shouting (flash=False, meta.opened). A quick exit keeps it flashing."""
     import sys, time as _t
     from tallydeck import hub as hubmod
-    src = WatchDirSource(path=str(tmp_path))
-    (tmp_path / "slow.json").write_text(json.dumps(
-        {"label": "slow", "state": "attention", "detail": "q?",
-         "action": {"type": "cmd", "argv": [sys.executable, "-c", "import time; time.sleep(5)"]}}))
-    (tmp_path / "fast.json").write_text(json.dumps(
-        {"label": "fast", "state": "attention", "detail": "q?",
-         "action": {"type": "cmd", "argv": [sys.executable, "-c", "pass"]}}))
-    h = Hub([src], log=lambda m: None)
+    from tallydeck.sources.base import Source
+
+    class Acts(Source):          # source-defined actions, no real popups
+        group = "sig"
+        def poll(self):
+            return [Signal(id="sig/slow", label="slow", state=ATTENTION, detail="q?", group="sig",
+                           action={"type": "cmd", "argv": [sys.executable, "-c", "import time; time.sleep(5)"]}),
+                    Signal(id="sig/fast", label="fast", state=ATTENTION, detail="q?", group="sig",
+                           action={"type": "cmd", "argv": [sys.executable, "-c", "pass"]})]
+    h = Hub([Acts()], log=lambda m: None)
     h.poll()
     h.press("sig/slow"); h.press("sig/fast")
     _t.sleep(hubmod.OPEN_AFTER + 0.4)
@@ -991,6 +993,10 @@ def test_hub_answer_is_validated_against_a_raised_question(tmp_path, monkeypatch
     assert h.answer("sig/q", "2") is True
     d = json.loads((tmp_path / "answers" / "q.json").read_text())
     assert d["answer"] == "2 — B · two" and d["via"] == "deck-notification"
+    # first answer wins; a second is refused, not merged (audit P1-3)
+    assert h.answer("sig/q", "  go with   one ") is False
+    assert json.loads((tmp_path / "answers" / "q.json").read_text())["answer"] == "2 — B · two"
+    (tmp_path / "answers" / "q.json").unlink()
     assert h.answer("sig/q", "  go with   one ") is True
     assert json.loads((tmp_path / "answers" / "q.json").read_text())["answer"] == "go with one"
 
@@ -1028,11 +1034,13 @@ def test_signal_reply_resolves_a_pending_question(tmp_path):
     assert r["handled"] and r["answer"] == "2 — B · ntfy"
     a = json.loads((tmp_path / "answers" / "popups.json").read_text())
     assert a["via"] == "signal" and "recorded" in r["reply"]
+    (tmp_path / "answers" / "popups.json").unlink()
     raise_("popups", ["A · Signal", "B · ntfy"]); raise_("disk", [])
-    r = run({"text": "1"})
-    assert r["handled"] is False and r["reason"] == "ambiguous" and "Which one" in r["reply"]
+    r = run({"text": "1"})           # aimed at one of them, not the pane: swallowed + nudge
+    assert r["handled"] is True and r["reason"] == "ambiguous" and "Which one" in r["reply"]
     r = run({"text": "disk: kill at 95%"})
     assert r["handled"] and r["id"] == "disk" and r["answer"] == "kill at 95%"
+    (tmp_path / "answers" / "disk.json").unlink()
     r = run({"text": "1", "replyContext": {"quoteText": "◆ DECISION — Popups … [popups]"}})
     assert r["handled"] and r["id"] == "popups" and r["answer"].startswith("1 — A")
 
@@ -1066,3 +1074,154 @@ def test_hub_heartbeat_marks_presence(tmp_path, monkeypatch):
     assert (tmp_path / "hub.alive").is_file()
     h._clear_heartbeat()
     assert not (tmp_path / "hub.alive").exists()
+
+
+def test_hush_pauses_phone_notifications_and_unhush_resumes(tmp_path, capsys):
+    import subprocess, sys, os, time as _t
+    from pathlib import Path
+    from tallydeck import cli, paths
+    os.environ["TALLYDECK_STATE"] = str(tmp_path)
+    try:
+        assert paths.parse_duration("2h") == 7200 and paths.parse_duration("45m") == 2700
+        assert paths.parse_duration("") is None
+        (tmp_path / "signals").mkdir()
+        (tmp_path / "signals" / "q.json").write_text(json.dumps(
+            {"label": "Q", "state": "attention", "detail": "?", "updated": _t.time(), "ttl": 3600}))
+        script = Path(__file__).resolve().parent.parent / "contrib" / "tally-notify"
+        env = dict(os.environ, TALLYDECK_STATE=str(tmp_path))
+        once = lambda: subprocess.run([sys.executable, str(script), "--once", "--dry-run"],
+                                      capture_output=True, text=True, env=env, timeout=15, check=True).stdout
+        cli.main(["hush", "2h"])
+        assert "hushed until" in capsys.readouterr().out
+        assert "DRY-RUN" not in once()                       # held
+        cli.main(["unhush"])
+        assert "1 question" in capsys.readouterr().out
+        assert "DRY-RUN" in once()                           # sent on lift
+        # timed hush expires on its own
+        paths.set_hush(0.01); _t.sleep(0.05)
+        assert paths.hushed() is None
+        # the Signal control words, through the matcher
+        answer = Path(__file__).resolve().parent.parent / "contrib" / "tally-answer"
+        run = lambda t: json.loads(subprocess.run([sys.executable, str(answer)], input=json.dumps({"text": t}),
+                                                  capture_output=True, text=True, env=env, timeout=10, check=True).stdout)
+        r = run("hush")
+        assert r["handled"] and "hushed until you say unhush" in r["reply"]
+        r = run("unhush")
+        assert r["handled"] and "1 waiting" in r["reply"]
+        assert run("hush puppies are shoes")["handled"] is False
+    finally:
+        os.environ.pop("TALLYDECK_STATE", None)
+
+
+# ── audit fixes: the phone path must never eat a real message ────────────────
+
+def _answer_runner(tmp_path):
+    import subprocess, sys, os, time as _t
+    from pathlib import Path
+    script = Path(__file__).resolve().parent.parent / "contrib" / "tally-answer"
+    env = dict(os.environ, TALLYDECK_STATE=str(tmp_path), TALLY_DECIDE_BIN="/bin/true",
+               TALLY_DECISION_LOG=str(tmp_path / "log"))
+    (tmp_path / "signals").mkdir(exist_ok=True); (tmp_path / "pending").mkdir(exist_ok=True)
+    def raise_(sid, opts, age=0):
+        (tmp_path / "signals" / f"{sid}.json").write_text(json.dumps({"label": sid.title(), "state": "attention", "detail": "?"}))
+        (tmp_path / "pending" / f"{sid}.json").write_text(json.dumps({"id": sid, "label": sid.title(), "options": opts, "sent_at": _t.time() - age}))
+    def run(msg):
+        r = subprocess.run([sys.executable, str(script)], input=json.dumps(msg), text=True,
+                           capture_output=True, env=env, timeout=10, check=True)
+        return json.loads(r.stdout)
+    return raise_, run
+
+
+def test_words_alone_never_count_as_an_implicit_answer(tmp_path):
+    raise_, run = _answer_runner(tmp_path)
+    raise_("popups", ["A · Signal", "B · ntfy"])
+    # an unrelated DM while one question is pending must fall through
+    assert run({"text": "check the deploy log on hermes"})["handled"] is False
+    assert run({"text": "/status"})["handled"] is False
+    # a bare option IS the answer…
+    assert run({"text": "2"})["handled"] is True
+    (tmp_path / "answers" / "popups.json").unlink()
+    # …but not after the implicit window
+    raise_("popups", ["A · Signal", "B · ntfy"], age=7200)
+    assert run({"text": "2"})["reason"] == "stale"
+    # words are fine when the question is named or quoted
+    r = run({"text": "[popups] go with ntfy"})
+    assert r["handled"] and r["answer"] == "go with ntfy"
+    (tmp_path / "answers" / "popups.json").unlink()
+    r = run({"text": "ntfy, final", "replyContext": {"quoteText": "◆ DECISION … [popups]"}})
+    assert r["handled"] and r["answer"] == "ntfy, final"
+
+
+def test_slug_prefix_sentences_are_not_answers(tmp_path):
+    """'wires done?' starts with a pending slug and is a sentence for the
+    pane, not an answer (audit P1-1). 'wires 1' is an answer."""
+    raise_, run = _answer_runner(tmp_path)
+    raise_("wires", ["A · rotate", "B · keep"]); raise_("gas", [])
+    assert run({"text": "wires done?"})["handled"] is False
+    r = run({"text": "wires 1"})
+    assert r["handled"] and r["id"] == "wires"
+    # two options sharing a letter: a bare letter is ambiguous, not an answer
+    (tmp_path / "answers" / "wires.json").unlink()
+    raise_("wires", ["Alpha", "Apex"])
+    assert run({"text": "wires a"})["handled"] is False
+
+
+def test_second_answer_loses_and_stale_answer_is_archived(tmp_path, monkeypatch):
+    from tallydeck import cli
+    raise_, run = _answer_runner(tmp_path)
+    raise_("q", ["A", "B"])
+    assert run({"text": "1"})["handled"] is True
+    dup = run({"text": "2"})
+    assert dup["handled"] is True and dup.get("duplicate") is True
+    assert json.loads((tmp_path / "answers" / "q.json").read_text())["answer"].startswith("1")
+    # a fresh raise of the same slug archives the old answer so `tally wait`
+    # cannot return last round's decision (audit P0-2)
+    monkeypatch.setenv("TALLYDECK_STATE", str(tmp_path))
+    (tmp_path / "signals" / "q.json").unlink()
+    cli.main(["raise", "q", "--state", "attention", "--sublabel", "again?"])
+    assert not (tmp_path / "answers" / "q.json").exists()
+    assert list((tmp_path / "answers" / ".archive").glob("q.*.json"))
+
+
+def test_wait_ignores_torn_and_stale_answer_files(tmp_path, monkeypatch):
+    import pytest as _pt, os, time as _t
+    from tallydeck import cli
+    monkeypatch.setenv("TALLYDECK_STATE", str(tmp_path))
+    (tmp_path / "signals").mkdir(); (tmp_path / "answers").mkdir()
+    (tmp_path / "signals" / "q.json").write_text("{}")
+    (tmp_path / "answers" / "q.json").write_text("")                  # torn
+    with _pt.raises(SystemExit) as e:
+        cli.main(["wait", "q", "--every", "0.05", "--timeout", "0.3"])
+    assert e.value.code == 1                                           # not "answered: ''"
+    (tmp_path / "answers" / "q.json").write_text(json.dumps({"answer": "old"}))
+    old = _t.time() - 100
+    os.utime(tmp_path / "answers" / "q.json", (old, old))              # older than the flag
+    with _pt.raises(SystemExit) as e:
+        cli.main(["wait", "q", "--every", "0.05", "--timeout", "0.3"])
+    assert e.value.code == 1
+
+
+def test_raise_rejects_unsafe_ids(tmp_path, monkeypatch):
+    import pytest as _pt
+    from tallydeck import cli
+    monkeypatch.setenv("TALLYDECK_STATE", str(tmp_path))
+    for bad in ("../x", "a/b", ".hidden", ""):
+        with _pt.raises(SystemExit):
+            cli.main(["raise", bad, "--sublabel", "?"])
+
+
+def test_notifier_survives_a_bad_drop_and_backs_off(tmp_path):
+    import subprocess, sys, os, time as _t
+    from pathlib import Path
+    script = Path(__file__).resolve().parent.parent / "contrib" / "tally-notify"
+    (tmp_path / "signals").mkdir()
+    (tmp_path / "signals" / "bad.json").write_text(json.dumps({"label": "b", "state": "attention", "detail": "?", "updated": None}))
+    (tmp_path / "signals" / "good.json").write_text(json.dumps({"label": "g", "state": "attention", "detail": "?", "updated": _t.time()}))
+    env = dict(os.environ, TALLYDECK_STATE=str(tmp_path))
+    out = subprocess.run([sys.executable, str(script), "--once", "--dry-run"], capture_output=True, text=True, env=env, timeout=15, check=True).stdout
+    assert "notified good" in out and "notified bad" in out      # None updated → now; both fine
+    # kill switch silences it without a restart
+    (tmp_path / "answer-quiet").touch()
+    (tmp_path / "signals" / "late.json").write_text(json.dumps({"label": "l", "state": "attention", "detail": "?", "updated": _t.time()}))
+    out = subprocess.run([sys.executable, str(script), "--once", "--dry-run"], capture_output=True, text=True, env=env, timeout=15, check=True).stdout
+    assert "notified late" not in out and "phone path OFF" in out
