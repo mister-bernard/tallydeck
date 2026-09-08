@@ -61,6 +61,9 @@ def classify(lines: list[str]) -> tuple[str, str]:
                 return IDLE, ""
             return WORKING, ""            # task_started, item_completed, …
         if t == "response_item":
+            if p.get("type") == "function_call" and p.get("name", "").split(".")[-1] in (
+                    "request_user_input", "request_user_input_async"):
+                return ATTENTION, str(p.get("arguments") or "")
             return WORKING, ""            # a message/tool call mid-turn
         # session_meta, turn_context, world_state, token_usage_record: skip
     return IDLE, ""
@@ -76,13 +79,15 @@ def _last_agent_text(lines: list[str], limit: int = 300) -> str:
         if rec.get("type") == "event_msg" and p.get("type") == "task_complete":
             msg = str(p.get("last_agent_message") or "")
             if msg:
-                return " ".join(msg.split())[:limit]
+                from ..decisions import decision_text
+                return " ".join((decision_text(msg) or msg).split())[:limit]
         if rec.get("type") == "response_item" and p.get("type") == "message" \
                 and p.get("role") == "assistant":
             text = " ".join(str(c.get("text", "")) for c in p.get("content", [])
                             if isinstance(c, dict))
             if text.strip():
-                return " ".join(text.split())[:limit]
+                from ..decisions import decision_text
+                return " ".join((decision_text(text) or text).split())[:limit]
     return ""
 
 
@@ -193,6 +198,16 @@ class CodexSessionsSource(Source):
                 state, ended = WORKING, False
             if is_exec and state == ATTENTION:
                 state = WORKING            # nobody answers a one-shot
+            if ended:
+                from ..paths import acked_dir
+                ack = acked_dir() / uuid
+                try:
+                    if ack.stat().st_mtime >= mtime:
+                        state = IDLE
+                    else:
+                        ack.unlink()
+                except OSError:
+                    pass
             cwd = str(meta.get("cwd") or "")
             pane = panes.get(uuid, "")
             # The title Codex itself keeps for this thread, ranked against the
@@ -243,17 +258,12 @@ class CodexSessionsSource(Source):
                 uuid: str) -> dict | None:
         """Press → the same hub-side router every other session key uses.
 
-        The uuid is deliberately NOT passed: the router's paneless fallback
-        resumes with `claude --resume <uuid>`, which for a Codex session is a
-        confusing failure. No live pane → the key still reports, it just has
-        nowhere to send you."""
-        if not pane:
-            return None
+        Full UUIDs are used for the brief and harness-aware resume fallback."""
         route = contrib_bin("tally-popup-route")
         if not route:
             return None
         return {"type": "cmd", "argv": [
-            route, pane, "", cwd, label[:24], state, self.account,
+            route, pane, uuid, cwd, label[:24], state, self.account,
             f"{self.group}/{signal_id(uuid)}"]}
 
     def _recent_rollouts(self, now: float) -> list[Path]:

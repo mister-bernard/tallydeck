@@ -52,7 +52,10 @@ fi
 # Which claude binary owns this session's history (account B has its own HOME).
 BIN="claude"
 [ "$ACCT" = "B" ] && BIN="$HOME/.local/bin/claude-b"
-RESUME="$BIN --dangerously-skip-permissions --resume '$UUID'; exec bash -l"
+printf -v RESUME '%q --dangerously-skip-permissions --resume %q; exec bash -l' "$BIN" "$UUID"
+case "$SIGID" in cx/*)
+  printf -v RESUME '%q resume --dangerously-bypass-approvals-and-sandbox %q; exec bash -l' "${CODEX_BIN:-codex}" "$UUID" ;;
+esac
 
 # Terminals answer queries (the DA1 reply "^[[?1;2c") and those bytes arrive
 # as INPUT — drain before the menu read, or they dismiss the router; drain
@@ -60,55 +63,39 @@ RESUME="$BIN --dangerously-skip-permissions --resume '$UUID'; exec bash -l"
 drain_input() { while read -r -s -n 10000 -t 0.05 _ 2>/dev/null; do :; done; }
 
 ensure_resurrected() {
-  NAME="fl-$(printf '%s' "${UUID:-x}" | cut -c1-8)"   # uuid-keyed: labels collide
+  NAME="fl-${UUID:-x}"   # uuid-keyed: labels collide
   if ! T has-session -t "=$NAME" 2>/dev/null; then
     T new-session -d -s "$NAME" -c "${PROJ:-$HOME}" "$RESUME"
   fi
 }
 
-/usr/bin/python3 -m tallydeck.cli brief \
-  --session "$UUID" --project "$PROJ" --label "$LABEL" --state "$STATE" \
-  --ask "$ASK"
-
-# For a FINISHED session, what it said is only half the answer — G asked for what it
-# actually produced (2026-09-08: "when I click on a green one, I want it to show me a
-# pop-up with the results"). Files written, commits made, links emitted. Prints
-# nothing when the session was a conversation rather than a build, because an empty
-# RESULTS heading reads as "it produced nothing".
-if [ "$STATE" = "success" ] && [ -n "$UUID" ]; then
-  echo
-  "$(dirname "$(realpath "$0")")/tally-results" "$UUID" 2>/dev/null || true
-fi
-
+# Raised decisions go straight to the answer UI. Session permission hooks keep
+# their own routing controls: their answer belongs in the waiting agent pane.
+case "$SIGID" in
+  sig/ask-*) ;;
+  sig/*)
+    DECIDE="${TALLY_DECIDE:-$(dirname "$(realpath "$0")")/tally-decide}"
+    exec "$DECIDE" "${SIGID#sig/}" ;;
+esac
 LIVE=""; [ -n "$TARGET" ] && LIVE=1
-# A raised flag that carries an ask is a QUESTION, not a place to go. It inherits the
-# tmux target of whichever session raised it, so without this the router offered
-# "open floating / tab here / split here" and a press landed G in the transcript of
-# the session that asked — not in the question. (G, 2026-09-08: "I pressed the Aurora
-# button and it opened up this chat rather than the actual Aurora interface.")
-ASKABLE=""; case "$SIGID" in sig/*) [ -n "$ASK" ] && ASKABLE=1 ;; esac
-printf '  \033[38;2;44;48;62m%s\033[0m\n' "──────────────────────────────────────────────────────────────────────────"
-if [ -n "$ASKABLE" ]; then
-  printf '  \033[1;38;2;0;229;255ma\033[0m ANSWER IT    \033[1;38;2;0;229;255m␣\033[0m done (retire)%s    \033[2mother dismisses\033[0m\n' \
-    "$([ -n "$LIVE" ] && printf '    \033[1;38;2;0;229;255m⏎\033[0m go to the session that asked')"
-elif [ -n "$LIVE" ] || [ -n "$UUID" ]; then
-  printf '  \033[1;38;2;0;229;255m⏎\033[0m open floating%s    \033[1;38;2;0;229;255mt\033[0m tab here    \033[1;38;2;0;229;255ms\033[0m split here    \033[1;38;2;0;229;255ml\033[0m text me links    \033[1;38;2;0;229;255m␣\033[0m done (mute)    \033[2mother dismisses\033[0m\n' \
-    "$([ -n "$LIVE" ] || printf '\033[2m (resumes)\033[0m')"
-else
-  printf '  \033[1;38;2;0;229;255m␣\033[0m done (retire this flag)    \033[2many other key dismisses — the flag stays up\033[0m\n'
-fi
-drain_input
-# The same router is up on every attached terminal. Wait for a key here, but
-# fold quietly the moment the press is taken in another popup.
 TAKEN_DIR="${TALLYDECK_STATE:-$HOME/.tallydeck}/route-taken"
 TAKEN="$TAKEN_DIR/$(printf '%s' "${SIGID:-x}" | tr '/' '_')"
-key=""; got=""
-for _ in $(seq 1 240); do
-  if IFS= read -r -n 1 -s -t 0.5 key 2>/dev/null; then got=1; break; fi
-  [ -e "$TAKEN" ] && exit 0
-done
-[ -n "$got" ] || exit 0
-mkdir -p "$TAKEN_DIR" 2>/dev/null; : > "$TAKEN" 2>/dev/null
+ACTIONS="space done (mute) · q / Esc dismiss"
+if [ -n "$LIVE" ] || [ -n "$UUID" ]; then
+  ACTIONS="Enter open floating · t tab here · s split here · l text me links · $ACTIONS"
+fi
+ACTION_FILE=$(mktemp)
+trap 'rm -f "$ACTION_FILE"' EXIT
+/usr/bin/python3 -m tallydeck.cli brief \
+  --session "$UUID" --project "$PROJ" --label "$LABEL" --state "$STATE" \
+  --ask "$ASK" --signal "$SIGID" --interactive --actions "$ACTIONS" \
+  --taken "$TAKEN" --action-file "$ACTION_FILE" || exit 1
+# read without stripping Enter, which is itself the floating action.
+key=""; IFS= read -r -N 1 key < "$ACTION_FILE" || true
+[ -s "$ACTION_FILE" ] || exit 0
+# First terminal to act wins atomically; scrolling never claims the press.
+mkdir -p "$TAKEN_DIR"
+(set -o noclobber; : > "$TAKEN") 2>/dev/null || exit 0
 
 SESS="${TARGET%%:*}"
 case "$key" in
@@ -120,16 +107,11 @@ case "$key" in
       echo "  no session behind this key — nothing to pull links from"; sleep 2
     fi
     exit 0 ;;
-  a|A)  # ANSWER — show the full question and capture a reply
-    if [ -n "$ASKABLE" ]; then
-      /home/openclaw/scripts/tally-decide.sh "${SIGID#sig/}"
-      exit 0
-    fi
-    exit 0 ;;
   " ")  # DONE — inbox-style: mute this alert until the session asks anew
     STATE_DIR="${TALLYDECK_STATE:-$HOME/.tallydeck}"
     if [ -n "$UUID" ]; then
       SID8=$(printf '%s' "$UUID" | cut -c1-8)
+      case "$SIGID" in cx/*) SID8="$UUID" ;; esac
       rm -f "$STATE_DIR/signals/ask-$SID8.json"
       mkdir -p "$STATE_DIR/acked"
       touch "$STATE_DIR/acked/$SID8"
@@ -139,7 +121,7 @@ case "$key" in
       sig/*) /usr/bin/python3 -m tallydeck.cli clear "${SIGID#sig/}" >/dev/null 2>&1 || true ;;
     esac
     exit 0 ;;
-  ""|r|R)  # GO THERE, floating
+  $'\n'|$'\r'|""|r|R)  # GO THERE, floating
     if [ -n "$LIVE" ]; then
       GRP="_fl-${SESS}"
       if ! T has-session -t "=$GRP" 2>/dev/null; then

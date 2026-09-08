@@ -270,10 +270,31 @@ def cmd_brief(cfg, args):
             if spec.get("root"):
                 codex_roots.append(Path(str(spec["root"])).expanduser())
     tasks_cmd = cfg.get("brief", {}).get("tasks_cmd") or None
-    print(build_cached(args.session or "", args.project or "",
-                       args.label or "", roots or None, args.state or "",
-                       tasks_cmd, ask=args.ask or "",
-                       codex_roots=codex_roots or None))
+    kwargs = dict(session=args.session or "", project=args.project or "",
+                  label=args.label or "", roots=roots or None, state=args.state or "",
+                  tasks_cmd=tasks_cmd, ask=args.ask or "", codex_roots=codex_roots or None)
+    if getattr(args, "interactive", False):
+        from .brief import document, render
+        from .popup import choose
+        # Hook signals carry the authoritative permission prompt, which can be
+        # absent from the assistant transcript. Load it whole, never the sublabel.
+        sid = args.signal or ""
+        if sid.startswith("sig/"):
+            from .paths import signals_dir
+            name = sid[4:]
+            if name and "/" not in name and name not in (".", ".."):
+                try:
+                    flag = json.loads((signals_dir() / (name + ".json")).read_text())
+                    kwargs["ask"] = (flag.get("meta") or {}).get("markdown") or flag.get("detail") or flag.get("sublabel") or kwargs["ask"]
+                except (OSError, ValueError):
+                    pass
+        doc = document(**kwargs)
+        key = choose(lambda width: render(doc, width), args.actions or "Enter open · space mute · q dismiss",
+                     gone=lambda: bool(args.taken and Path(args.taken).exists()))
+        if args.action_file:
+            Path(args.action_file).write_text(key)
+    else:
+        print(build_cached(**kwargs))
 
 
 def cmd_wait(cfg, args):
@@ -450,11 +471,16 @@ def _parser() -> argparse.ArgumentParser:
                     help="delete the answer file after printing it")
 
     sp = sub.add_parser("brief", help="print a session's landing brief")
-    sp.add_argument("--session", help="claude session uuid")
+    sp.add_argument("--session", help="full Claude or Codex session uuid")
     sp.add_argument("--project", help="project path")
     sp.add_argument("--label")
     sp.add_argument("--state")
     sp.add_argument("--ask", help="the ask text, for signals without a log")
+    sp.add_argument("--interactive", action="store_true", help="scrollable popup with session actions")
+    sp.add_argument("--signal", default="")
+    sp.add_argument("--actions", default="")
+    sp.add_argument("--taken", default="")
+    sp.add_argument("--action-file", default="")
     return p
 
 

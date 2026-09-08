@@ -17,9 +17,16 @@ worse than no heading, because it reads as "it produced nothing" rather than "th
 was a conversation, not a build".
 """
 import json
+import os
 import re
 import sys
 from pathlib import Path
+
+sys.path.insert(0, os.environ.get("TALLYDECK_HOME", str(Path(__file__).resolve().parents[1])))
+if not (Path(sys.path[0]) / "tallydeck").is_dir():
+    sys.path.insert(0, str(Path.home() / "projects/tallydeck"))
+from tallydeck.transcripts import records_backwards
+
 
 MAX_PER_SECTION = 8
 SCAN = 600
@@ -39,6 +46,9 @@ def session_log(uuid: str):
         if root.is_dir():
             for f in root.glob(f"*/{uuid}.jsonl"):
                 return f
+    for root in (Path.home() / ".codex/sessions",):
+        for hit in root.rglob(f"rollout-*-{uuid}.jsonl"):
+            return hit
     return None
 
 
@@ -52,15 +62,15 @@ def gather(path: Path):
             seen[key].add(val)
             bucket.append(val)
 
-    lines = path.read_text(errors="replace").splitlines()[-SCAN:]
-    for ln in reversed(lines):
-        try:
-            rec = json.loads(ln)
-        except json.JSONDecodeError:
-            continue
+    from itertools import islice
+    records = islice(records_backwards(path), SCAN)
+    for rec in records:
         if not isinstance(rec, dict):
             continue
         content = (rec.get("message") or {}).get("content", [])
+        if rec.get("type") in ("event_msg", "response_item"):
+            payload = rec.get("payload") or {}
+            content = payload.get("last_agent_message") or payload.get("content") or payload.get("output") or ""
         if isinstance(content, str):
             for m in URL_RE.finditer(content):
                 add(links, "l", m.group(0).rstrip(".,;:)"))
@@ -79,7 +89,7 @@ def gather(path: Path):
                     if re.search(r"\bgit\b[^|;]*\bcommit\b", cmd):
                         # The description is written for a human; prefer it.
                         add(commits, "c", str(inp.get("description") or "git commit"))
-            elif i.get("type") in ("text", "tool_result"):
+            elif i.get("type") in ("text", "tool_result", "output_text", "input_text"):
                 t = i.get("text") or i.get("content") or ""
                 if not isinstance(t, str):
                     t = json.dumps(t)

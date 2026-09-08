@@ -1408,8 +1408,8 @@ def test_deferral_in_a_report_is_not_an_ask():
                  "pruning those is a bigger cleanup and your call, not something I'd do unilaterally.")
     assert q("Two options remain.\n\nYour call: prune them now, or leave them?")
     assert q("Ready to push.\n\nYour call — keep the old key or rotate it.")
-    # an ask phrase in an EARLIER paragraph does not carry to a report ending
-    assert not q("I need your sign-off on the plan below.\n\nMeanwhile I fixed the tests; all green.")
+    # An explicit unresolved approval remains an ask even before supporting status.
+    assert q("I need your sign-off on the plan below.\n\nMeanwhile I fixed the tests; all green.")
 
 
 # ── dedicated sessions: spawn / offer / phone fallback for session prompts ───
@@ -1724,7 +1724,7 @@ def test_codex_source_emits_keys_marked_as_codex(tmp_path):
     from tallydeck.signal import is_codex
     day = tmp_path / "2026" / "09" / "08"
     _rollout(day, "aaaaaaaa-1111-4000-8000-000000000000", "/home/x/projects/wires",
-             events=[_complete("Shipped. Anything else you want in the v2?")])
+             events=[_complete("Which scope should I implement for v2?")])
     src = CodexSessionsSource(root=str(tmp_path), dwell=0, socket="/nonexistent")
     sigs = src.poll()
     assert len(sigs) == 1
@@ -1733,7 +1733,7 @@ def test_codex_source_emits_keys_marked_as_codex(tmp_path):
     assert s.state == ATTENTION and s.label == "wires"
     assert s.meta["account"] == "O" and s.meta["project"].endswith("/wires")
     assert "v2" in s.sublabel                      # the ask, not an age
-    assert s.action is None                        # no live pane → nowhere to go
+    assert s.action["argv"][2] == s.meta["session"]  # full UUID brief + Codex resume
 
 
 def test_codex_exec_oneshots_stay_off_the_deck_unless_asked(tmp_path):

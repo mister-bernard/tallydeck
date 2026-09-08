@@ -24,6 +24,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, os.environ.get("TALLYDECK_HOME", str(Path(__file__).resolve().parents[1])))
+if not (Path(sys.path[0]) / "tallydeck").is_dir():
+    sys.path.insert(0, str(Path.home() / "projects/tallydeck"))
+from tallydeck.transcripts import records_backwards
+
+
 TG = "/home/openclaw/scripts/tg-send-logged.sh"
 G_CHAT = "39172309"
 MAX_LINKS = 12
@@ -44,6 +50,9 @@ def session_log(uuid: str) -> Path | None:
             continue
         for f in root.glob(f"*/{uuid}.jsonl"):
             return f
+    for root in (Path.home() / ".codex/sessions",):
+        for hit in root.rglob(f"rollout-*-{uuid}.jsonl"):
+            return hit
     return None
 
 
@@ -63,17 +72,17 @@ def useful(u: str) -> bool:
 
 
 def collect(path: Path) -> list[str]:
-    lines = path.read_text(errors="replace").splitlines()[-SCAN_RECORDS:]
+    from itertools import islice
+    records = islice(records_backwards(path), SCAN_RECORDS)
     found: list[str] = []
     seen = set()
-    for ln in reversed(lines):                 # newest first: most relevant first
-        try:
-            rec = json.loads(ln)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(rec, dict) or rec.get("type") not in ("assistant", "user"):
+    for rec in records:
+        if not isinstance(rec, dict):
             continue
         content = (rec.get("message") or {}).get("content", [])
+        if rec.get("type") in ("event_msg", "response_item"):
+            payload = rec.get("payload") or {}
+            content = payload.get("last_agent_message") or payload.get("content") or payload.get("output") or ""
         # content is EITHER a list of blocks OR a bare string — user records in
         # particular are plain strings, and treating everything as blocks silently
         # dropped them. That is why the first version found zero links in a file
@@ -90,7 +99,7 @@ def collect(path: Path) -> list[str]:
                 elif isinstance(i, dict):
                     # tool_result output is where build artefacts and published
                     # URLs usually surface, so read those too, not just prose.
-                    if i.get("type") in ("text", "tool_result"):
+                    if i.get("type") in ("text", "tool_result", "output_text", "input_text"):
                         c = i.get("text") or i.get("content") or ""
                         parts.append(c if isinstance(c, str) else json.dumps(c))
             text = " ".join(parts)

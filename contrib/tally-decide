@@ -40,15 +40,12 @@ from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
-INDIGO, AMBER, FG, DIM, GREEN = "#7B88FF", "#FFB224", "#F2F3F5", "#8B8F98", "#43B75D"
-THEME = Theme({
-    "markdown.h1": f"bold {AMBER}", "markdown.h1.border": DIM,
-    "markdown.h2": f"bold {AMBER}", "markdown.h3": f"bold {FG}",
-    "markdown.strong": f"bold {FG}", "markdown.em": f"italic {INDIGO}",
-    "markdown.code": f"{INDIGO} on #1A1C24", "markdown.item.bullet": f"bold {AMBER}",
-    "markdown.hr": DIM, "markdown.block_quote": DIM, "markdown.link": INDIGO,
-    "table.header": f"bold {INDIGO}", "table.border": DIM,
-})
+# Works from both the checkout and refreshed ~/.local/bin copies.
+sys.path.insert(0, os.environ.get("TALLYDECK_HOME", str(Path(__file__).resolve().parents[1])))
+if not (Path(sys.path[0]) / "tallydeck").is_dir():
+    sys.path.insert(0, str(Path.home() / "projects/tallydeck"))
+from tallydeck.popup import (INDIGO, AMBER, FG, DIM, GREEN, THEME, header, body,
+                            options, choose, Viewport)
 G_CHAT = os.environ.get("TALLY_DECISION_CHAT", "39172309")
 TG = os.environ.get("TALLY_TG_SEND", "/home/openclaw/scripts/tg-send-logged.sh")
 
@@ -113,55 +110,21 @@ def _gradient_rule(width: int, a=(123, 136, 255), b=(255, 178, 36)) -> Text:
     return t
 
 
-def _header(d: dict, width: int) -> Group:
-    state = str(d.get("state", "attention"))
-    chip = Text(f" ◆ {'BLOCKED' if state == 'blocked' else 'DECISION'} ",
-                style=f"bold black on {AMBER if state != 'blocked' else '#E5484D'}")
-    title = Text(f"  {d.get('label', '?')}", style=f"bold {FG}")
-    meta = Text(f"   raised {_age(time.time() - float(d.get('updated', time.time())))} ago",
-                style=DIM)
-    right = Text("· tallydeck", style=DIM)
-    line = Table.grid(expand=True)
-    line.add_column(justify="left")
-    line.add_column(justify="right")
-    line.add_row(Text.assemble(chip, title, meta), right)
-    return Group(_gradient_rule(width), line, _gradient_rule(width))
+def _header(d: dict, width: int):
+    return header(str(d.get("label", "?")), str(d.get("state", "attention")), width,
+                  f"raised {_age(time.time() - float(d.get('updated', time.time())))} ago · tallydeck")
 
 
-def _body(d: dict) -> Panel:
+def _body(d: dict):
     md = str((d.get("meta") or {}).get("markdown") or "").strip()
-    if md:
-        content = Markdown(md, code_theme="monokai", inline_code_theme="monokai")
-    else:
-        sub = str(d.get("sublabel", "")).strip()
-        det = str(d.get("detail", "")).strip()
-        parts = [f"## {sub}" if sub else ""]
-        if det and det != sub:
-            parts.append(det)
-        content = Markdown("\n\n".join(p for p in parts if p))
-    return Panel(content, box=box.ROUNDED, border_style=INDIGO,
-                 padding=(1, 3), title=Text("the ask", style=DIM),
-                 title_align="left")
+    if not md:
+        md = "\n\n".join(dict.fromkeys(str(d.get(k) or "").strip()
+                                     for k in ("sublabel", "detail")))
+    return body(md, "THE ASK", console.width)
 
 
 def _options(opts: list[str]):
-    """Option cards in an even grid, three to a row."""
-    if not opts:
-        return None
-    cards = []
-    for i, o in enumerate(opts[:9], 1):
-        key = Text(f" {i} ", style=f"bold black on {AMBER}")
-        body = Text.assemble(key, Text("  " + o, style=f"bold {FG}"))
-        cards.append(Panel(body, box=box.ROUNDED, border_style=INDIGO if i == 1 else DIM,
-                           padding=(0, 1), expand=True))
-    per = 3 if len(cards) > 2 else len(cards)
-    grid = Table.grid(expand=True, padding=(0, 1))
-    for _ in range(per):
-        grid.add_column(ratio=1)
-    for r in range(0, len(cards), per):
-        row = cards[r:r + per]
-        grid.add_row(*(row + [Text("")] * (per - len(row))))
-    return grid
+    return options(opts, console.width) if opts else None
 
 
 def _footer(has_opts: bool, msg: str = "") -> Text:
@@ -188,42 +151,6 @@ def screen(d: dict, opts: list[str], msg: str = "") -> Group:
         parts += [Text(""), o]
     parts += [Text(""), _footer(bool(opts), msg)]
     return Group(*parts)
-
-
-# ── input ────────────────────────────────────────────────────────────────────
-
-def _getkey(timeout: float = 300.0, gone=None) -> str:
-    """One keypress, raw; '' on timeout or when `gone()` turns true (the
-    same question is shown on every attached terminal — once it is answered
-    on one, the others fold quietly). Drains terminal query replies first."""
-    import select, termios, tty
-    fd = sys.stdin.fileno()
-    old = termios.tcgetattr(fd)
-    try:
-        tty.setcbreak(fd)
-        while select.select([fd], [], [], 0.05)[0]:      # drain DA1 etc.
-            os.read(fd, 4096)
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            if select.select([fd], [], [], 0.5)[0]:
-                return os.read(fd, 16).decode("utf-8", "ignore")
-            if gone is not None and gone():
-                return ""
-        return ""
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
-
-
-def _reveal(renderable) -> None:
-    """Materialize: the screen prints in top-down over ~0.3 s."""
-    with console.capture() as cap:
-        console.print(renderable)
-    lines = cap.get().split("\n")
-    console.clear()
-    for ln in lines:
-        sys.stdout.write(ln + "\n")
-        sys.stdout.flush()
-        time.sleep(min(0.008, 0.2 / max(1, len(lines))))
 
 
 def _fireworks(seconds: float = 0.6) -> None:
@@ -314,11 +241,16 @@ def main(argv: list[str]) -> int:
         console.print(Text(f"{sid}: unreadable flag", style="bold red")); time.sleep(2); return 1
     opts = [str(o) for o in ((d.get("meta") or {}).get("options") or [])]
 
-    _reveal(screen(d, opts))
+    viewport = Viewport(console)
     msg = ""
     answer = ""
     while True:
-        key = _getkey(gone=lambda: not f.exists() or (ANSWERS / f"{sid}.json").exists())
+        key = choose(lambda width: Group(_header(d, width),
+                     body(str(d.get("sublabel") or ""), "DECISION", width),
+                     options(opts, width), _body(d)),
+                     ("1-9 pick · " if opts else "") + "a answer in words · Enter leave raised · q / Esc dismiss" + (" · " + msg if msg else ""),
+                     console=console, viewport=viewport,
+                     gone=lambda: not f.exists() or (ANSWERS / f"{sid}.json").exists())
         if key in ("", "\x1b", "q", "Q"):
             console.clear(); return 0                      # dismiss, flag stays
         if key in ("\r", "\n"):
@@ -329,7 +261,7 @@ def main(argv: list[str]) -> int:
             answer = f"{key} — {opts[int(key) - 1]}"
             break
         if key in ("a", "A", "/", " "):
-            console.clear(); console.print(screen(d, opts, "your answer:"))
+            console.print("\nAnswer in words (blank cancels):", style=DIM)
             try:
                 console.print(Text("› ", style=f"bold {AMBER}"), end="")
                 answer = input().strip()
@@ -341,9 +273,9 @@ def main(argv: list[str]) -> int:
                 return 0
             if answer:
                 break
-            _reveal(screen(d, opts)); continue
+            continue
         msg = "1-9 picks an option · a to type" if opts else "a to type an answer"
-        console.clear(); console.print(screen(d, opts, msg))
+        # Redraw through the same viewport, retaining scroll position.
 
     ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     # The answer file FIRST, exclusively: the first surface to answer wins,

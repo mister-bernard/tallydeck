@@ -44,19 +44,16 @@ MAX_LINES = 200
 
 
 def _tail_lines(path: Path) -> list[str]:
-    try:
-        size = path.stat().st_size
-    except OSError:
-        return []
-    if size == 0:
-        return []
-    if size <= TAIL_BYTES:
-        chunk = path.read_bytes()
-    else:
-        with open(path, "rb") as fh:
-            fh.seek(-TAIL_BYTES, 2)
-            chunk = fh.read()
-    return chunk.decode("utf-8", errors="replace").strip().splitlines()[-MAX_LINES:]
+    from ..transcripts import records_backwards
+    lines = []
+    size = 0
+    for rec in records_backwards(path):
+        line = json.dumps(rec, ensure_ascii=False)
+        lines.append(line)
+        size += len(line)
+        if size >= TAIL_BYTES or len(lines) >= MAX_LINES:
+            break
+    return list(reversed(lines))
 
 
 def _load(ln: str) -> dict | None:
@@ -73,64 +70,9 @@ def _load(ln: str) -> dict | None:
 # Tools that ARE the question: they block on the human by design.
 ASK_TOOLS = ("AskUserQuestion", "ExitPlanMode")
 
-# Phrases that mark an ended turn as waiting on a decision even without a
-# question mark. Deliberately narrow: a closing "let me know if…" is a
-# courtesy, not an ask, and every false positive here is a key flashing at
-# someone for nothing.
-# Narration about the operator, as opposed to a request to him. Third-person
-# references ("G's sign-off", "his approval", "for G to decide") mean the sentence
-# is describing a process, not asking for one.
-_THIRD_PERSON_RE = re.compile(
-    r"\b(G'?s|he|him|his|she|her|they|them|their|the operator'?s?)\b"
-    r"|\bfor G\b|\bG (will|would|has|needs? to|is)\b", re.I)
-
-# "nothing needs a decision" is a report, not a request. Without this the ask
-# phrases match their own negation and a clean summary paints amber.
-_NEGATED_RE = re.compile(
-    r"\b(no|not|nothing|none|never|n't|without)\b[^.!?]{0,60}?"
-    r"\b(sign[- ]?off|approval|decision|input|answer|confirm|blocked)\b", re.I)
-
-# "your call" only counts when it LEADS the ask ("Your call: A or B", "your
-# call — …", "your call?"); "…is a bigger cleanup and your call, not something
-# I'd do" is a deferral inside a report and painted a finished turn amber
-# (G, 2026-09-08: "I don't see anything to do").
-_ASK_RE = re.compile(
-    r"\b(should i|shall i|(?:^|[.!]\s+)your call\b|your call\s*[:?—-]|please (confirm|approve|advise|choose|pick)"
-    r"|sign[- ]?off|awaiting your|waiting (on|for) your?\b"
-    r"|needs? your (decision|approval|input|answer|go|ok|sign)"
-    r"|blocked on you|go/no[- ]go|(decision|approval|sign[- ]?off) needed"
-    r"|needs? (a|your) (decision|approval))\b", re.I)
-
-
 def asks_question(text: str) -> bool:
-    """Does this final assistant text want an answer, or is it a report?
-
-    A question mark in the LAST paragraph is an ask (that is where a real
-    question lands; a "?" buried mid-report is usually rhetorical or
-    quoted). Otherwise a small set of decision phrases anywhere near the
-    end. Code blocks are stripped first — a shell snippet's `?` is not a
-    question."""
-    text = re.sub(r"```.*?```", " ", text, flags=re.S)
-    text = re.sub(r"`[^`\n]*`", " ", text)
-    text = re.sub(r"<thinking>.*?</thinking>", " ", text, flags=re.S)
-    text = text.strip()
-    if not text:
-        return False
-    paras = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
-    tail = paras[-1] if paras else text
-    if "?" in tail:
-        return True
-    # Drop sentences that talk ABOUT G rather than TO him before looking for ask
-    # phrases. A turn that ends "stage the TWAP config for G's sign-off" is a
-    # handoff note to itself, not a request — but "sign-off" matched and painted a
-    # finished turn amber, which is what G reported on 2026-09-08 ("it's putting
-    # that in orange when it says 'done for this turn'"). A real ask is addressed to
-    # the reader: "I need your sign-off", not "G's sign-off".
-    # An ask lives in the LAST paragraph; a phrase further up is narration.
-    window = tail[-600:]
-    kept = [snt for snt in re.split(r"(?<=[.!?])\s+", window)
-            if not _THIRD_PERSON_RE.search(snt) and not _NEGATED_RE.search(snt)]
-    return bool(_ASK_RE.search(" ".join(kept)))
+    from ..decisions import decision_text
+    return bool(decision_text(text))
 
 
 def classify(lines: list[str]) -> tuple[str, bool]:
@@ -167,7 +109,7 @@ def classify(lines: list[str]) -> tuple[str, bool]:
             return WORKING, False          # a tool is running
         if msg.get("stop_reason") == "tool_use":
             return WORKING, False
-        text = " ".join(str(i.get("text", "")) for i in content
+        text = "\n\n".join(str(i.get("text", "")) for i in content
                         if isinstance(i, dict) and i.get("type") == "text")
         return (ATTENTION if asks_question(text) else SUCCESS), ended
     return IDLE, False
@@ -193,7 +135,8 @@ def _snippet(lines: list[str], limit: int = 300) -> str:
             if isinstance(item, dict) and item.get("type") == "text":
                 text = item["text"].split("<thinking>")[0].strip()
                 if text:
-                    return " ".join(text.split())[:limit]
+                    from ..decisions import decision_text
+                    return " ".join((decision_text(text) or text).split())[:limit]
     return ""
 
 

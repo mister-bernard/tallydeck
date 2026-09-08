@@ -6,60 +6,23 @@ from artifacts that already exist — the session log, git, and (optionally)
 whatever task list you point it at — so a brief costs nothing to keep
 current and lies only when those do.
 
-Cached per session keyed on the log's (mtime, size): the brief is a pure
-function of the log, so that key is correctness, not a staleness gamble.
-The task-queue lookup (the slow part) is cached for a minute globally.
+Presentation is rebuilt for each press: terminal size, labels and repository
+state can change independently of the transcript. The optional task lookup is
+cached for a minute globally.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import shlex
-import zlib
+import shutil
 import subprocess
 import time
 from pathlib import Path
 
 from .paths import cache_dir
-from .sources.claude_sessions import _tail_lines, _load
 
-WIDTH = 74
 CACHE_DIR = cache_dir()
-
-# ── palette (matches the deck) ───────────────────────────────────────────────
-
-R = "\033[0m"
-BOLD = "\033[1m"
-DIM = "\033[2m"
-TITLE = "\033[1;38;2;242;246;255m"          # bright white, bold
-PATH = "\033[38;2;110;116;138m"             # cool gray
-RULE = "\033[38;2;44;48;62m"
-EARLIER = "\033[38;2;120;126;148m"
-STATE_C = {
-    "blocked": ("\033[38;2;229;72;77m", "●"),
-    "attention": ("\033[38;2;255;178;36m", "●"),
-    "working": ("\033[38;2;62;155;255m", "●"),
-    "success": ("\033[38;2;67;183;93m", "●"),
-    "idle": ("\033[38;2;110;116;138m", "○"),
-    "offline": ("\033[38;2;70;74;90m", "○"),
-}
-CYAN = "\033[38;2;0;229;255m"
-
-
-def _wrap(text: str, width: int, prefix: str = "") -> list[str]:
-    out, line = [], ""
-    for word in text.split():
-        cand = f"{line} {word}".strip()
-        if len(cand) > width and line:
-            out.append(prefix + line)
-            line = word
-        else:
-            line = cand
-    if line:
-        out.append(prefix + line)
-    return out
-
 
 def _session_file(session: str, roots: list[Path]) -> Path | None:
     for root in roots:
@@ -95,64 +58,13 @@ def _find_session(session: str, roots: list[Path],
 
 
 def _last_texts(path: Path, want: int = 2, tail: int = 400_000) -> list[str]:
-    try:
-        size = path.stat().st_size
-        with open(path, "rb") as fh:
-            fh.seek(max(0, size - tail))
-            lines = fh.read().decode("utf-8", errors="replace").splitlines()
-    except OSError:
-        return []
-    out: list[str] = []
-    for ln in reversed(lines):
-        try:
-            rec = json.loads(ln)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(rec, dict) or rec.get("type") != "assistant":
-            continue
-        content = (rec.get("message") or {}).get("content", [])
-        if not isinstance(content, list):
-            continue
-        for item in content:
-            if isinstance(item, dict) and item.get("type") == "text":
-                txt = " ".join(item["text"].split())
-                if len(txt) > 40:
-                    out.append(txt)
-                    break
-        if len(out) >= want:
-            break
-    return out
+    from .transcripts import recent_texts
+    return recent_texts(path, "claude", want)
 
 
 def _last_texts_codex(path: Path, want: int = 2) -> list[str]:
-    """Same job as `_last_texts`, for Codex's record shapes: a completed
-    turn's answer lives in `event_msg/task_complete.last_agent_message`;
-    mid-turn (no task_complete yet) falls back to the last assistant
-    `response_item`. Mirrors `sources/codex_sessions.py::_last_agent_text`,
-    just collecting up to `want` instead of only the newest.
-
-    Codex writes a turn's final text TWICE — once as the `response_item`
-    itself, once summarized onto the `task_complete` event right after —
-    so consecutive duplicates are collapsed to one turn."""
-    out: list[str] = []
-    for ln in reversed(_tail_lines(path)):
-        rec = _load(ln)
-        if rec is None:
-            continue
-        p = rec.get("payload") if isinstance(rec.get("payload"), dict) else {}
-        text = ""
-        if rec.get("type") == "event_msg" and p.get("type") == "task_complete":
-            text = str(p.get("last_agent_message") or "")
-        elif rec.get("type") == "response_item" and p.get("type") == "message" \
-                and p.get("role") == "assistant":
-            text = " ".join(str(c.get("text", "")) for c in p.get("content", [])
-                            if isinstance(c, dict))
-        txt = " ".join(text.split())
-        if len(txt) > 40 and (not out or out[-1] != txt):
-            out.append(txt)
-        if len(out) >= want:
-            break
-    return out
+    from .transcripts import recent_texts
+    return recent_texts(path, "codex", want)
 
 
 def _git(project: str) -> str:
@@ -219,112 +131,100 @@ def _tasks(project: str, tasks_cmd: list[str] | None = None,
             body = ln.strip()
             if "—" in body:
                 body = body.split("—", 1)[1].strip()
-            hits.append(body[:WIDTH - 6])
+            hits.append(body)
         if len(hits) >= limit:
             break
     return hits
 
 
-def _age(seconds: float) -> str:
-    s = int(seconds)
-    if s < 60:
-        return f"{s}s"
-    if s < 3600:
-        return f"{s // 60}m"
-    return f"{s // 3600}h{(s % 3600) // 60:02d}"
-
-
-# ── rendering ────────────────────────────────────────────────────────────────
-
-def build(session: str, project: str, label: str = "",
-          roots: list[Path] | None = None, state: str = "",
-          tasks_cmd: list[str] | None = None, ask: str = "",
-          codex_roots: list[Path] | None = None) -> str:
-    roots = roots or [Path.home() / ".claude" / "projects"]
-    codex_roots = codex_roots or [Path.home() / ".codex" / "sessions"]
-    title = label or os.path.basename(project.rstrip("/")) or project
-    sc, dot = STATE_C.get(state, STATE_C["idle"])
-    rule = f"  {RULE}{'─' * WIDTH}{R}"
-    pad = "  "
-    L: list[str] = [""]
-
+def document(session: str, project: str, label: str = "",
+             roots=None, state: str = "", tasks_cmd=None, ask: str = "",
+             codex_roots=None):
+    from .decisions import decision_text, decision_support
+    from .transcripts import pending_ask
+    roots = roots or [Path.home() / ".claude/projects"]
+    codex_roots = codex_roots or [Path.home() / ".codex/sessions"]
     fp, kind = _find_session(session, roots, codex_roots)
-    quiet = f" · quiet {_age(time.time() - fp.stat().st_mtime)}" if fp else ""
-
-    # header: state dot, name, state chip
-    chip = f"{sc}{state.upper()}{R}{DIM}{quiet}{R}" if state else ""
-    L.append(f"{pad}{sc}{dot}{R}  {TITLE}{title}{R}   {chip}")
-    L.append(f"{pad}   {PATH}{project}{R}")
-    L.append(rule)
-
-    # An explicitly raised ask (tally raise / a hook) comes first: it is the
-    # reason the key was flashing, and it may be the only thing there is —
-    # a raised flag need not have a session log behind it at all.
-    if ask:
-        L.append(f"{pad}{BOLD}THE ASK{R}")
-        L.append("")
-        for ln in _wrap(" ".join(ask.split())[:800], WIDTH - 4):
-            L.append(f"{pad}{sc}▌{R} {ln}")
-        L.append("")
-
-    # the ask / where it left off — a block quote in the state color
-    if fp:
-        texts = _last_texts_codex(fp) if kind == "codex" else _last_texts(fp)
-        L.append(f"{pad}{BOLD}WHERE IT LEFT OFF{R}")
-        L.append("")
-        if texts:
-            for ln in _wrap(texts[0][:640], WIDTH - 4):
-                L.append(f"{pad}{sc}▌{R} {ln}")
-            if len(texts) > 1:
-                L.append("")
-                for ln in _wrap(texts[1][:240], WIDTH - 6):
-                    L.append(f"{pad}  {EARLIER}{ln}{R}")
-        else:
-            L.append(f"{pad}{DIM}(no recent messages in the log){R}")
-        L.append("")
-
+    texts = (_last_texts_codex(fp) if kind == "codex" else _last_texts(fp)) if fp else []
+    tool = pending_ask(fp, kind) if fp else ""
+    # A current tool prompt supersedes prose. Earlier messages are support only.
+    decision = ask or tool or (decision_text(texts[0]) if texts else "")
+    sections = []
+    if decision:
+        sections.append(("THE ASK · answer in the session", decision))
+        support = decision_support(texts[0], decision) if texts and not tool and not ask else ""
+        if support:
+            sections.append(("CHOICES / RECOMMENDATION · from the session", support))
+    elif state in ("attention", "blocked"):
+        sections.append(("ATTENTION", "No concrete decision found in the latest message. "
+                         "This flag may have been raised deliberately; open the session to inspect it."))
+    else:
+        sections.append(("STATUS", "No decision requested in the latest message."))
+    if texts:
+        # A complete opening paragraph is an extract, never an invented summary.
+        import re
+        paragraphs = [p.strip() for p in re.split(r"\n\s*\n", texts[0]) if p.strip()]
+        candidates = [p for p in paragraphs if len(p) <= 500 and p != decision
+                      and not re.match(r"^(?:#|[-*] |\d+[.)] |\*\*[^*]+\*\*$)", p)]
+        intro = "\n\n".join(candidates[:2])
+        if intro and intro != decision and intro != texts[0]:
+            sections.append(("SUMMARY · excerpt from latest message", intro))
+        sections.append(("WHERE IT LEFT OFF · full latest message", texts[0]))
+        for txt in texts[1:]: sections.append(("EARLIER · supporting context", txt))
+    elif not ask and not tool:
+        sections.append(("CONTEXT", "No recent assistant messages found."))
+    if state == "success" and fp:
+        # Reuse the existing artifact collector, placing its complete values in
+        # the scrollable document rather than appending a clipped shell footer.
+        from .paths import contrib_bin
+        import importlib.machinery
+        helper = contrib_bin("tally-results")
+        if helper:
+            import importlib.util
+            loader = importlib.machinery.SourceFileLoader("tally_results", helper)
+            spec = importlib.util.spec_from_loader(loader.name, loader)
+            module = importlib.util.module_from_spec(spec)
+            loader.exec_module(module)
+            for title, values in zip(("FILES WRITTEN", "COMMITS", "LINKS"), module.gather(fp)):
+                if values:
+                    sections.append(("RESULTS · " + title, "\n".join("- " + str(v) for v in values)))
     git = _git(project)
+    if git: sections.append(("REPOSITORY", git))
     tasks = _tasks(project, tasks_cmd)
-    if git or tasks:
-        L.append(rule)
-    if git:
-        L.append(f"{pad}{DIM}repo {R} {git}")
-    for t in tasks:
-        L.append(f"{pad}{DIM}task {R} {CYAN}▸{R} {t}")
-    if git or tasks:
-        L.append("")
-
-    return "\n".join(L)
+    if tasks: sections.append(("RELATED TASKS", "\n\n".join(tasks)))
+    return {"label": label or os.path.basename(project.rstrip("/")) or project,
+            "state": state or "idle", "project": project, "sections": sections}
 
 
-def build_cached(session: str, project: str, label: str = "",
-                 roots: list[Path] | None = None, state: str = "",
-                 tasks_cmd: list[str] | None = None, ask: str = "",
-                 codex_roots: list[Path] | None = None) -> str:
-    """Cache keyed on the session log's identity — same log, same brief."""
-    roots = roots or [Path.home() / ".claude" / "projects"]
-    codex_roots = codex_roots or [Path.home() / ".codex" / "sessions"]
-    args = (session, project, label, roots, state, tasks_cmd, ask, codex_roots)
-    fp, _ = _find_session(session, roots, codex_roots)
-    if fp is None:
-        return build(*args)
+def render(doc, width):
+    from .popup import header, body, Group
+    return Group(header(doc["label"], doc["state"], width, doc["project"]),
+                 *(body(text, title, width) for title, text in doc["sections"]))
+
+
+def build(session: str, project: str, label: str = "", roots=None,
+          state: str = "", tasks_cmd=None, ask: str = "", codex_roots=None,
+          width: int | None = None) -> str:
+    doc = document(session, project, label, roots, state, tasks_cmd, ask, codex_roots)
+    width = width or shutil.get_terminal_size((80, 24)).columns
     try:
-        st = fp.stat()
-        stamp = (f"{st.st_mtime_ns}:{st.st_size}:{state}:"
-                 f"{zlib.crc32(ask.encode('utf-8', 'replace')):08x}")
-    except OSError:
-        return build(*args)
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cache = CACHE_DIR / f"brief-{session[:8]}.ans"
-    try:
-        head, _, body = cache.read_text().partition("\n")
-        if head == stamp:
-            return body
-    except OSError:
-        pass
-    out = build(*args)
-    try:
-        cache.write_text(stamp + "\n" + out)
-    except OSError:
-        pass
-    return out
+        from .popup import Console, THEME
+        import io
+        out = io.StringIO()
+        console = Console(file=out, width=width, theme=THEME, force_terminal=True,
+                          color_system="truecolor")
+        console.print(render(doc, width))
+        return out.getvalue()
+    except ImportError:
+        # Core CLI remains usable on hosts without the optional Rich popup stack.
+        return "\n\n".join([f"{doc['label']} · {doc['state'].upper()}"] +
+                           [title + "\n" + text for title, text in doc['sections']])
+
+
+def build_cached(session: str, project: str, label: str = "", roots=None,
+                 state: str = "", tasks_cmd=None, ask: str = "", codex_roots=None,
+                 width: int | None = None) -> str:
+    # Do not cache presentation (terminal width, label, repo and
+    # tasks can change independently of its mtime). Full identity prevents UUIDv7
+    # collisions; old brief-<prefix>.ans files are intentionally never consulted.
+    return build(session, project, label, roots, state, tasks_cmd, ask, codex_roots, width)
