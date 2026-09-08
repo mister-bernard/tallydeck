@@ -137,6 +137,11 @@ class DeckSurface:
                                pressed=is_pressed,
                                askpage=askpage if paged else 0)
                 if fxp >= 0 and sig is not None:
+                    # `theme` was referenced two lines down without ever being
+                    # imported, so the FIRST press crash-looped the whole client
+                    # (NameError, G 2026-09-08). Import it beside fireworks, in the
+                    # same lazy spot, so the fix cannot drift away from its use.
+                    from . import theme
                     from .fx import fireworks
                     img = fireworks(img, fx[i], sig.color or theme.STATE_COLOR.get(
                         sig.state, theme.STATE_COLOR["idle"]), seed=sig.id)
