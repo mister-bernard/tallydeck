@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# tally-popup-decide.sh — put a raised decision in front of G, from the HUB side.
+#
+# G, 2026-09-08: pressing the Aurora key logged "[hub] press sig/aurora-sphere-polarity
+# (no action)" and nothing happened. That message is the hub saying the SIGNAL declared
+# no action; whether anything happens then depends entirely on the client's `on_press`
+# being configured on the Mac. Two rounds were lost to guessing about that config.
+#
+# This removes the dependency. The hub runs tmux, and G's terminal is attached to it, so
+# the hub can show the popup itself — no client-side configuration, no ssh back, nothing
+# to keep in sync on a second machine.
+#
+# Usage: tally-popup-decide.sh <signal-id>
+set -uo pipefail
+
+SOCKET="${TALLY_TMUX_SOCKET:-/tmp/tmux-1000/cc}"
+# Resolve the sibling script from this checkout rather than a host path — the same
+# reason watchdir stopped hardcoding /home/openclaw: it is wrong on any other machine.
+HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+DECIDE="${TALLY_DECIDE:-}"
+if [ -z "$DECIDE" ]; then
+  for cand in "$HERE/tally-decide" "$HOME/.local/bin/tally-decide" \
+              /home/openclaw/scripts/tally-decide.sh; do
+    [ -x "$cand" ] && { DECIDE="$cand"; break; }
+  done
+fi
+[ -n "$DECIDE" ] || { echo "tally-popup-decide: cannot find tally-decide" >&2; exit 2; }
+LOG="${TALLY_POPUP_LOG:-/home/openclaw/.openclaw/state/tally-popup.log}"
+ID="${1:?usage: tally-popup-decide.sh <signal-id>}"
+
+log() { printf '[%s] %s\n' "$(date -u +%H:%M:%SZ)" "$*" >> "$LOG" 2>/dev/null || true; }
+
+T() { tmux -S "$SOCKET" "$@"; }
+
+# Pick the client G is actually looking at: most recently active, and never a popup
+# session (_fl-*), or the popup would try to open on top of itself.
+PICK=""; BEST=0
+while IFS='|' read -r tty sess act; do
+  [ -n "$tty" ] || continue
+  case "$sess" in _fl-*) continue ;; esac
+  [ "${act:-0}" -gt "$BEST" ] && { BEST="$act"; PICK="$tty"; }
+done < <(T list-clients -F '#{client_tty}|#{client_session}|#{client_activity}' 2>/dev/null)
+
+if [ -z "$PICK" ]; then
+  log "no attached client — cannot show $ID"
+  exit 1
+fi
+
+log "popup for $ID on $PICK"
+# -E so the popup closes when the command exits; the decide script does its own
+# "press enter" pacing so the result stays on screen long enough to read.
+T display-popup -c "$PICK" -w 90% -h 80% -E "$DECIDE $(printf '%q' "$ID")" 2>>"$LOG" \
+  || { log "display-popup failed for $ID on $PICK"; exit 1; }

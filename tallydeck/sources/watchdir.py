@@ -26,6 +26,7 @@ clear`, or a long press retires the file.
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 from ..signal import Signal, BLOCKED
@@ -39,8 +40,24 @@ class WatchDirSource(Source):
     """opts: path (str), group (default 'sig')."""
 
     group = "sig"
-    # Overridable so a different deployment can point it elsewhere.
-    decide_cmd = "/home/openclaw/scripts/tally-popup-decide.sh"
+
+    @staticmethod
+    def _default_decide_cmd() -> str:
+        """Where the press action lives, resolved rather than hardcoded.
+
+        This shipped briefly as an absolute /home/openclaw path, which is a host
+        detail with no business in a public repo and is wrong on any other machine.
+        Prefer the copy that travels with the checkout, then anything installed on
+        PATH, and only then the original location so existing deployments keep
+        working.
+        """
+        here = Path(__file__).resolve().parents[2] / "contrib" / "tally-popup-decide"
+        if here.is_file():
+            return str(here)
+        found = shutil.which("tally-popup-decide")
+        if found:
+            return found
+        return "/home/openclaw/scripts/tally-popup-decide.sh"
 
     def __init__(self, **opts):
         super().__init__(**opts)
@@ -70,12 +87,19 @@ class WatchDirSource(Source):
             # tmux, so it can put the popup up itself. An explicit action still wins.
             if sig.action is None and (sig.detail or "").strip():
                 sig.action = {"type": "cmd",
-                              "argv": [self.decide_cmd, fp.stem]}
+                              "argv": [self._decide_cmd(), fp.stem]}
             if sig.expired():
                 fp.unlink(missing_ok=True)
                 continue
             signals.append(sig)
         return signals
+
+    def _decide_cmd(self) -> str:
+        cmd = getattr(self, "_decide_cached", None)
+        if cmd is None:
+            cmd = self._decide_cached = str(
+                getattr(self, "decide_cmd", "") or self._default_decide_cmd())
+        return cmd
 
     def on_press(self, sig: Signal, long: bool = False) -> bool:
         fp = Path(sig.meta.get("file", ""))
