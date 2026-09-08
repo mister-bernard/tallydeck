@@ -199,19 +199,61 @@ def _decide_bin() -> str:
     return str(here) if os.access(here, os.X_OK) else ""
 
 
+def _load_raised(sd: Path) -> dict[str, dict]:
+    """Questions on the deck (with options), shaped like pending records.
+    The Telegram path answers against these: on Telegram the agent asked in
+    its own words and there is no notifier message to be pending."""
+    out = {}
+    for fp in sorted((sd / "signals").glob("*.json")):
+        sid = fp.stem
+        if sid.startswith("ask-") or not SAFE_ID.match(sid) or ".." in sid:
+            continue
+        d = _read(fp)
+        if not d or d.get("state") not in ("attention", "blocked"):
+            continue
+        opts = (d.get("meta") or {}).get("options") or []
+        if not opts:
+            continue                        # words-only questions stay with the pane
+        out[sid] = {"id": sid, "label": d.get("label") or sid, "options": opts,
+                    "sent_at": float(d.get("updated") or 0)}
+    return out
+
+
 def resolve(msg: dict) -> dict:
     sd = state_dir()
+    channel = str(msg.get("channel") or "signal")
     hw = _hush_words(sd, str(msg.get("text") or ""))
     if hw:
         return hw
     if (sd / "answer-quiet").exists():
         return {"handled": False, "reason": "quiet"}
-    pending = _load_pending(sd)
-    if not pending:
-        return {"handled": False, "reason": "no-pending"}
     text = str(msg.get("text") or "")
     quote = str((msg.get("replyContext") or {}).get("quoteText") or "")
     now = time.time()
+    if channel == "telegram":
+        # Telegram: G is replying to the AGENT's own message, which must
+        # still reach that agent. We only OBSERVE: a bare option while one
+        # optioned question is raised records the answer and clears the
+        # key; nothing is swallowed, nothing else is inferred.
+        raised = _load_raised(sd)
+        if not raised:
+            return {"handled": False, "reason": "no-raised"}
+        hit = _named(text, quote, raised)
+        if hit:
+            sid, body, free_ok = hit
+            ans = _option(body, raised[sid]["options"]) or (_free(body) if free_ok else None)
+        elif len(raised) == 1:
+            sid = next(iter(raised))
+            ans = _option(text, raised[sid]["options"])
+        else:
+            return {"handled": False, "reason": "ambiguous-quiet"}
+        if not ans:
+            return {"handled": False, "reason": "not-an-answer"}
+        pending, answer = raised, ans
+        return _record(sd, sid, pending[sid], answer, via="telegram", swallow=False)
+    pending = _load_pending(sd)
+    if not pending:
+        return {"handled": False, "reason": "no-pending"}
 
     sid, answer = _resolve_answer(pending, text, quote, now)
     if sid is None:
@@ -223,14 +265,19 @@ def resolve(msg: dict) -> dict:
                     "reply": f"Which one? Reply like “{next(iter(pending))} 1”. Pending: {which}"}
         return {"handled": False, "reason": answer}
 
+    return _record(sd, sid, pending[sid], answer, via="signal", swallow=True)
+
+
+def _record(sd: Path, sid: str, q: dict, answer: str, via: str, swallow: bool) -> dict:
+    now = time.time()
     ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    label = str(pending[sid].get("label") or sid)
+    label = str(q.get("label") or sid)
     afile = sd / "answers" / f"{sid}.json"
-    rec = {"id": sid, "answer": answer, "at": ts, "label": label,
-           "via": "signal", "confirmed_signal": now}
+    rec = {"id": sid, "answer": answer, "at": ts, "label": label, "via": via,
+           "confirmed_signal": now if via == "signal" else None}
     if not _write_atomic(afile, rec, exclusive=True):
         prev = _read(afile) or {}
-        return {"handled": True, "id": sid, "duplicate": True,
+        return {"handled": True, "id": sid, "duplicate": True, "swallow": swallow,
                 "reply": f"already answered — {label}: {prev.get('answer', '?')}"}
     log = Path(os.environ.get("TALLY_DECISION_LOG",
                               "/home/openclaw/.openclaw/state/tally-decisions.log"))
@@ -252,7 +299,7 @@ def resolve(msg: dict) -> dict:
         # No deliverer on this host: clear the flag ourselves rather than
         # tell G "recorded" while the key keeps flashing forever.
         (sd / "signals" / f"{sid}.json").unlink(missing_ok=True)
-    return {"handled": True, "id": sid, "answer": answer,
+    return {"handled": True, "id": sid, "answer": answer, "swallow": swallow,
             "reply": f"✓ recorded — {label}: {answer}"}
 
 
