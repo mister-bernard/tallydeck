@@ -216,11 +216,19 @@ def cmd_raise(cfg, args):
     # Where to DELIVER the answer (never where to route a press): the pane
     # `tally raise` ran in. The session-id scan can only see a session while
     # a tool subprocess is alive, so this is the reliable address.
-    if os.environ.get("TMUX") and "raiser_pane" not in meta:
+    # `-t $TMUX_PANE` is not optional: a bare `display -p` resolves the CURRENT
+    # pane of the session/attached client, so a raise from a background window
+    # (one-shot worker, spawned session, anything the operator is not looking
+    # at) stamps the pane he IS looking at — and his answer is pasted into an
+    # unrelated agent's transcript while the asker never hears it. Verified on
+    # tmux 3.4; cost G a real answer on 2026-09-08 (c64-dxm-source landed in
+    # mainA:1.4). No TMUX_PANE → stamp nothing; a wrong address is worse than
+    # none, because the answers file still reaches the raiser via `tally wait`.
+    if os.environ.get("TMUX") and os.environ.get("TMUX_PANE") and "raiser_pane" not in meta:
         try:
             meta["raiser_pane"] = subprocess.run(
-                ["tmux", "display", "-p", "#S:#I.#P"], capture_output=True,
-                text=True, timeout=2).stdout.strip()
+                ["tmux", "display", "-p", "-t", os.environ["TMUX_PANE"], "#S:#I.#P"],
+                capture_output=True, text=True, timeout=2).stdout.strip()
         except (OSError, subprocess.TimeoutExpired):
             pass
     if args.markdown:

@@ -70,11 +70,15 @@ try:
         # tmux pane, the pane's session name is the name the operator uses.
         label = ""
         pane = ""
-        if os.environ.get("TMUX"):
+        # `-t $TMUX_PANE`: a bare `display -p` names the CURRENT pane of the
+        # attached client, so a prompt raised from a background session would
+        # be labelled with, and route the operator to, whatever pane he
+        # happens to be looking at.
+        if os.environ.get("TMUX") and os.environ.get("TMUX_PANE"):
             import subprocess
             try:
                 out = subprocess.run(
-                    ["tmux", "display", "-p", "#S|#S:#I.#P"],
+                    ["tmux", "display", "-p", "-t", os.environ["TMUX_PANE"], "#S|#S:#I.#P"],
                     capture_output=True, text=True, timeout=2).stdout.strip()
                 label, _, pane = out.partition("|")
             except Exception:

@@ -762,6 +762,37 @@ def test_raised_flag_short_press_never_acks_silently(tmp_path):
     assert not (tmp_path / "aurora.json").exists()
 
 
+def test_raise_stamps_its_own_pane_not_the_one_the_operator_is_watching(tmp_path, monkeypatch):
+    """A raise from a background window must address ITSELF. `tmux display -p`
+    without `-t` answers for the current pane of the attached client, so a
+    one-shot worker's question stamped the operator's foreground pane and his
+    answer was pasted into an unrelated agent's transcript (c64-dxm-source →
+    mainA:1.4, 2026-09-08). No pane of our own → stamp nothing at all."""
+    import subprocess
+    from tallydeck import cli
+    sock = str(tmp_path / "panes.sock")
+    T = lambda *a: subprocess.run(["tmux", "-S", sock, *a], capture_output=True, text=True, timeout=10)
+    T("-f", "/dev/null", "new-session", "-d", "-s", "watched", "-n", "front", "sleep 30")
+    T("new-window", "-d", "-t", "watched", "-n", "worker", "sleep 30")
+    T("select-window", "-t", "watched:0")                    # what the operator is on
+    mine = [ln.split()[0] for ln in T("list-panes", "-a", "-F", "#{pane_id} #W").stdout.splitlines()
+            if ln.endswith(" worker")][0]
+    monkeypatch.setenv("TALLYDECK_STATE", str(tmp_path))
+    monkeypatch.setenv("TMUX", f"{sock},0,0")
+    monkeypatch.setenv("TMUX_PANE", mine)
+    monkeypatch.chdir(tmp_path)
+    try:
+        cli.main(["raise", "worker-q", "--state", "attention", "--sublabel", "which capture?"])
+        assert json.loads((tmp_path / "signals" / "worker-q.json").read_text())["meta"]["raiser_pane"] \
+            == "watched:1.0"                                  # its own window, not watched:0.0
+        monkeypatch.delenv("TMUX_PANE")
+        cli.main(["raise", "paneless-q", "--state", "attention", "--sublabel", "and now?"])
+        paneless = json.loads((tmp_path / "signals" / "paneless-q.json").read_text())
+        assert "raiser_pane" not in (paneless.get("meta") or {})
+    finally:
+        T("kill-server")
+
+
 def test_raise_stamps_the_raising_session(tmp_path, monkeypatch):
     """`tally raise` from inside a Claude session must produce a key that
     routes back INTO that session, with the ask — not an orphan flag."""
