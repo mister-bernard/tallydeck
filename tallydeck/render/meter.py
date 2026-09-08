@@ -294,8 +294,14 @@ def _half_bar(img, d, x0, x1, y0, y1, frac, target, ramp, accent, t,
             hd.line([(xx + offset, h), (xx + offset + h, 0)], fill=40, width=3 * SS)
         band.paste(Image.new("RGB", (fw, h), "#FFFFFF"), (0, 0), hatch)
         band.paste("#F5FBFF", (max(0, fw - SS), 0, min(fw + SS, w), h))
-    for q in (0.25, 0.5, 0.75):
-        bd.line([(round(w * q), 0), (round(w * q), h)], fill=(5, 6, 10), width=SS)
+    for q in (0.25, 0.5, 0.75):                          # ticks on the empty track only
+        qx = round(w * q)
+        if qx > fw + SS:
+            bd.line([(qx, round(h * 0.25)), (qx, round(h * 0.75))], fill=(28, 32, 48), width=SS)
+    if round_top:                                       # chrome bevel: light on top …
+        bd.line([(0, 0), (w, 0)], fill=(255, 255, 255), width=1)
+    if round_bottom:                                    # … shadow underneath
+        bd.line([(0, h - 1), (w, h - 1)], fill=(0, 0, 0), width=1)
     if target is not None and 0.0 < target < 1.0:
         nx = round(w * target)                          # colour-coded target notch
         bd.line([(nx, 0), (nx, h)], fill=theme.hex_rgb(accent), width=SS * 2)
@@ -320,81 +326,95 @@ def _chip(d, x1: int, cy: int, text: str, font, color: str, underline: bool,
     bx0 = bx1 - tw - 2 * padx
     by0, by1 = cy - font.size // 2 - pady, cy + font.size // 2 + pady
     rgb = theme.hex_rgb(color)
-    d.rounded_rectangle([bx0, by0, bx1, by1], radius=(by1 - by0) // 2,
-                        fill=tuple(int(c * 0.22) for c in rgb), outline=rgb, width=SS)
-    d.text((bx0 + padx, cy - font.size // 2 - SS), text, font=font, fill=color)
-    if underline:                                       # the one burning NOW
-        d.line([(bx0 + padx, by1 + SS), (bx0 + padx + tw, by1 + SS)],
-               fill=rgb, width=SS * 2)
+    if underline:                                       # burning NOW: selected
+        d.rounded_rectangle([bx0, by0, bx1, by1], radius=(by1 - by0) // 2, fill=rgb)
+        d.text((bx0 + padx, cy - font.size // 2 - SS), text, font=font, fill="#06080C")
+        d.line([(bx0 + padx, by1 + SS * 2), (bx0 + padx + tw, by1 + SS * 2)],
+               fill=rgb, width=max(1, SS // 2))
+    else:
+        d.rounded_rectangle([bx0, by0, bx1, by1], radius=(by1 - by0) // 2,
+                            fill=tuple(int(c * 0.20) for c in rgb), outline=rgb, width=SS)
+        d.text((bx0 + padx, cy - font.size // 2 - SS), text, font=font, fill=color)
     return bx0
 
 
 def draw_meter2(size: tuple[int, int], lanes: list[dict], codex: dict | None,
                 hot: str = "", t: float = 0.0) -> Image.Image:
+    """Two equal bars: the shared A/B bar on top (A its colour on the top
+    half, B its colour on the bottom half — one bar, two fills), Codex on
+    the bottom. Insets and gutters are as tight as the bezel allows so every
+    glyph gets the height it can: at 58 px tall there is no room to waste."""
     w, h = size[0] * SS, size[1] * SS
     img = Image.new("RGB", (w, h), BG)
     d = ImageDraw.Draw(img)
-    for y in range(0, h, 2 * SS):                        # scanlines
+    # faint vertical wash + scanlines: depth without noise
+    for y in range(h):
+        k = y / max(1, h - 1)
+        c = theme.mix("#070910", "#0B0E18", k)
+        d.line([(0, y), (w, y)], fill=c)
+    for y in range(0, h, 3 * SS):
         d.line([(0, y), (w, y)], fill=GRID, width=1)
+
     lanes = [l for l in lanes if isinstance(l, dict)][:2]
-    inset = round(h * 0.10)
-    bar_x0, bar_x1 = inset, w - inset
-    bar_y0, bar_y1 = inset, round(h * 0.60)
-    codex_box = (inset, round(h * 0.68), w - inset, h - inset)
+    ins_y, ins_x, gap = round(h * 0.05), round(w * 0.016), round(h * 0.09)
+    bar_h = (h - 2 * ins_y - gap) // 2
+    ab = (ins_x, ins_y, w - ins_x, ins_y + bar_h)
+    cx = (ins_x, h - ins_y - bar_h, w - ins_x, h - ins_y)
+
+    def frame(box, radius):
+        x0, y0, x1, y1 = box
+        d.rounded_rectangle([x0 - SS, y0 - SS, x1 + SS, y1 + SS], radius=radius + SS,
+                            fill="#0A0D15", outline="#222739", width=SS)
 
     # ── the shared A/B bar ───────────────────────────────────────────────────
+    x0, y0, x1, y1 = ab
     n = max(1, len(lanes))
-    span = (bar_y1 - bar_y0) / n
-    d.rounded_rectangle([bar_x0 - SS, bar_y0 - SS, bar_x1 + SS, bar_y1 + SS],
-                        radius=round(span) + SS, fill="#0B0E16", outline="#1C2030", width=SS)
-    f_letter = theme.font("display", max(8, round(span * 0.78)))
-    f_clock = theme.font("semibold", max(7, round(span * 0.60)))
+    span = (y1 - y0) / n
+    frame(ab, round(span))
+    f_letter = theme.font("display", max(8, round(span * 0.92)))
+    f_pct = theme.font("semibold", max(7, round(span * 0.66)))
+    f_clock = theme.font("semibold", max(7, round(span * 0.66)))
     for i, lane in enumerate(lanes):
-        y0, y1 = round(bar_y0 + i * span), round(bar_y0 + (i + 1) * span)
+        ly0, ly1 = round(y0 + i * span), round(y0 + (i + 1) * span)
         accent, ramp = lane_color(lane.get("id", ""))
         tgt = lane.get("target")
-        _half_bar(img, d, bar_x0, bar_x1, y0, y1, float(lane.get("frac", 0.0)),
+        _half_bar(img, d, x0, x1, ly0, ly1, float(lane.get("frac", 0.0)),
                   float(tgt) if tgt else None, ramp, accent, t,
                   round_top=(i == 0), round_bottom=(i == n - 1))
         d = ImageDraw.Draw(img)
-        # the letter, in its colour, on the left cap (dark stroke = engraved)
-        d.text((bar_x0 + round(span * 0.30), y0 + (span - f_letter.size) / 2 - SS),
-               str(lane.get("id", ""))[:1], font=f_letter, fill=accent,
-               stroke_width=SS + 1, stroke_fill=(3, 4, 8))
-        # the window % just right of the letter
-        f_pct = theme.font("semibold", max(7, round(span * 0.50)))
-        d.text((bar_x0 + round(span * 0.30) + f_letter.size + SS * 2, y0 + (span - f_pct.size) / 2 - SS),
-               f"{round(float(lane.get('pct', 0)))}%", font=f_pct, fill="#F2F6FF",
+        lx = x0 + round(span * 0.55)
+        d.text((lx, ly0 + (span - f_letter.size) / 2 - SS), str(lane.get("id", ""))[:1],
+               font=f_letter, fill=accent, stroke_width=SS + 1, stroke_fill=(3, 4, 8))
+        d.text((lx + f_letter.size * 0.78 + SS * 3, ly0 + (span - f_pct.size) / 2 - SS),
+               f"{round(float(lane.get('pct', 0)))}%", font=f_pct, fill="#F4F7FF",
                stroke_width=SS + 1, stroke_fill=(3, 4, 8))
         if lane.get("clock"):
-            _chip(d, bar_x1 - round(span * 0.25), (y0 + y1) // 2, str(lane["clock"]),
+            _chip(d, x1 - round(span * 0.30), (ly0 + ly1) // 2, str(lane["clock"]),
                   f_clock, accent, underline=bool(hot and lane.get("id") == hot))
 
-    # ── Codex lane ───────────────────────────────────────────────────────────
+    # ── Codex: its own full bar, same height as the A/B bar ─────────────────
     if codex:
-        x0, y0, x1, y1 = codex_box
-        accent, ramp = lane_color("X")
+        x0, y0, x1, y1 = cx
         ch = y1 - y0
-        d.rounded_rectangle([x0 - SS, y0 - SS, x1 + SS, y1 + SS], radius=ch // 2 + SS,
-                            fill="#0B0E16", outline="#1C2030", width=SS)
+        accent, ramp = lane_color("X")
+        frame(cx, ch // 2)
         tgt = codex.get("target")
         _half_bar(img, d, x0, x1, y0, y1, float(codex.get("frac", 0.0)),
                   float(tgt) if tgt else None, ramp, accent, t, True, True)
         d = ImageDraw.Draw(img)
-        f_l = theme.font("display", max(7, round(ch * 0.66)))
-        f_p = theme.font("semibold", max(6, round(ch * 0.50)))
-        label = "CODEX"
-        d.text((x0 + round(ch * 0.35), y0 + (ch - f_l.size) / 2 - SS), label, font=f_l,
-               fill=accent, stroke_width=SS + 1, stroke_fill=(3, 4, 8))
-        lw = d.textlength(label, font=f_l)
-        px = x0 + round(ch * 0.35) + lw + SS * 3
+        f_l = theme.font("display", max(8, round(ch * 0.58)))
+        f_p = theme.font("semibold", max(7, round(ch * 0.44)))
+        lx = x0 + round(ch * 0.30)
+        d.text((lx, y0 + (ch - f_l.size) / 2 - SS), "CODEX", font=f_l, fill=accent,
+               stroke_width=SS + 1, stroke_fill=(3, 4, 8))
+        px = lx + d.textlength("CODEX", font=f_l) + SS * 5
         d.text((px, y0 + (ch - f_p.size) / 2 - SS), f"{round(float(codex.get('pct', 0)))}%",
-               font=f_p, fill="#F2F6FF", stroke_width=SS + 1, stroke_fill=(3, 4, 8))
-        if codex.get("dummy"):                           # stand-in data, say so quietly
-            f_d = theme.font("regular", max(6, round(ch * 0.36)))
-            d.text((px + d.textlength("00%", font=f_p) + SS * 4, y0 + (ch - f_d.size) / 2),
-                   "dummy", font=f_d, fill=tuple(int(c * 0.6) for c in theme.hex_rgb(accent)))
+               font=f_p, fill="#F4F7FF", stroke_width=SS + 1, stroke_fill=(3, 4, 8))
+        if codex.get("dummy"):                           # stand-in data: whisper it
+            f_d = theme.font("regular", max(6, round(ch * 0.26)))
+            d.text((px + d.textlength("00%", font=f_p) + SS * 6, y0 + (ch - f_d.size) / 2),
+                   "dummy", font=f_d, fill="#3C4458")
         if codex.get("clock"):
-            _chip(d, x1 - round(ch * 0.25), (y0 + y1) // 2, str(codex["clock"]),
-                  theme.font("semibold", max(7, round(ch * 0.58))), accent, underline=(hot == "X"))
+            _chip(d, x1 - round((ab[3] - ab[1]) / 2 * 0.30), (y0 + y1) // 2, str(codex["clock"]),
+                  theme.font("semibold", max(7, round(ch * 0.46))), accent, underline=(hot == "X"))
     return img.resize(size, Image.LANCZOS)
