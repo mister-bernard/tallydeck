@@ -1517,3 +1517,44 @@ def test_pipelink_reconnects_when_the_hub_dies_and_keeps_the_last_snapshot():
         if link.alive or link.poll(): break
         _t.sleep(0.05)
     link.close()
+
+
+# ── info bar v2: split A/B bar + Codex lane, two layouts ─────────────────────
+
+def test_burn_codex_lane_real_and_dummy():
+    from tallydeck.sources.burn import TokenBurnSource
+    payload, targets = _burn_fixture()
+    src = TokenBurnSource(codex_dummy=True)
+    m = src.signals_from(payload, targets, now=0)[0].meta
+    assert m["codex"]["dummy"] is True and m["codex"]["id"] == "X"
+    payload["accounts"].append({"id": "codex", "provider": "openai", "enabled": True,
+                                "session_pct": 41, "session_reset": "2026-09-07T08:00:00+00:00"})
+    m = src.signals_from(payload, targets, now=0)[0].meta
+    assert m["codex"]["pct"] == 41 and not m["codex"].get("dummy")
+    assert [l["id"] for l in m["lanes"]] == ["A", "B"]            # codex never a lane
+    assert TokenBurnSource().signals_from(_burn_fixture()[0], targets, now=0)[0].meta["codex"] is None
+
+
+def test_meter2_renders_both_styles_and_the_toggle_flips():
+    from tallydeck.render.meter import draw_meter2, METER_STYLES
+    lanes = [{"id": "A", "pct": 26, "frac": 0.26, "target": 0.4, "clock": "1:48"},
+             {"id": "B", "pct": 58, "frac": 0.58, "target": 0.7, "clock": "3:05"}]
+    codex = {"id": "X", "pct": 37, "frac": 0.37, "target": 0.6, "clock": "2:10", "dummy": True}
+    imgs = {s: draw_meter2((248, 58), lanes, codex, hot="B", style=s) for s in METER_STYLES}
+    assert all(im.size == (248, 58) for im in imgs.values())
+    assert list(imgs["split"].getdata()) != list(imgs["quadrant"].getdata())
+    assert draw_meter2((248, 58), lanes, None, style="nope").size == (248, 58)   # unknown → split, no codex
+    v = View(profile=NEO)
+    assert v.layout([]).meter_style == "split"
+    assert v.toggle_meter_style() == "quadrant" and v.layout([]).meter_style == "quadrant"
+
+
+def test_png_screen_face_uses_v2_with_two_lanes():
+    from tallydeck.render.png import _screen_face
+    sig = Signal(id="burn/session", label="burn", state=WORKING, meta={
+        "meter": True, "frac": 0.4, "lanes": [{"id": "A", "frac": 0.2, "pct": 20}, {"id": "B", "frac": 0.5, "pct": 50}],
+        "codex": {"id": "X", "pct": 10, "frac": 0.1}})
+    v = View(profile=NEO, meter_style="quadrant")
+    lay = v.layout([sig])
+    assert lay.meter is sig and lay.meter_style == "quadrant"
+    assert _screen_face(NEO, lay, 0.0).size == (248, 58)

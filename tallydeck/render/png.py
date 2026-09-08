@@ -22,6 +22,12 @@ CORNER = 22
 def _screen_face(profile: DeviceProfile, layout: Layout, t: float):
     if layout.meter is not None:
         m = layout.meter.meta
+        lanes = [l for l in (m.get("lanes") or []) if isinstance(l, dict)]
+        if len(lanes) >= 2:
+            from .meter import draw_meter2
+            return draw_meter2(profile.screen_px, lanes, m.get("codex"),
+                               hot=m.get("hot", ""), t=t,
+                               style=getattr(layout, "meter_style", "split"))
         return draw_meter(profile.screen_px,
                           float(m.get("frac", layout.meter.progress or 0.0)),
                           m.get("left", ""), m.get("mid", ""),

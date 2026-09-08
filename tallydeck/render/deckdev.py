@@ -152,6 +152,7 @@ class DeckSurface:
             if self.profile.screen_px and hasattr(self.deck, "set_screen_image"):
                 m = layout.meter
                 bar = (layout.summary, layout.page, layout.pages,
+                       getattr(layout, "meter_style", ""),
                        None if m is None else tuple(sorted(
                            (k, v) for k, v in m.meta.items()
                            if isinstance(v, (str, int, float, bool)))),

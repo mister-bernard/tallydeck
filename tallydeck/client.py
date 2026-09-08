@@ -290,12 +290,15 @@ def run(link, surface, view: View, poll_every: float = 2.0,
 
     def on_touch(direction: int) -> None:
         if direction > 0:
-            # Right point: cycle pages (wraps) when there are any.
+            # Right point: cycle pages (wraps) when there are any; on a
+            # single page it flips the info-bar layout (split ⇄ quadrant).
             if pages_now[0] > 1:
                 if view.page >= pages_now[0] - 1:
                     view.page = 0
                 else:
                     view.page_next()
+            else:
+                view.toggle_meter_style()
         else:
             # Left point is the beacon. Most urgent thing on ANOTHER page →
             # jump to that page first (see it in context); already visible →
@@ -316,6 +319,9 @@ def run(link, surface, view: View, poll_every: float = 2.0,
 
     last_poll = 0.0
     prev_frame = None
+    from .hub import Hub as _Hub
+    code_mtime0 = _Hub.code_mtime()
+    last_code_check = time.monotonic()
     try:
         while True:
             now = time.monotonic()
@@ -352,6 +358,7 @@ def run(link, surface, view: View, poll_every: float = 2.0,
                          (k, v) for k, v in m.meta.items()
                          if isinstance(v, (str, int, float, bool)))),
                      int(wall * 0.5) if m is not None else 0,  # meter hatch tick
+                     layout.meter_style,
                      ("mural", int(wall)) if layout.mural else None,  # cursor
                      tuple(sorted((k, int(p * 14)) for k, p in fx_phase.items())),
                      int(wall / 2) if any(
@@ -364,6 +371,18 @@ def run(link, surface, view: View, poll_every: float = 2.0,
 
             if once:
                 return
+            # Renderers live here on the deck machine: when the checkout
+            # changes (git pull), re-exec with the same argv so the new
+            # surfaces/meter/mural load without a manual relaunch. Never
+            # while a key is held.
+            if time.monotonic() - last_code_check > 5.0:
+                last_code_check = time.monotonic()
+                if not held and _Hub.code_mtime() > code_mtime0 + 0.5:
+                    import os
+                    if hasattr(surface, "close"):
+                        surface.close()
+                    link.close()
+                    os.execv(sys.executable, [sys.executable] + sys.argv)
             # A press interrupts the sleep so ring feedback is immediate;
             # a press also forces a re-poll so acks/state changes land fast.
             if wake.wait(theme.FRAME_INTERVAL if (flashing or fx_phase)

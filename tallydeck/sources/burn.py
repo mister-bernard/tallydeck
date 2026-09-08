@@ -49,6 +49,11 @@ class TokenBurnSource(Source):
         # the lane whose countdown gets the underline.
         self.hot_window = float(opts.get("hot_window", 300))
         self._pct_hist: dict[str, list[tuple[float, float]]] = {}
+        # Codex (OpenAI) is joining tokenburn; until its /accounts entry
+        # exists, `codex_dummy = true` paints a stand-in lane so the layout
+        # can be built and judged with something on it.
+        self.codex_dummy = bool(opts.get("codex_dummy", False))
+        self.codex_providers = tuple(opts.get("codex_providers", ("openai", "codex")))
 
     # ── polling ──────────────────────────────────────────────────────────────
 
@@ -115,6 +120,7 @@ class TokenBurnSource(Source):
                        f"of {tgt_pct / 100.0 * limit / 1e6:.1f}M",
                 "clock": self._fmt_remaining(remaining),
             })
+        codex = self._codex_lane(payload, targets, now)
         if not parts or target <= 0:
             return []
         frac = burned / target
@@ -144,8 +150,30 @@ class TokenBurnSource(Source):
                 ),
                 "lanes": lanes,
                 "hot": hot,
+                "codex": codex,
             },
         )]
+
+    def _codex_lane(self, payload: dict, targets: dict, now: float) -> dict | None:
+        """The Codex lane from the first enabled OpenAI/Codex account that
+        reports a window %, shaped like an anthropic lane; a labelled dummy
+        when none exists and codex_dummy is on."""
+        for acct in payload.get("accounts", []):
+            if acct.get("provider") not in self.codex_providers or not acct.get("enabled"):
+                continue
+            pct = acct.get("session_pct", acct.get("weekly_pct"))
+            if pct is None:
+                continue
+            t = targets.get(acct.get("id"), {})
+            tgt_pct = float(t.get("target_pct_5h", t.get("target_pct", 100)))
+            remaining = self._remaining(acct.get("session_reset") or acct.get("weekly_reset"), now)
+            return {"id": "X", "provider": acct.get("provider"), "pct": float(pct),
+                    "frac": float(pct) / 100.0, "target": tgt_pct / 100.0,
+                    "remaining_s": remaining, "clock": self._fmt_remaining(remaining)}
+        if self.codex_dummy:
+            return {"id": "X", "provider": "codex", "pct": 37.0, "frac": 0.37, "target": 0.6,
+                    "remaining_s": 7800.0, "clock": "2:10", "dummy": True}
+        return None
 
     def _pct_rate(self, acct: str, now: float, pct: float) -> float:
         """Window-% growth per second over the hot window (≥ 0)."""

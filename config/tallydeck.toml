@@ -12,6 +12,10 @@
 [view]
 device = "neo"          # neo 2x4 · mk2 3x5 · mini 2x3 · xl 4x8
 hide_idle = false
+# Info-bar layout: "split" = one A/B bar (A top half, B bottom) with the Codex
+# lane underneath; "quadrant" = A/B bar left, clocks top-right, Codex bottom-
+# right. The right touch point flips between them on a single-page deck.
+meter = "split"
 
 [client]
 # The hub runs on your server; the deck is wherever you are. Both ends read
