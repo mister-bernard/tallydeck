@@ -1310,3 +1310,43 @@ def test_session_keys_carry_a_hub_side_route_action(tmp_path, monkeypatch):
     monkeypatch.setattr(src, "_all_pane_targets", lambda: {"oneshot:1.1"})
     src._exact_memo = {}
     assert src.poll()[0].action is None
+
+
+def test_hook_recorded_pane_makes_identity_durable(tmp_path, monkeypatch):
+    """The env scan sees a session only while a tool subprocess lives; the
+    PostToolUse hook's panes/<sid8>.json must carry it between tool calls,
+    and only while that pane still exists."""
+    monkeypatch.setenv("TALLYDECK_STATE", str(tmp_path))
+    (tmp_path / "panes").mkdir()
+    (tmp_path / "panes" / "abcd1234.json").write_text(json.dumps({"session": "abcd1234-x", "tmux": "work:2.1"}))
+    src = ClaudeSessionsSource()
+    monkeypatch.setattr(src, "_session_panes", lambda: {})
+    monkeypatch.setattr(src, "_all_pane_targets", lambda: {"work:2.1"})
+    assert src._exact_pane("abcd1234-x") == "work:2.1"
+    monkeypatch.setattr(src, "_all_pane_targets", lambda: set())     # pane gone
+    src._exact_memo = {}
+    assert src._exact_pane("abcd1234-x") == ""
+
+
+def test_hook_clear_records_the_pane(tmp_path):
+    import subprocess, sys, os
+    from pathlib import Path
+    hook = Path(__file__).resolve().parent.parent / "contrib" / "tally-hook-clear"
+    env = dict(os.environ, TALLYDECK_STATE=str(tmp_path), TMUX="/tmp/x,1,2", PATH=str(tmp_path) + ":" + os.environ["PATH"])
+    (tmp_path / "tmux").write_text("#!/bin/sh\necho 'work:3.0|work|2|claude'\n"); os.chmod(tmp_path / "tmux", 0o755)
+    subprocess.run([sys.executable, str(hook)], input=json.dumps({"session_id": "feedbeef-1"}), text=True, env=env, check=True, timeout=10)
+    d = json.loads((tmp_path / "panes" / "feedbeef.json").read_text())
+    assert d["tmux"] == "work:3.0" and d["session"] == "feedbeef-1"
+
+
+def test_working_but_silent_for_long_is_stalled_not_blue(tmp_path):
+    """G pressed a blue key whose brief said 'quiet 21m, nothing happening'.
+    A Claude's-move tail that has not moved in 15 min is stalled → gray."""
+    import os, time as _t
+    proj = tmp_path / "-home-me-projects-w"
+    proj.mkdir()
+    p = _write_jsonl(proj, "stall001", [{"type": "user", "message": {"content": [{"type": "text", "text": "go"}]}}])
+    t0 = _t.time() - 20 * 60
+    os.utime(p, (t0, t0))
+    assert ClaudeSessionsSource(root=str(tmp_path)).poll()[0].state == IDLE
+    assert ClaudeSessionsSource(root=str(tmp_path), stall=3600).poll()[0].state == WORKING

@@ -245,6 +245,11 @@ class ClaudeSessionsSource(Source):
                 "root", Path.home() / ".claude" / "projects")).expanduser())]
         self.root = self.roots[0][1]      # kept: existing callers/tests read it
         self.stale = float(opts.get("stale", 1800))
+        # A session whose tail says "Claude's move" but whose log has not
+        # moved for this long is not working, it is stalled (killed mid-turn,
+        # a hung tool, an abandoned pane). Blue would be a lie; it goes gray
+        # and keeps its age. Long tool runs are the ceiling here.
+        self.stall = float(opts.get("stall", 900))
         # Dwell: tool results are logged as "user" records, so mid-turn the
         # tail flaps assistant/user/assistant… Only a log that has been
         # QUIET for `dwell` seconds with an assistant tail is truly waiting
@@ -308,6 +313,8 @@ class ClaudeSessionsSource(Source):
                 oneshot = bool(exact) and \
                     exact.split(":", 1)[0] in self.oneshot_sessions
                 state, final = classify(lines)
+                if state == WORKING and (now - mtime) > self.stall:
+                    state = IDLE               # "working" for 15 min with no output = stalled
                 ended = state in (ATTENTION, SUCCESS)
                 # Dwell: tool results log as "user" records, so mid-turn the
                 # tail flaps. A fresh assistant tail with no end-of-turn
@@ -456,6 +463,19 @@ class ClaudeSessionsSource(Source):
         if remembered and remembered in self._all_pane_targets():
             return remembered
         memo.pop(session, None)
+        # Durable identity: the PostToolUse hook records session → pane from
+        # inside the pane (~/.tallydeck/panes/<sid8>.json). Trusted while
+        # that pane is alive.
+        try:
+            import json as _json
+            from ..paths import state_dir
+            rec = _json.loads((state_dir() / "panes" / f"{session[:8]}.json").read_text())
+            tgt = str(rec.get("tmux") or "")
+            if tgt and tgt in self._all_pane_targets():
+                memo[session] = tgt
+                return tgt
+        except (OSError, ValueError):
+            pass
         return ""
 
     def _all_pane_targets(self) -> set:

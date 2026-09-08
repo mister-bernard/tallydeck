@@ -17,9 +17,38 @@ def state_dir():
 
 
 try:
-    sid = (json.load(sys.stdin).get("session_id") or "")[:8]
+    d = json.load(sys.stdin)
+    full = d.get("session_id") or ""
+    sid = full[:8]
     if sid:
-        os.unlink(os.path.join(state_dir(), "signals", f"ask-{sid}.json"))
+        try:
+            os.unlink(os.path.join(state_dir(), "signals", f"ask-{sid}.json"))
+        except OSError:
+            pass
+        # Session → pane, recorded from inside the pane. The deck's live scan
+        # can only see a session while a tool subprocess exists; this file
+        # makes the identity durable (a key must not read "(resumes)" for a
+        # session that is right there). Throttled: at most once a minute.
+        if os.environ.get("TMUX"):
+            import time
+            pdir = os.path.join(state_dir(), "panes")
+            pf = os.path.join(pdir, f"{sid}.json")
+            try:
+                fresh = time.time() - os.stat(pf).st_mtime < 60
+            except OSError:
+                fresh = False
+            if not fresh:
+                import subprocess
+                out = subprocess.run(["tmux", "display", "-p", "#S:#I.#P|#S|#{session_windows}|#W"],
+                                     capture_output=True, text=True, timeout=2).stdout.strip()
+                target, _, rest = out.partition("|")
+                if target:
+                    os.makedirs(pdir, exist_ok=True)
+                    tmp = pf + f".{os.getpid()}"
+                    with open(tmp, "w") as fh:
+                        json.dump({"session": full, "tmux": target, "t": time.time(),
+                                   "socket": (os.environ.get("TMUX") or "").split(",")[0]}, fh)
+                    os.replace(tmp, pf)
 except Exception:
     pass
 sys.exit(0)
