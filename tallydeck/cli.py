@@ -231,6 +231,17 @@ def cmd_raise(cfg, args):
         meta["options"] = [o.strip() for o in args.options.split("|") if o.strip()]
     if not d.get("detail") and (meta.get("markdown") or meta.get("options")):
         d["detail"] = d.get("sublabel") or d.get("label") or args.id
+    # Which harness raised this? Codex keys wear their tally bar down the left
+    # edge, so a mixed deck is legible at a glance — but only if the marker
+    # gets stamped, and a Codex agent has no CLAUDE_SESSION_ID to give it away.
+    # Telegraph stamps its panes; a bare `codex exec` still carries CODEX_HOME.
+    harness = (args.harness or os.environ.get("TALLY_HARNESS")
+               or os.environ.get("TELEGRAPH_PANE_HARNESS") or "").strip().lower()
+    if not harness and not sid and (os.environ.get("CODEX_HOME")
+                                    or os.environ.get("CODEX_BIN")):
+        harness = "codex"
+    if harness:
+        meta["harness"] = harness
     if args.account:
         meta["account"] = args.account
     elif "account" not in meta and sid:
@@ -397,6 +408,9 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--project", help="project path (default: cwd)")
     sp.add_argument("--tmux", help="tmux pane target (default: this pane)")
     sp.add_argument("--account", help="account badge, e.g. A or B")
+    sp.add_argument("--harness", help="which agent harness raised this: "
+                    "'codex' draws the tally bar down the key's left edge "
+                    "(default: detected from the environment)")
     sp.add_argument("--markdown", metavar="FILE|-",
                     help="full ask as Markdown (headings, tables, lists…); "
                          "the decide popup renders it. '-' reads stdin")

@@ -54,6 +54,9 @@ class TokenBurnSource(Source):
         # can be built and judged with something on it.
         self.codex_dummy = bool(opts.get("codex_dummy", False))
         self.codex_providers = tuple(opts.get("codex_providers", ("openai", "codex")))
+        # Account O's numbers come from a cron snapshot (10-min refresh). Older
+        # than this and the lane says so rather than pretending it is live.
+        self.codex_stale_mins = float(opts.get("codex_stale_mins", 25))
 
     # ── polling ──────────────────────────────────────────────────────────────
 
@@ -163,18 +166,48 @@ class TokenBurnSource(Source):
         for acct in payload.get("accounts", []):
             if acct.get("provider") not in self.codex_providers or not acct.get("enabled"):
                 continue
-            pct = acct.get("session_pct", acct.get("weekly_pct"))
+            # Paint the window the plan actually exposes. tokenburn reports
+            # session_pct=0 (not None) for a Codex plan with no 5h window, so
+            # "session first" painted a permanent 0% and never showed the
+            # weekly meter that is the real quota (found 2026-09-08 while
+            # wiring Account O). Use the session window only when its reset
+            # clock exists; otherwise the weekly one.
+            cx = acct.get("codex") or {}
+            has_session = (acct.get("session_reset_mins") is not None
+                           or cx.get("session_reset_mins") is not None
+                           or bool(acct.get("session_reset")))
+            if has_session:
+                pct = acct.get("session_pct")
+                reset_mins = acct.get("session_reset_mins")
+                reset_iso = acct.get("session_reset")
+            else:
+                pct = acct.get("weekly_pct")
+                reset_mins = acct.get("weekly_reset_mins")
+                reset_iso = acct.get("weekly_reset")
             if pct is None:
                 continue
             t = targets.get(acct.get("id"), {})
-            tgt_pct = float(t.get("target_pct_5h", t.get("target_pct", 100)))
-            remaining = self._remaining(acct.get("session_reset") or acct.get("weekly_reset"), now)
+            tgt_pct = float(t.get("target_pct_5h", t.get("target_pct", cx.get("target_pct", 100))))
+            remaining = self._remaining(reset_iso, now) if reset_iso else (
+                float(reset_mins) * 60.0 if reset_mins is not None else None)
             limit = float(t.get("window_5h_limit", t.get("window_limit", 0)) or 0)
+            # Server truth or nothing: the snapshot behind Account O is a cron
+            # refresh, so say WHEN it was true. A quota painted confidently
+            # from a snapshot whose refresher died is worse than no lane —
+            # you'd spend against a number that stopped moving hours ago.
+            age = cx.get("age_mins")
+            stale = bool(cx.get("stale")) or (
+                age is not None and float(age) > self.codex_stale_mins)
             return {"id": "X", "provider": acct.get("provider"), "pct": float(pct),
                     "frac": float(pct) / 100.0, "target": tgt_pct / 100.0,
                     "burned_m": float(pct) / 100.0 * limit / 1e6 if limit else None,
                     "target_m": tgt_pct / 100.0 * limit / 1e6 if limit else None,
-                    "remaining_s": remaining, "clock": self._fmt_remaining(remaining)}
+                    "remaining_s": remaining, "clock": self._fmt_remaining(remaining),
+                    # Which window the number describes. The Pro plan exposes a
+                    # weekly quota and no 5h one, so an unlabelled "0%" next to
+                    # A/B's 5h percentages invites reading it as a 5h figure.
+                    "window": "5h" if has_session else "weekly",
+                    "age_mins": age, "stale": stale}
         if self.codex_dummy:
             return {"id": "X", "provider": "codex", "pct": 37.0, "frac": 0.37, "target": 0.6,
                     "burned_m": 3.3, "target_m": 5.4,
@@ -213,6 +246,10 @@ class TokenBurnSource(Source):
         if secs is None:
             return ""
         m = int(secs // 60)
+        # A weekly window is days away: "166:33" is technically the same number
+        # of hours and reads like a broken clock next to A/B's "0:49".
+        if m >= 24 * 60:
+            return f"{m // (24 * 60)}d{(m % (24 * 60)) // 60}h"
         return f"{m // 60}:{m % 60:02d}"
 
     def _fmt_reset(self, iso: str) -> str:

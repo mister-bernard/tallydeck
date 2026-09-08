@@ -464,16 +464,28 @@ def draw_meter2(size: tuple[int, int], lanes: list[dict], codex: dict | None,
                 uy = cy + f_big.size * 0.50
                 d.line([(xr, uy), (xr + cw, uy)], fill=theme.hex_rgb(accent), width=SS * 2)
         mid = _mtok(codex)
-        tag = "dummy" if codex.get("dummy") else ""
+        # Whisper slot, in priority order: stand-in data, a snapshot that has
+        # stopped refreshing, or which window the percentage describes (the
+        # Pro plan reports weekly, the A/B lanes report 5h — unlabelled, the
+        # two invite being read as the same kind of number).
+        if codex.get("dummy"):
+            tag, tag_col = "dummy", "#3C4458"
+        elif codex.get("stale"):
+            tag, tag_col = "stale", "#7A6430"
+        else:
+            tag, tag_col = str(codex.get("window") or ""), "#3C4458"
         mw = d.textlength(mid, font=f_small) if mid else 0
         tw = d.textlength(tag, font=f_small) if tag else 0
         room = (xr - pad) - x
         total = mw + (SS * 8 + tw if tag else 0)
         if total <= room:
-            fx = x + (room - total) / 2
+            # Centred when there are token figures to centre; with only the
+            # window whisper, hug the percentage it qualifies — dead-centre put
+            # "weekly" right under the target notch, which struck through it.
+            fx = x + (room - total) / 2 if mid else x
             if mid:
                 _engrave(d, (fx, cy - f_small.size * 0.55), mid, f_small, accent)
                 fx += mw + SS * 8
-            if tag:                                      # stand-in data: whisper it
-                d.text((fx, cy - f_small.size * 0.55), tag, font=f_small, fill="#3C4458")
+            if tag:                                      # never shouts
+                d.text((fx, cy - f_small.size * 0.55), tag, font=f_small, fill=tag_col)
     return img.resize(size, Image.LANCZOS)

@@ -14,6 +14,18 @@ Anatomy of a key (96 px nominal):
     │ ▂▂▂▂▂▂▂▁▁▁▁▁ │  ← progress (when known)
     └──────────────┘
 
+A Codex-harness key wears the same bar down its LEFT edge instead:
+
+    ┌──────────────┐
+    │▏ astra       │  ← tally bar (state color), vertical
+    │▏ 3 files in  │
+    │▏             │
+    │▏▂▂▂▂▂▂▁▁▁▁▁▁ │
+    └──────────────┘
+
+Position, not color, carries the harness — state color still has to mean
+state, and an L-vs-T edge reads across the room before any label does.
+
 Flashing keys alternate with a "flood" frame: the whole face fills with
 the state color and the text inverts — unmissable in peripheral vision.
 """
@@ -22,7 +34,7 @@ from __future__ import annotations
 
 from PIL import Image, ImageDraw
 
-from ..signal import Signal
+from ..signal import Signal, is_codex
 from . import theme
 
 SS = 2  # supersample factor
@@ -117,11 +129,20 @@ def draw_key(sig: Signal | None, px: int, lit: bool = False,
         track = theme.TRACK
         fill = color
 
-    # tally bar
+    # tally bar — across the top, or down the left edge for a Codex session.
+    # The vertical bar is the harness tell; everything else about the key is
+    # unchanged, including where the first line of text sits, so a mixed deck
+    # still reads as rows rather than as two different products.
     bar_h = round(s * 0.085)
-    d.rectangle([0, 0, s, bar_h], fill=bar)
+    codex = is_codex(sig)
+    if codex:
+        d.rectangle([0, 0, bar_h, s], fill=bar)
+    else:
+        d.rectangle([0, 0, s, bar_h], fill=bar)
 
     pad = round(s * 0.10)
+    lx = bar_h + round(s * 0.06) if codex else pad   # left text margin
+    avail = s - lx - pad                             # usable text width
     f_label = theme.font("display", round(s * 0.195))
     f_sub = theme.font("regular", round(s * 0.135))
 
@@ -129,14 +150,14 @@ def draw_key(sig: Signal | None, px: int, lit: bool = False,
     # smaller face and takes two lines, which lets the break land on a
     # hyphen/space instead of mid-word. Ellipsis only past two full lines.
     y = bar_h + round(s * 0.10)
-    if d.textlength(sig.label, font=f_label) <= s - 2 * pad:
-        d.text((pad, y), sig.label, font=f_label, fill=fg)
+    if d.textlength(sig.label, font=f_label) <= avail:
+        d.text((lx, y), sig.label, font=f_label, fill=fg)
     else:
         f_label = theme.font("display", round(s * 0.155))
-        lines = _wrap2(d, sig.label, f_label, s - 2 * pad)
-        d.text((pad, y), lines[0], font=f_label, fill=fg)
+        lines = _wrap2(d, sig.label, f_label, avail)
+        d.text((lx, y), lines[0], font=f_label, fill=fg)
         if len(lines) > 1:
-            d.text((pad, y + round(s * 0.165)), lines[1], font=f_label, fill=fg)
+            d.text((lx, y + round(s * 0.165)), lines[1], font=f_label, fill=fg)
             y += round(s * 0.13)
 
     # Account badge, bottom-right. Which of the two quotas a session is
@@ -163,43 +184,43 @@ def draw_key(sig: Signal | None, px: int, lit: bool = False,
             # The ask gets the key's whole empty middle: 3 wrapped lines
             # per page, cycling through as many pages as the message needs
             # (the flash draws the eye; the page flips finish the story).
-            lines = _wrap_n(d, sig.sublabel, f_sub, s - 2 * pad, 12)
+            lines = _wrap_n(d, sig.sublabel, f_sub, avail, 12)
             per = 3
             pages = max(1, (len(lines) + per - 1) // per)
             pg = askpage % pages
             for i, ln in enumerate(lines[pg * per:(pg + 1) * per]):
-                d.text((pad, y2 + i * round(s * 0.145)), ln,
+                d.text((lx, y2 + i * round(s * 0.145)), ln,
                        font=f_sub, fill=sub)
             if pages > 1:      # tiny page dots, bottom-left
                 r_ = max(2, s // 40)
                 for pi in range(pages):
-                    x0d = pad + pi * r_ * 3
+                    x0d = lx + pi * r_ * 3
                     y0d = s - round(s * 0.05) - r_
                     d.ellipse([x0d, y0d, x0d + r_, y0d + r_],
                               fill=fill if pi == pg else track)
-        elif d.textlength(sig.sublabel, font=f_sub) <= s - 2 * pad:
-            d.text((pad, y2), sig.sublabel, font=f_sub, fill=sub)
+        elif d.textlength(sig.sublabel, font=f_sub) <= avail:
+            d.text((lx, y2), sig.sublabel, font=f_sub, fill=sub)
         else:
             # Wrap rather than amputate: "3m · 1704k/m" lost its burn rate
             # to an ellipsis on the hottest key of the fleet — the one
             # number that key exists to show.
             parts = [p_.strip() for p_ in sig.sublabel.split(" · ")]
             if len(parts) > 1 and all(
-                    d.textlength(p_, font=f_sub) <= s - 2 * pad for p_ in parts):
+                    d.textlength(p_, font=f_sub) <= avail for p_ in parts):
                 lines = [parts[0], " · ".join(parts[1:])]   # break at the dot
-                if d.textlength(lines[1], font=f_sub) > s - 2 * pad:
+                if d.textlength(lines[1], font=f_sub) > avail:
                     lines = parts[:2]
             else:
-                lines = _wrap2(d, sig.sublabel, f_sub, s - 2 * pad)
+                lines = _wrap2(d, sig.sublabel, f_sub, avail)
             for i, ln in enumerate(lines[:2]):
-                d.text((pad, y2 + i * round(s * 0.145)), ln,
+                d.text((lx, y2 + i * round(s * 0.145)), ln,
                        font=f_sub, fill=sub)
 
     # progress
     if sig.progress is not None:
         h = round(s * 0.07)
         y0 = s - round(s * 0.145)
-        x0, x1 = pad, s - pad - badge_w
+        x0, x1 = lx, s - pad - badge_w
         d.rounded_rectangle([x0, y0, x1, y0 + h], radius=h // 2, fill=track)
         w = round((x1 - x0) * sig.progress)
         if w > h:  # avoid a smeared nub at ~0%

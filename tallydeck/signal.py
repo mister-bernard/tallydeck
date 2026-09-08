@@ -108,6 +108,16 @@ class Signal:
         return json.dumps(self.to_dict(), separators=(",", ":"))
 
 
+def is_codex(sig: Signal) -> bool:
+    """Does this signal belong to a Codex-harness session?
+
+    `meta.harness` is the one canonical marker (sources and `tally raise`
+    stamp it); renderers key the Codex look off this and nothing else, so a
+    second harness later is a new value here rather than a new special case
+    in every surface."""
+    return str((sig.meta or {}).get("harness", "")).strip().lower() == "codex"
+
+
 def rank(signals: list[Signal]) -> list[Signal]:
     """Deck ordering for a set of signals."""
     return sorted(signals, key=Signal.sort_key)

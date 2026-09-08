@@ -2,6 +2,7 @@
 
 from .base import Source
 from .claude_sessions import ClaudeSessionsSource
+from .codex_sessions import CodexSessionsSource
 from .watchdir import WatchDirSource
 from .execsrc import ExecSource
 from .demo import DemoSource
@@ -9,6 +10,7 @@ from .burn import TokenBurnSource
 
 REGISTRY: dict[str, type[Source]] = {
     "claude-sessions": ClaudeSessionsSource,
+    "codex-sessions": CodexSessionsSource,
     "watchdir": WatchDirSource,
     "exec": ExecSource,
     "demo": DemoSource,

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ..devices import DeviceProfile
-from ..signal import Signal
+from ..signal import Signal, is_codex
 from ..view import Layout
 
 _ANSI = {
@@ -37,10 +37,14 @@ def _cell_lines(sig: Signal | None, lit: bool) -> list[str]:
         foot = f" {bar} "
     else:
         foot = " " * _W
+    # Codex keys carry their bar on the left edge on the hardware; the text
+    # surface says the same thing with a left rule, so a check over SSH shows
+    # the same fleet the deck does.
+    e = "▏" if is_codex(sig) else " "
     return [
-        f"{color} {label:<{_W - 2}} {_RESET}",
-        f"{color} {sub:<{_W - 2}} {_RESET}",
-        f"{color} {foot:<{_W - 2}.{_W - 2}} {_RESET}",
+        f"{color}{e}{label:<{_W - 2}} {_RESET}",
+        f"{color}{e}{sub:<{_W - 2}} {_RESET}",
+        f"{color}{e}{foot:<{_W - 2}.{_W - 2}} {_RESET}",
     ]
 
 

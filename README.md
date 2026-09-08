@@ -65,10 +65,12 @@ the alarm up. Only the popup's `␣ done`, `tally clear`, or a long press
 retires it — an alarm must never disappear on an action whose result you
 did not see.
 
-### The line above each tile (the tally bar)
+### The line on each tile (the tally bar)
 
-That top strip is the session's **state in miniature** — same color code as
-above:
+That strip is the session's **state in miniature** — same color code as
+above. **Where** it sits tells you which agent the key belongs to: across
+the **top** for Claude Code, down the **left edge** for Codex. Position
+carries the harness so colour can keep meaning state.
 
 - **Orange bar** → this session is waiting on you (the whole key will also
   be flashing if it's fresh, steady orange if you've let it sit).
@@ -83,17 +85,21 @@ above:
   → violet → ember) is that session's **token burn relative to the hottest
   session visible**. Ember = the current #1 spender. Cold black = coasting.
 - **`2m · 45k/m`** — quiet-time and burn rate (log-bytes/minute).
-- **`A` / `B` badge** — which account's quota the session is draining.
+- **`A` / `B` / `O` badge** — which account's quota the session is draining
+  (`O` is Codex).
 - **Placement** — urgent first, then the busiest, flowing top-left ↓ then
   next column. Keys are **sticky**: a session keeps its key while visible,
   so nothing moves between your glance and your press.
 
 ### The bottom strip (Neo info bar)
 
-One lane per account: fill = how much of this 5-hour window is spent
-(matches the engraved %), the **amber notch** = your burn target, molten
-past the notch. The countdown at the lane's end is when the window resets —
-cyan + underlined marks the account **burning right now**.
+Two bars: your Claude accounts share the top one (one lane each), Codex
+gets the bottom one. Fill = how much of the window is spent (matches the
+engraved %), the **notch** = your burn target, molten past the notch. The
+countdown at the right is when the window resets — underlined marks the
+account **burning right now**. The Codex bar reads the plan's real window,
+so it says `weekly` under the number and counts down in days; if its
+snapshot stops refreshing it says `stale` instead of a confident figure.
 
 ### The two touch points
 
@@ -218,8 +224,8 @@ reconnects if the hub dies, keeping the last frame on the keys meanwhile.
 
 ## How it works (the short version)
 
-`Signal` (one unit of attention) → **sources** (Claude session scanner,
-watch-directory, token-burn API, Claude Code hooks) → **hub** (merges,
+`Signal` (one unit of attention) → **sources** (Claude and Codex session
+scanners, watch-directory, token-burn API, Claude Code hooks) → **hub** (merges,
 streams NDJSON over stdio — canonically behind `ssh`; runs press actions
 and validates answers) → **view** (rank, sticky slots, pages, the mural)
 → **surfaces** (Stream Deck, terminal, PNG). Presses travel by signal-id

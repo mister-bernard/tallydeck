@@ -48,6 +48,15 @@ roots = [
 ]
 
 [[sources]]
+# The second harness. Codex writes one rollout log per session under
+# ~/.codex/sessions; its keys carry the tally bar down the LEFT edge instead
+# of across the top, so which agent a key belongs to reads from its shape.
+# Disposable `codex exec` one-shots are off by default — nobody answers one,
+# and four of them would push the fleet off an 8-key deck.
+kind = "codex-sessions"
+include_exec = false
+
+[[sources]]
 kind = "watchdir"
 
 [[sources]]

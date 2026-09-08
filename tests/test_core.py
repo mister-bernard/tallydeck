@@ -1,4 +1,5 @@
 import json
+import os
 import time
 
 import pytest
@@ -11,6 +12,7 @@ from tallydeck.hub import Hub
 from tallydeck.sources.demo import DemoSource
 from tallydeck.sources.watchdir import WatchDirSource
 from tallydeck.sources.claude_sessions import ClaudeSessionsSource
+from tallydeck.render import theme
 
 
 # ── signal model ─────────────────────────────────────────────────────────────
@@ -1555,3 +1557,231 @@ def test_png_screen_face_uses_v2_with_two_lanes():
     lay = View(profile=NEO).layout([sig])
     assert lay.meter is sig
     assert _screen_face(NEO, lay, 0.0).size == (248, 58)
+
+
+# ── Codex on the deck: left-edge tally bar, Account O on the info bar ────────
+
+def test_codex_key_wears_its_tally_bar_on_the_left_edge():
+    """The harness has to read from the SHAPE of the key — G glances at the
+    deck, he does not read labels. Codex: bar down the left. Claude: bar
+    across the top. Same state colour in both, because colour means state."""
+    from tallydeck.render.keycard import draw_key
+    px = 96
+    cc = draw_key(Signal(id="cc/x", label="pv", state=WORKING), px)
+    cx = draw_key(Signal(id="cx/x", label="pv", state=WORKING,
+                         meta={"harness": "codex"}), px)
+    blue = theme.hex_rgb(theme.STATE_COLOR[WORKING])
+
+    def near(px_rgb, ref, tol=26):
+        return all(abs(a - b) <= tol for a, b in zip(px_rgb[:3], ref))
+
+    # Claude: top-right is bar, mid-left is not.
+    assert near(cc.getpixel((px - 3, 2)), blue)
+    assert not near(cc.getpixel((1, px // 2)), blue)
+    # Codex: mid-left and bottom-left are bar, top-right is not.
+    assert near(cx.getpixel((1, px // 2)), blue)
+    assert near(cx.getpixel((1, px - 3)), blue)
+    assert not near(cx.getpixel((px - 3, 2)), blue)
+    # The flash frame keeps the tell: a flooded Codex key still has its edge.
+    lit = draw_key(Signal(id="cx/x", label="pv", state=ATTENTION,
+                          meta={"harness": "codex"}), px, lit=True)
+    assert lit.getpixel((1, px // 2)) != lit.getpixel((px // 2, px // 2))
+
+
+def test_codex_key_text_clears_the_left_bar():
+    """Shifting the bar without shifting the text would print the label over
+    it. The left margin moves with the bar; the badge (right) does not."""
+    from tallydeck.render.keycard import draw_key
+    px = 96
+    sig = Signal(id="cx/x", label="session-codex", state=WORKING,
+                 sublabel="astra · gpt-6", meta={"harness": "codex"})
+    face = draw_key(sig, px)
+    blue = theme.hex_rgb(theme.STATE_COLOR[WORKING])
+    col = [face.getpixel((3, y)) for y in range(12, px - 12)]
+    assert all(all(abs(a - b) <= 26 for a, b in zip(p[:3], blue)) for p in col)
+
+
+def test_term_surface_marks_codex_keys_too():
+    from tallydeck.render.term import render_term
+    sigs = [Signal(id="cx/x", label="codex", state=WORKING,
+                   meta={"harness": "codex"})]
+    assert "▏" in render_term(NEO, View(profile=NEO).layout(sigs))
+    plain = [Signal(id="cc/x", label="claude", state=WORKING)]
+    assert "▏" not in render_term(NEO, View(profile=NEO).layout(plain))
+
+
+def test_raise_from_a_codex_session_stamps_the_harness(tmp_path, monkeypatch):
+    """A Codex agent has no CLAUDE_SESSION_ID to give it away, so the raise
+    reads the environment Codex actually sets. Explicit --harness wins."""
+    from tallydeck import cli
+    from tallydeck.signal import is_codex
+    monkeypatch.setenv("TALLYDECK_STATE", str(tmp_path))
+    monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.delenv("TALLY_HARNESS", raising=False)
+    monkeypatch.setenv("CODEX_HOME", "/home/x/.codex")
+    monkeypatch.chdir(tmp_path)
+    cli.main(["raise", "cx", "--state", "attention", "--sublabel", "ship it?"])
+    sig = WatchDirSource(path=str(tmp_path / "signals")).poll()[0]
+    assert sig.meta["harness"] == "codex" and is_codex(sig)
+    # A Claude session in the same shell (CODEX_HOME exported by a wrapper it
+    # once ran) must NOT be mislabelled: a session id means Claude Code.
+    monkeypatch.setenv("CLAUDE_SESSION_ID", "dead-0000-4000-8000-000000000000")
+    cli.main(["raise", "cc2", "--state", "attention", "--sublabel", "?"])
+    d = json.loads((tmp_path / "signals" / "cc2.json").read_text())
+    assert "harness" not in d.get("meta", {})
+    cli.main(["raise", "cc2", "--harness", "codex"])
+    d = json.loads((tmp_path / "signals" / "cc2.json").read_text())
+    assert d["meta"]["harness"] == "codex"
+
+
+def test_codex_lane_uses_account_o_weekly_window_and_flags_a_stale_snapshot():
+    """Account O (ChatGPT Pro) reports a WEEKLY quota and session_pct=0 with
+    no 5h reset. Painting the session number would show a permanent 0% next
+    to A/B's real 5h figures; and a snapshot whose cron died must say so."""
+    from tallydeck.sources.burn import TokenBurnSource
+    payload, targets = _burn_fixture()
+    o = {"id": "O", "provider": "codex", "enabled": True,
+         "session_pct": 0, "session_reset_mins": None,
+         "weekly_pct": 12.0, "weekly_reset_mins": 9993.4,
+         "codex": {"target_pct": 70, "age_mins": 1.8, "stale": False}}
+    payload["accounts"].append(o)
+    src = TokenBurnSource()
+    cx = src.signals_from(payload, targets, now=0)[0].meta["codex"]
+    assert cx["pct"] == 12.0 and cx["window"] == "weekly"
+    assert cx["target"] == 0.7 and cx["stale"] is False
+    assert cx["clock"] == "6d22h"           # days, not a 166-hour clock
+    assert [l["id"] for l in src.signals_from(payload, targets, now=0)[0].meta["lanes"]] \
+        == ["A", "B"]                       # codex is its own bar, never a lane
+    o["codex"]["age_mins"] = 140            # cron stopped ~2h ago
+    assert src.signals_from(payload, targets, now=0)[0].meta["codex"]["stale"] is True
+    o["codex"]["age_mins"] = 1.8
+    o["codex"]["stale"] = True              # tokenburn's own verdict is honoured
+    assert src.signals_from(payload, targets, now=0)[0].meta["codex"]["stale"] is True
+
+
+def test_meter2_whispers_the_codex_window_and_staleness():
+    from tallydeck.render.meter import draw_meter2
+    lanes = [{"id": "A", "pct": 26, "frac": 0.26, "target": 0.4, "clock": "1:48"}]
+    live = {"id": "X", "pct": 12, "frac": 0.12, "target": 0.7, "clock": "6d22h",
+            "window": "weekly"}
+    stale = dict(live, stale=True)
+    a = draw_meter2((248, 58), lanes, live, hot="A")
+    b = draw_meter2((248, 58), lanes, stale, hot="A")
+    assert a.size == b.size == (248, 58)
+    assert list(a.getdata()) != list(b.getdata())     # "weekly" vs "stale"
+
+
+# ── Codex sessions as keys ──────────────────────────────────────────────────
+
+def _rollout(day_dir, uuid, cwd, originator="codex-tui", events=(), ts=None):
+    day_dir.mkdir(parents=True, exist_ok=True)
+    fp = day_dir / f"rollout-2026-09-08T08-00-00-{uuid}.jsonl"
+    recs = [{"type": "session_meta", "payload": {
+        "session_id": uuid, "cwd": cwd, "originator": originator,
+        "source": "exec" if originator.endswith("exec") else "cli",
+        "timestamp": ts or "2026-09-08T08:00:00.000Z"}}]
+    recs += list(events)
+    fp.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+    return fp
+
+
+def _complete(msg):
+    return {"type": "event_msg", "payload": {"type": "task_complete",
+                                             "last_agent_message": msg}}
+
+
+def test_codex_classify_reads_the_rollout_grammar():
+    from tallydeck.sources.codex_sessions import classify
+    started = json.dumps({"type": "event_msg", "payload": {"type": "task_started"}})
+    mid = json.dumps({"type": "response_item", "payload": {"type": "reasoning"}})
+    noise = json.dumps({"type": "token_usage_record", "payload": {"x": 1}})
+    count = json.dumps({"type": "event_msg", "payload": {"type": "token_count"}})
+    assert classify([started])[0] == WORKING
+    assert classify([started, mid, noise, count])[0] == WORKING
+    assert classify([started, json.dumps(_complete("Done — pushed a3f1."))])[0] == SUCCESS
+    ask = json.dumps(_complete("Two options here. Which do you want?"))
+    assert classify([started, ask])[0] == ATTENTION
+    assert classify([started, json.dumps(
+        {"type": "event_msg", "payload": {"type": "turn_aborted"}})])[0] == IDLE
+    assert classify([noise])[0] == IDLE
+
+
+def test_codex_source_emits_keys_marked_as_codex(tmp_path):
+    """Every Codex key must carry meta.harness — that marker is the ONLY
+    thing the left-edge bar keys off, on every surface."""
+    from tallydeck.sources.codex_sessions import CodexSessionsSource
+    from tallydeck.signal import is_codex
+    day = tmp_path / "2026" / "09" / "08"
+    _rollout(day, "aaaaaaaa-1111-4000-8000-000000000000", "/home/x/projects/wires",
+             events=[_complete("Shipped. Anything else you want in the v2?")])
+    src = CodexSessionsSource(root=str(tmp_path), dwell=0, socket="/nonexistent")
+    sigs = src.poll()
+    assert len(sigs) == 1
+    s = sigs[0]
+    assert is_codex(s) and s.meta["harness"] == "codex"
+    assert s.state == ATTENTION and s.label == "wires"
+    assert s.meta["account"] == "O" and s.meta["project"].endswith("/wires")
+    assert "v2" in s.sublabel                      # the ask, not an age
+    assert s.action is None                        # no live pane → nowhere to go
+
+
+def test_codex_exec_oneshots_stay_off_the_deck_unless_asked(tmp_path):
+    """codex-oneshot runs are disposable: nobody answers one, and four of them
+    would push the real fleet off an 8-key deck."""
+    from tallydeck.sources.codex_sessions import CodexSessionsSource
+    day = tmp_path / "2026" / "09" / "08"
+    _rollout(day, "bbbbbbbb-2222-4000-8000-000000000000", "/tmp/job",
+             originator="codex_exec",
+             events=[_complete("Which model should I use?")])
+    assert CodexSessionsSource(root=str(tmp_path), dwell=0,
+                               socket="/nonexistent").poll() == []
+    on = CodexSessionsSource(root=str(tmp_path), dwell=0, include_exec=True,
+                             socket="/nonexistent").poll()
+    assert len(on) == 1 and on[0].meta["oneshot"] is True
+    assert on[0].state == WORKING and on[0].priority == -10   # never ATTENTION
+
+
+def test_codex_stale_rollouts_and_stalled_turns_drop_out(tmp_path):
+    from tallydeck.sources.codex_sessions import CodexSessionsSource
+    day = tmp_path / "2026" / "09" / "08"
+    fp = _rollout(day, "cccccccc-3333-4000-8000-000000000000", "/home/x/a",
+                  events=[{"type": "event_msg",
+                           "payload": {"type": "task_started"}}])
+    old = time.time() - 4000
+    os.utime(fp, (old, old))
+    src = CodexSessionsSource(root=str(tmp_path), dwell=0, socket="/nonexistent")
+    assert src.poll() == []                        # older than `stale`
+    mid = time.time() - 1200                       # inside stale, past stall
+    os.utime(fp, (mid, mid))
+    assert src.poll()[0].state == IDLE             # "working" with no output
+
+
+def test_codex_pane_match_requires_the_rollout_to_postdate_the_process(tmp_path,
+                                                                      monkeypatch):
+    """The rollout is written on the session's first turn, which can be hours
+    after launch — so ordering is the evidence, not proximity. A rollout from a
+    PREVIOUS session in the same directory must not capture the live pane."""
+    from tallydeck.sources import codex_sessions as cx
+    day = tmp_path / "2026" / "09" / "08"
+    start = time.time()
+    _rollout(day, "dddddddd-4444-4000-8000-000000000000", "/home/x/p",
+             ts=_iso(start - 3600))                # last session: before launch
+    _rollout(day, "eeeeeeee-5555-4000-8000-000000000000", "/home/x/p",
+             ts=_iso(start + 30))                  # this one: after launch
+    src = cx.CodexSessionsSource(root=str(tmp_path), dwell=0)
+    monkeypatch.setattr(src, "_live_codex_procs",
+                        lambda: [("cx:1.1", "/home/x/p", start)])
+    assert src._codex_panes() == {"eeeeeeee-5555-4000-8000-000000000000": "cx:1.1"}
+    # Two live processes in one directory are ambiguous: a guess must not route.
+    src._cp_ts = 0
+    monkeypatch.setattr(src, "_live_codex_procs",
+                        lambda: [("cx:1.1", "/home/x/p", start),
+                                 ("cx:1.2", "/home/x/p", start)])
+    assert src._codex_panes() == {}
+
+
+def _iso(epoch):
+    import datetime
+    return datetime.datetime.fromtimestamp(
+        epoch, datetime.timezone.utc).isoformat().replace("+00:00", "Z")
