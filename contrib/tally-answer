@@ -224,8 +224,12 @@ def _load_raised(sd: Path) -> dict[str, dict]:
         opts = (d.get("meta") or {}).get("options") or []
         if not opts:
             continue                        # words-only questions stay with the pane
+        try:
+            upd = float(d.get("updated") or 0)
+        except (TypeError, ValueError):
+            upd = 0.0
         out[sid] = {"id": sid, "label": d.get("label") or sid, "options": opts,
-                    "sent_at": float(d.get("updated") or 0)}
+                    "sent_at": upd}
     return out
 
 
@@ -234,6 +238,7 @@ def resolve(msg: dict) -> dict:
     channel = str(msg.get("channel") or "signal")
     hw = _hush_words(sd, str(msg.get("text") or ""))
     if hw:
+        hw["swallow"] = channel == "signal"     # on Telegram the session sees it too
         return hw
     if (sd / "answer-quiet").exists():
         return {"handled": False, "reason": "quiet"}
@@ -253,8 +258,14 @@ def resolve(msg: dict) -> dict:
             sid, body, free_ok = hit
             ans = _option(body, raised[sid]["options"]) or (_free(body) if free_ok else None)
         elif len(raised) == 1:
+            # Implicit on Telegram: a bare DIGIT only (a lone letter is a
+            # casual ack to whoever he is talking to), and only while the
+            # raise is fresh — an hours-old flag must not claim a "1" meant
+            # for some pane's y/n.
             sid = next(iter(raised))
-            ans = _option(text, raised[sid]["options"])
+            if now - raised[sid]["sent_at"] > IMPLICIT_WINDOW:
+                return {"handled": False, "reason": "stale"}
+            ans = _option(text, raised[sid]["options"]) if re.fullmatch(r"\s*\d{1,2}[.)]?\s*", text) else None
         else:
             return {"handled": False, "reason": "ambiguous-quiet"}
         if not ans:
@@ -295,7 +306,7 @@ def _record(sd: Path, sid: str, q: dict, answer: str, via: str, swallow: bool) -
     try:
         log.parent.mkdir(parents=True, exist_ok=True)
         with open(log, "a") as fh:
-            fh.write(f"[{ts}] {sid} :: {answer}  (signal)\n")
+            fh.write(f"[{ts}] {sid} :: {answer}  ({via})\n")
     except OSError:
         pass
     decide = _decide_bin()

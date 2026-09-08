@@ -1252,3 +1252,31 @@ def test_notifier_treats_a_running_hub_process_as_deck_connected(tmp_path):
     out = subprocess.run([sys.executable, str(script), "--once", "--dry-run"],
                          capture_output=True, text=True, env=env, timeout=15, check=True).stdout
     assert "DRY-RUN" in out
+
+
+def test_telegram_path_is_digits_only_fresh_only_and_never_swallows(tmp_path):
+    import subprocess, sys, os, time as _t
+    from pathlib import Path
+    script = Path(__file__).resolve().parent.parent / "contrib" / "tally-answer"
+    env = dict(os.environ, TALLYDECK_STATE=str(tmp_path), TALLY_DECIDE_BIN="/bin/true",
+               TALLY_DECISION_LOG=str(tmp_path / "log"))
+    (tmp_path / "signals").mkdir()
+    def raise_(sid, opts, age=0):
+        (tmp_path / "signals" / f"{sid}.json").write_text(json.dumps(
+            {"label": sid, "state": "attention", "detail": "?", "updated": _t.time() - age,
+             "meta": {"options": opts}}))
+    def run(text, **kw):
+        r = subprocess.run([sys.executable, str(script)], input=json.dumps({"text": text, "channel": "telegram", **kw}),
+                           text=True, capture_output=True, env=env, timeout=10, check=True)
+        return json.loads(r.stdout)
+    raise_("ram", ["Yes stop it", "Keep"])
+    assert run("y")["handled"] is False                     # a casual ack, not option Y
+    assert run("ok do it")["handled"] is False
+    r = run("1")
+    assert r["handled"] is True and r["swallow"] is False   # recorded, still routed
+    (tmp_path / "answers" / "ram.json").unlink()
+    raise_("ram", ["Yes stop it", "Keep"], age=7200)
+    assert run("1")["reason"] == "stale"                    # hours-old flag claims nothing
+    r = run("hush 1h")
+    assert r["handled"] is True and r["swallow"] is False   # set, but the session sees it
+    assert (tmp_path / "hush").exists()
