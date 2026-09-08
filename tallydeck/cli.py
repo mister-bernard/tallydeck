@@ -440,6 +440,15 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # spawn/offer are thin passthroughs: hand EVERYTHING (including --help)
+    # to the helper before argparse can claim the flags for itself.
+    if argv and argv[0] in ("spawn", "offer"):
+        from .paths import contrib_bin
+        bin_ = contrib_bin(f"tally-{argv[0]}")
+        if not bin_:
+            sys.exit(f"{argv[0]} helper not installed (contrib/tally-{argv[0]})")
+        os.execv(bin_, [bin_] + argv[1:])
     args = _parser().parse_args(argv)
     cfg = cfgmod.load(args.config)
     {
