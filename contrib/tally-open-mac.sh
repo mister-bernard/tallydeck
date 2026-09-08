@@ -54,6 +54,24 @@ TRACE="${TALLY_TRACE:-$HOME/.tally-press.log}"
 trace() { printf '%s %s\n' "$(date '+%H:%M:%S')" "$*" >> "$TRACE" 2>/dev/null || true; }
 trace "PRESS id=${TALLY_ID:-} group=${TALLY_GROUP:-} state=${TALLY_STATE:-} tmux=${TALLY_TMUX:-} detail=${#TALLY_DETAIL} long=${TALLY_LONG:-0}"
 
+# ── the hub owns every popup ─────────────────────────────────────────────────
+# Session keys and raised questions alike are handled HUB-SIDE on press: the
+# hub runs tmux and puts the router / decide popup up on your attached
+# terminal(s) itself. This script's only job left is to bring the terminal
+# app forward so the popup is not born behind something. The old client-side
+# routing below stays reachable with TALLY_LEGACY_ROUTING=1 (no attached tmux
+# client anywhere is the one case it still covers).
+if [ "${TALLY_LEGACY_ROUTING:-0}" != "1" ]; then
+  trace "  -> hub owns the popup; bringing the terminal forward"
+  for app in Ghostty iTerm2 iTerm WezTerm kitty Alacritty Terminal; do
+    if [ "$(/usr/bin/osascript -e "application \"$app\" is running" 2>/dev/null)" = "true" ]; then
+      /usr/bin/osascript -e "tell application \"$app\" to activate" 2>/dev/null
+      break
+    fi
+  done
+  exit 0
+fi
+
 # Route session keys, and every raised/hook signal — with a session behind
 # it or not (the popup then shows the ask and offers "done"). Anything else
 # (demo keys, the burn meter) has nothing to open.

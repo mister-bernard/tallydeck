@@ -35,7 +35,7 @@ import time
 from pathlib import Path
 
 from ..signal import Signal, WORKING, ATTENTION, SUCCESS, IDLE
-from ..paths import signals_dir, acked_dir
+from ..paths import signals_dir, acked_dir, contrib_bin
 from .base import Source
 
 TAIL_BYTES = 65536
@@ -380,8 +380,21 @@ class ClaudeSessionsSource(Source):
                         win_label = wn
                 label = win_label or (exact.split(":", 1)[0] if exact
                                       else (os.path.basename(full) or full))
+                # The press is HUB-OWNED, like a raised question: the hub
+                # runs tmux, so it puts the router popup up on the operator's
+                # attached terminal(s) itself. Nothing on the deck machine has
+                # to be configured or in sync for a press to land (G,
+                # 2026-09-08: "standardize that across everything").
+                action = None
+                if not oneshot:
+                    route = contrib_bin("tally-popup-route")
+                    if route:
+                        action = {"type": "cmd", "argv": [
+                            route, pane, fp.stem, full, label[:24], state,
+                            acct, f"{self.group}/{acct or 'x'}-{fp.stem[:8]}"]}
                 signals.append(Signal(
                     id=f"{self.group}/{acct or 'x'}-{fp.stem[:8]}",
+                    action=action,
                     label=label[:24],
                     sublabel=sub,
                     flash=flash,

@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# tally-popup-route <target> <uuid> <project> <label> <state> <account> <signal-id>
+#
+# The hub's default press action for a SESSION key: put the attention router
+# (tally-route) up on every attached terminal that is plausibly real (active in
+# the last 12 h, never a _fl-* floating session), so the operator gets the same
+# popup wherever he is looking — the exact model raised questions already use
+# (tally-popup-decide). The first popup he acts in marks the press taken; the
+# others fold. Stays alive while any popup is up, which the hub reads as "the
+# popup is open" and stops the key flashing.
+set -uo pipefail
+SOCKET="${TALLY_TMUX_SOCKET:-/tmp/tmux-1000/cc}"
+HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+ROUTE="${TALLY_ROUTE:-}"
+if [ -z "$ROUTE" ]; then
+  for cand in "$HERE/tally-route" "$HOME/.local/bin/tally-route"; do
+    [ -x "$cand" ] && { ROUTE="$cand"; break; }
+  done
+fi
+[ -n "$ROUTE" ] || { echo "tally-popup-route: cannot find tally-route" >&2; exit 2; }
+LOG="${TALLY_POPUP_LOG:-$HOME/.openclaw/state/tally-popup.log}"
+TARGET="${1:-}"; UUID="${2:-}"; PROJ="${3:-}"; LABEL="${4:-}"; STATE="${5:-}"; ACCT="${6:-}"; SIGID="${7:-}"
+log() { printf '[%s] %s\n' "$(date -u +%H:%M:%SZ)" "$*" >> "$LOG" 2>/dev/null || true; }
+T() { tmux -S "$SOCKET" "$@"; }
+q() { printf '%q' "$1"; }
+
+# a fresh press: no popup from a previous press may fold this one early
+TAKEN="${TALLYDECK_STATE:-$HOME/.tallydeck}/route-taken"
+mkdir -p "$TAKEN"; rm -f "$TAKEN/$(printf '%s' "$SIGID" | tr '/' '_')"
+
+NOW=$(date +%s)
+PIDS=()
+while IFS='|' read -r tty sess act; do
+  [ -n "$tty" ] || continue
+  case "$sess" in _fl-*) continue ;; esac
+  [ $((NOW - ${act:-0})) -lt 43200 ] || continue
+  log "route popup for $SIGID on $tty ($sess)"
+  T display-popup -c "$tty" -w 95% -h 90% -E \
+    "$(q "$ROUTE") $(q "$tty") $(q "$sess") $(q "$TARGET") $(q "$UUID") $(q "$PROJ") $(q "$LABEL") $(q "$STATE") $(q "$ACCT") $(q "$SIGID") ''" \
+    2>>"$LOG" &
+  PIDS+=($!)
+done < <(T list-clients -F '#{client_tty}|#{client_session}|#{client_activity}' 2>/dev/null)
+
+if [ "${#PIDS[@]}" -eq 0 ]; then
+  log "no attached client — cannot route $SIGID"
+  exit 1
+fi
+wait "${PIDS[@]}"
+exit 0

@@ -1290,3 +1290,23 @@ def test_lone_letter_only_answers_a_lettered_label(tmp_path):
     (tmp_path / "signals" / "q.json").unlink(); (tmp_path / "pending" / "q.json").unlink()
     r = run({"text": "b"})
     assert r["handled"] and r["answer"].startswith("2 — B")
+
+
+def test_session_keys_carry_a_hub_side_route_action(tmp_path, monkeypatch):
+    """Standardized presses: a session key, like a raised question, is
+    answered by the hub putting the router popup up — not by anything on
+    the deck machine. One-shots get no action."""
+    proj = tmp_path / "-home-me-projects-w"
+    proj.mkdir()
+    _write_jsonl(proj, "abcd1234", [{"type": "user", "message": {"content": [{"type": "text", "text": "go"}]}}])
+    src = ClaudeSessionsSource(root=str(tmp_path))
+    monkeypatch.setattr(src, "_session_panes", lambda: {"abcd1234": "work:1.1"})
+    monkeypatch.setattr(src, "_all_pane_targets", lambda: {"work:1.1"})
+    s = src.poll()[0]
+    assert s.action and s.action["argv"][0].endswith("tally-popup-route")
+    assert s.action["argv"][1] == "work:1.1" and s.action["argv"][2] == "abcd1234"
+    assert s.action["argv"][-1] == s.id
+    monkeypatch.setattr(src, "_session_panes", lambda: {"abcd1234": "oneshot:1.1"})
+    monkeypatch.setattr(src, "_all_pane_targets", lambda: {"oneshot:1.1"})
+    src._exact_memo = {}
+    assert src.poll()[0].action is None

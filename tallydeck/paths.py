@@ -167,6 +167,15 @@ def parse_duration(s: str) -> float | None:
     return n * {"h": 3600, "m": 60, "d": 86400}[u]
 
 
+def contrib_bin(name: str) -> str:
+    """A helper that travels with the checkout, else one on PATH, else ''."""
+    import shutil
+    here = Path(__file__).resolve().parent.parent / "contrib" / name
+    if here.is_file():
+        return str(here)
+    return shutil.which(name) or ""
+
+
 def hub_alive() -> Path:
     """Heartbeat the hub touches while a deck client is connected. Other
     surfaces (the Signal notifier) read its mtime to know whether the
