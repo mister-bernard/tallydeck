@@ -1,0 +1,91 @@
+#!/usr/bin/python3
+"""Claude Code SessionStart hook → record which tmux pane this session lives in.
+
+Why this exists: the deck identifies a session's pane by scanning each pane's
+process tree for CLAUDE_SESSION_ID. Nothing on this box exports that variable —
+verified 2026-09-08 across every live claude process, and neither the pane launcher
+nor the one-shot runner sets it — so `exact_pane` was False for every session. The
+consequences were all downstream of that: sessions fell back to being named by their
+working directory (so a dozen home-cwd sessions collapse into one "openclaw" key),
+the rule that pushes disposable one-shot workers to the bottom of the deck never
+fired because it needs to know a pane is in the `oneshot` session, and a key press
+could not resolve which pane to open.
+
+The launcher cannot export the variable, because Claude generates the session id at
+startup — the launcher does not know it yet. But a hook does: Claude hands it the
+session_id on stdin, and the hook runs inside the pane, so $TMUX_PANE is right there.
+That is the missing link, and it costs one small file per session start.
+
+Writes: ~/.tallydeck/panes/<session_id>  containing  session:window.pane
+Reads:  {"session_id": "..."} on stdin (Claude Code hook payload)
+
+Never fails, never blocks: a hook that can error is a hook that can wedge every
+session on this machine, and the deck degrades to cwd-naming if the file is absent —
+which is exactly where it is today.
+"""
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+def state_dir() -> Path:
+    # Match the other tally hooks: the PER-USER dir, not $HOME. A second Claude
+    # account runs under its own HOME and its panes must still reach the same hub.
+    override = os.environ.get("TALLYDECK_STATE")
+    if override:
+        return Path(override)
+    try:
+        import pwd
+        return Path(pwd.getpwuid(os.getuid()).pw_dir) / ".tallydeck"
+    except Exception:
+        return Path.home() / ".tallydeck"
+
+
+def main() -> int:
+    try:
+        sid = (json.load(sys.stdin) or {}).get("session_id") or ""
+    except Exception:
+        return 0
+    if not sid:
+        return 0
+
+    pane = os.environ.get("TMUX_PANE")
+    tmux = os.environ.get("TMUX")
+    if not pane or not tmux:
+        return 0                      # not in tmux: nothing to record, not an error
+
+    # $TMUX is "<socket>,<pid>,<session>" — the socket matters, because these panes
+    # live on /tmp/tmux-1000/cc and a bare `tmux` command queries the default socket
+    # and finds nothing.
+    socket = tmux.split(",", 1)[0]
+    try:
+        out = subprocess.run(
+            ["tmux", "-S", socket, "display-message", "-p", "-t", pane,
+             "#{session_name}:#{window_index}.#{pane_index}"],
+            capture_output=True, text=True, timeout=5)
+        target = out.stdout.strip()
+    except Exception:
+        return 0
+    if not target or ":" not in target:
+        return 0
+
+    try:
+        d = state_dir() / "panes"
+        d.mkdir(parents=True, exist_ok=True)
+        # Written whole then renamed: a half-written mapping would point the deck at
+        # a pane that does not exist.
+        tmp = d / f".{sid}.tmp"
+        tmp.write_text(target)
+        tmp.replace(d / sid)
+    except Exception:
+        return 0
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception:
+        sys.exit(0)          # belt and braces: this hook must never fail a session

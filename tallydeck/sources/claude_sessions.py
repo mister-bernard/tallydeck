@@ -76,6 +76,19 @@ ASK_TOOLS = ("AskUserQuestion", "ExitPlanMode")
 # question mark. Deliberately narrow: a closing "let me know if…" is a
 # courtesy, not an ask, and every false positive here is a key flashing at
 # someone for nothing.
+# Narration about the operator, as opposed to a request to him. Third-person
+# references ("G's sign-off", "his approval", "for G to decide") mean the sentence
+# is describing a process, not asking for one.
+_THIRD_PERSON_RE = re.compile(
+    r"\b(G'?s|he|him|his|she|her|they|them|their|the operator'?s?)\b"
+    r"|\bfor G\b|\bG (will|would|has|needs? to|is)\b", re.I)
+
+# "nothing needs a decision" is a report, not a request. Without this the ask
+# phrases match their own negation and a clean summary paints amber.
+_NEGATED_RE = re.compile(
+    r"\b(no|not|nothing|none|never|n't|without)\b[^.!?]{0,60}?"
+    r"\b(sign[- ]?off|approval|decision|input|answer|confirm|blocked)\b", re.I)
+
 _ASK_RE = re.compile(
     r"\b(should i|shall i|your call|please (confirm|approve|advise|choose|pick)"
     r"|sign[- ]?off|awaiting your|waiting (on|for) your?\b"
@@ -102,7 +115,16 @@ def asks_question(text: str) -> bool:
     tail = paras[-1] if paras else text
     if "?" in tail:
         return True
-    return bool(_ASK_RE.search(text[-600:]))
+    # Drop sentences that talk ABOUT G rather than TO him before looking for ask
+    # phrases. A turn that ends "stage the TWAP config for G's sign-off" is a
+    # handoff note to itself, not a request — but "sign-off" matched and painted a
+    # finished turn amber, which is what G reported on 2026-09-08 ("it's putting
+    # that in orange when it says 'done for this turn'"). A real ask is addressed to
+    # the reader: "I need your sign-off", not "G's sign-off".
+    window = text[-600:]
+    kept = [snt for snt in re.split(r"(?<=[.!?])\s+", window)
+            if not _THIRD_PERSON_RE.search(snt) and not _NEGATED_RE.search(snt)]
+    return bool(_ASK_RE.search(" ".join(kept)))
 
 
 def classify(lines: list[str]) -> tuple[str, bool]:
