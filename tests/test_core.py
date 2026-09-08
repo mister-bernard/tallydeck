@@ -1054,7 +1054,7 @@ def test_notifier_holds_fire_while_a_deck_is_connected(tmp_path):
     (tmp_path / "signals").mkdir()
     (tmp_path / "signals" / "q.json").write_text(json.dumps(
         {"label": "Q", "state": "attention", "detail": "?", "updated": _t.time(), "ttl": 3600}))
-    env = dict(os.environ, TALLYDECK_STATE=str(tmp_path))
+    env = dict(os.environ, TALLYDECK_STATE=str(tmp_path), TALLY_DECK_PROC="0")
     def once():
         r = subprocess.run([sys.executable, str(script), "--once", "--dry-run"],
                            capture_output=True, text=True, env=env, timeout=15, check=True)
@@ -1088,7 +1088,7 @@ def test_hush_pauses_phone_notifications_and_unhush_resumes(tmp_path, capsys):
         (tmp_path / "signals" / "q.json").write_text(json.dumps(
             {"label": "Q", "state": "attention", "detail": "?", "updated": _t.time(), "ttl": 3600}))
         script = Path(__file__).resolve().parent.parent / "contrib" / "tally-notify"
-        env = dict(os.environ, TALLYDECK_STATE=str(tmp_path))
+        env = dict(os.environ, TALLYDECK_STATE=str(tmp_path), TALLY_DECK_PROC="0")
         once = lambda: subprocess.run([sys.executable, str(script), "--once", "--dry-run"],
                                       capture_output=True, text=True, env=env, timeout=15, check=True).stdout
         cli.main(["hush", "2h"])
@@ -1217,7 +1217,7 @@ def test_notifier_survives_a_bad_drop_and_backs_off(tmp_path):
     (tmp_path / "signals").mkdir()
     (tmp_path / "signals" / "bad.json").write_text(json.dumps({"label": "b", "state": "attention", "detail": "?", "updated": None}))
     (tmp_path / "signals" / "good.json").write_text(json.dumps({"label": "g", "state": "attention", "detail": "?", "updated": _t.time()}))
-    env = dict(os.environ, TALLYDECK_STATE=str(tmp_path))
+    env = dict(os.environ, TALLYDECK_STATE=str(tmp_path), TALLY_DECK_PROC="0")
     out = subprocess.run([sys.executable, str(script), "--once", "--dry-run"], capture_output=True, text=True, env=env, timeout=15, check=True).stdout
     assert "notified good" in out and "notified bad" in out      # None updated → now; both fine
     # kill switch silences it without a restart
@@ -1225,3 +1225,30 @@ def test_notifier_survives_a_bad_drop_and_backs_off(tmp_path):
     (tmp_path / "signals" / "late.json").write_text(json.dumps({"label": "l", "state": "attention", "detail": "?", "updated": _t.time()}))
     out = subprocess.run([sys.executable, str(script), "--once", "--dry-run"], capture_output=True, text=True, env=env, timeout=15, check=True).stdout
     assert "notified late" not in out and "phone path OFF" in out
+
+
+def test_notifier_treats_a_running_hub_process_as_deck_connected(tmp_path):
+    """G got a Signal message with the deck plugged in: his hub predated the
+    heartbeat. A live `tallydeck.cli serve` process must count too."""
+    import subprocess, sys, os, time as _t
+    from pathlib import Path
+    script = Path(__file__).resolve().parent.parent / "contrib" / "tally-notify"
+    (tmp_path / "signals").mkdir()
+    (tmp_path / "signals" / "q.json").write_text(json.dumps(
+        {"label": "Q", "state": "attention", "detail": "?", "updated": _t.time(), "ttl": 3600}))
+    env = dict(os.environ, TALLYDECK_STATE=str(tmp_path), TALLY_DECK_PROC="1")
+    fake = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)",
+                             "tallydeck.cli", "serve"])          # looks like a hub
+    try:
+        _t.sleep(0.3)
+        out = subprocess.run([sys.executable, str(script), "--once", "--dry-run"],
+                             capture_output=True, text=True, env=env, timeout=15, check=True).stdout
+        assert "DRY-RUN" not in out and "deck connected" in out
+    finally:
+        fake.kill(); fake.wait()
+    # (a real hub may be running on this box; disable the process check
+    # to assert the send path itself still works)
+    env["TALLY_DECK_PROC"] = "0"
+    out = subprocess.run([sys.executable, str(script), "--once", "--dry-run"],
+                         capture_output=True, text=True, env=env, timeout=15, check=True).stdout
+    assert "DRY-RUN" in out

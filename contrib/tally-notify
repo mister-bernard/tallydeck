@@ -119,11 +119,37 @@ def hushed(sd: Path, now: float):
     return float(until)
 
 
+def _hub_process_alive() -> bool:
+    """A `tallydeck.cli serve` process exists only while a deck client holds
+    the ssh pipe. Belt to the heartbeat's braces: a hub too old to write
+    hub.alive (or one that is hung) still means the deck is plugged in —
+    and plugged in means no phone (G, 2026-09-08)."""
+    if os.environ.get("TALLY_DECK_PROC", "1") == "0":
+        return False                      # tests / hosts where the hub is elsewhere
+    me = os.getpid()
+    try:
+        for pid in os.listdir("/proc"):
+            if not pid.isdigit() or int(pid) == me:
+                continue
+            try:
+                with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                    argv = fh.read().split(b"\0")
+            except OSError:
+                continue
+            if b"tallydeck.cli" in argv and b"serve" in argv:
+                return True
+    except OSError:
+        pass
+    return False
+
+
 def deck_connected(sd: Path, now: float) -> bool:
     try:
-        return now - (sd / "hub.alive").stat().st_mtime < DECK_FRESH
+        if now - (sd / "hub.alive").stat().st_mtime < DECK_FRESH:
+            return True
     except OSError:
-        return False
+        pass
+    return _hub_process_alive()
 
 
 _last_presence: dict = {"deck": None}
