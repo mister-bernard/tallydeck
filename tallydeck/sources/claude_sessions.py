@@ -36,6 +36,8 @@ from pathlib import Path
 
 from ..signal import Signal, WORKING, ATTENTION, SUCCESS, IDLE
 from ..paths import signals_dir, acked_dir, contrib_bin
+from ..titles import (TITLE_LIMIT, TitleSync, claude_ai_title, resolve_label,
+                      tmux_for)
 from .base import Source
 
 TAIL_BYTES = 65536
@@ -279,14 +281,23 @@ class ClaudeSessionsSource(Source):
         # One-shots (disposable runner windows) have no human loop: they must
         # never demand attention and always rank below persistent sessions.
         self.oneshot_sessions = set(opts.get("oneshot_sessions", ["oneshot"]))
+        # Titles: the pane table both session sources share, and the writer
+        # that pushes the resolved title back into tmux for the manager.
+        self.tmux = tmux_for(self.socket)
+        self.sync = TitleSync(self.tmux, opts.get("sync_every")) \
+            if opts.get("sync_titles", True) else None
+        self._titled: list[tuple[str, str]] = []
 
     def poll(self) -> list[Signal]:
         signals: list[Signal] = []
         now = time.time()
+        self._titled = []
         for acct, root in self.roots:
             if not root.is_dir():
                 continue
             signals.extend(self._scan(root, acct, now))
+        if self.sync:
+            self.sync.push(self._titled)
         return signals
 
     def _burn_rate(self, session: str, now: float, size: int) -> float:
@@ -381,17 +392,20 @@ class ClaudeSessionsSource(Source):
                 # offers to resume instead of teleporting you somewhere
                 # wrong.
                 pane = exact or ""
-                win_label = ""
-                if exact:
-                    wn, nw = getattr(self, "_sp_names", {}).get(
-                        fp.stem, ("", "1"))
-                    generic = ("bash", "zsh", "sh", "fish", "claude",
-                               "claude-b", "node", "python3", "ssh",
-                               "mosh", "")
-                    if str(nw) not in ("", "1") and wn not in generic:
-                        win_label = wn
-                label = win_label or (exact.split(":", 1)[0] if exact
-                                      else (os.path.basename(full) or full))
+                # One precedence order for both harnesses (titles.py): a name
+                # a human chose, else Claude Code's own ai-title for the
+                # conversation, else the directory. Five panes of `mainA` all
+                # said "mainA" before this.
+                info = self.tmux.info(pane) if pane else None
+                harness_title = "" if oneshot else claude_ai_title(lines)
+                sess = pane.split(":", 1)[0] if pane else ""
+                label = resolve_label(harness_title=harness_title, pane=info,
+                                      session_name=sess, cwd=full)
+                if pane and not oneshot:
+                    # tmux has room for the whole title; a 96px key does not.
+                    self._titled.append((pane, resolve_label(
+                        harness_title=harness_title, pane=info,
+                        session_name=sess, cwd=full, limit=TITLE_LIMIT)))
                 # The press is HUB-OWNED, like a raised question: the hub
                 # runs tmux, so it puts the router popup up on the operator's
                 # attached terminal(s) itself. Nothing on the deck machine has

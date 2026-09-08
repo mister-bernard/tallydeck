@@ -33,6 +33,8 @@ from pathlib import Path
 
 from ..signal import Signal, WORKING, ATTENTION, SUCCESS, IDLE
 from ..paths import contrib_bin
+from ..titles import (TITLE_LIMIT, CodexState, TitleSync, resolve_label,
+                      tmux_for)
 from .base import Source
 from .claude_sessions import _tail_lines, _load, asks_question, _age_str
 
@@ -85,6 +87,21 @@ def _last_agent_text(lines: list[str], limit: int = 300) -> str:
     return ""
 
 
+def signal_id(uuid: str) -> str:
+    """The whole thread id, because this is an identity and not a display.
+
+    Codex thread ids are UUIDv7: the leading half is a millisecond timestamp.
+    `cc codex` opens five panes at once, so all five threads shared their
+    first hex digits — keyed on `uuid[:8]` they all became `cx/01a08020`, the
+    hub's merge kept whichever it saw last, and four live sessions never
+    reached the deck (G, 2026-09-08: "why doesn't the active Codex session
+    show up"). Any truncation reintroduces that; the key's LABEL is what has
+    to be short, not its id.
+    """
+    clean = "".join(c for c in str(uuid) if c.isalnum() or c in "-_.")
+    return clean[:48] or "unknown"
+
+
 def _meta(path: Path) -> dict:
     """The rollout's session_meta payload: uuid, cwd, originator, timestamp."""
     try:
@@ -119,7 +136,7 @@ def _proc_start(pid: int) -> float | None:
 
 class CodexSessionsSource(Source):
     """opts: root, stale, stall, dwell, flash_for, socket, account,
-    include_exec."""
+    include_exec, codex_home, sync_titles, sync_every."""
 
     group = "cx"
 
@@ -138,14 +155,23 @@ class CodexSessionsSource(Source):
         self.include_exec = bool(opts.get("include_exec", False))
         self.burn_window = float(opts.get("burn_window", 600))
         self._samples: dict[str, list[tuple[float, int]]] = {}
+        # Titles: Codex's own thread table, and the pane table both session
+        # sources share. `sync_titles` writes the resolved title back into
+        # tmux so the manager's pane borders say what the deck says.
+        self.state = CodexState(opts.get("codex_home"))
+        self.tmux = tmux_for(self.socket)
+        self.sync = TitleSync(self.tmux, opts.get("sync_every")) \
+            if opts.get("sync_titles", True) else None
 
     # ── polling ──────────────────────────────────────────────────────────────
 
     def poll(self) -> list[Signal]:
         now = time.time()
         signals: list[Signal] = []
-        panes = self._codex_panes()
-        for fp in self._recent_rollouts(now):
+        rollouts = self._recent_rollouts(now)
+        panes = self._codex_panes(rollouts, now)
+        titled: list[tuple[str, str]] = []
+        for fp in rollouts:
             try:
                 st = fp.stat()
             except OSError:
@@ -170,8 +196,19 @@ class CodexSessionsSource(Source):
                 state = WORKING            # nobody answers a one-shot
             cwd = str(meta.get("cwd") or "")
             pane = panes.get(uuid, "")
-            label = (pane.split(":", 1)[0] if pane
-                     else os.path.basename(cwd) or "codex")
+            # The title Codex itself keeps for this thread, ranked against the
+            # names a human chose (see titles.resolve_label). Without it every
+            # key in a five-pane window said "openclaw" — the directory they
+            # all started in (G, 2026-09-08).
+            info = self.tmux.info(pane) if pane else None
+            harness_title = "" if is_exec else self.state.title(uuid)
+            label = resolve_label(harness_title=harness_title, pane=info,
+                                  cwd=cwd) or "codex"
+            if pane and not is_exec:
+                # tmux has room for the whole title; a 96px key does not.
+                titled.append((pane, resolve_label(
+                    harness_title=harness_title, pane=info, cwd=cwd,
+                    limit=TITLE_LIMIT)))
             rate = self._burn_rate(uuid, now, size)
             sub = _age_str(now - mtime)
             if rate >= 20:
@@ -185,7 +222,7 @@ class CodexSessionsSource(Source):
             if state == ATTENTION and (now - mtime) > self.flash_for:
                 flash = False
             signals.append(Signal(
-                id=f"{self.group}/{uuid[:8]}",
+                id=f"{self.group}/{signal_id(uuid)}",
                 action=self._action(pane, cwd, label, state, uuid),
                 label=label[:24],
                 sublabel=sub,
@@ -202,6 +239,8 @@ class CodexSessionsSource(Source):
                       "oneshot": is_exec,
                       "exact_pane": bool(pane), "tmux": pane},
             ))
+        if self.sync:
+            self.sync.push(titled)
         return signals
 
     def _action(self, pane: str, cwd: str, label: str, state: str,
@@ -219,7 +258,7 @@ class CodexSessionsSource(Source):
             return None
         return {"type": "cmd", "argv": [
             route, pane, "", cwd, label[:24], state, self.account,
-            f"{self.group}/{uuid[:8]}"]}
+            f"{self.group}/{signal_id(uuid)}"]}
 
     def _recent_rollouts(self, now: float) -> list[Path]:
         """Rollouts touched inside the stale window. The tree is one directory
@@ -264,29 +303,29 @@ class CodexSessionsSource(Source):
     # hours older and still excluded.
     _LAG_S = 300.0
 
-    def _codex_panes(self) -> dict[str, str]:
+    def _codex_panes(self, files=None, now: float | None = None) -> dict[str, str]:
         """{rollout uuid: pane target}.
 
-        Codex does not hold its rollout open and puts no session id in its
-        environment, so identity comes from the two facts a live process does
-        expose: its cwd and when it started. A rollout belongs to a process
-        when they share a directory and the rollout began AFTER the process
-        did — the log is written on the session's first turn, which can be
-        hours after launch (the Telegraph pane idles until a message arrives),
-        so proximity in time proves nothing and only ordering does. Newest
-        such rollout wins; a `/new` inside the session supersedes the old one.
+        Codex puts no session id in its environment and does not hold its
+        rollout open, but it does say which thread each of its processes is
+        running: every row it writes to ~/.codex/logs_*.sqlite is stamped
+        `pid:<pid>:<uuid>`. A pid we can find under a tmux pane therefore
+        names its thread outright — no inference, and it holds for five
+        sessions started in the same directory at the same second, which is
+        precisely the case that used to collapse (main-O: five Codex panes,
+        all in /home/openclaw, none routable, every key labelled "openclaw").
 
-        Two live Codex processes in one directory are ambiguous and resolve to
-        NOTHING: a guess must never route, or the press lands the operator in
-        the wrong session's pane."""
-        now = time.time()
+        The old cwd+start-order heuristic stays as the fallback for a process
+        that has not logged a thread yet (a pane launched but never prompted):
+        a rollout belongs to a process when they share a directory and the
+        rollout began AFTER the process did. It still refuses to guess between
+        two live processes in one directory — a guess must never route.
+        """
+        now = now or time.time()
         if now - getattr(self, "_cp_ts", 0.0) < self._PANE_TTL:
             return getattr(self, "_cp_cache", {})
-        by_cwd: dict[str, list[tuple[str, str, float]]] = {}
-        for pr in self._live_codex_procs():
-            by_cwd.setdefault(pr[1], []).append(pr)
         rollouts: list[tuple[float, str, str]] = []
-        for fp in self._recent_rollouts(now):
+        for fp in (self._recent_rollouts(now) if files is None else files):
             meta = _meta(fp)
             started = _iso_epoch(meta.get("timestamp"))
             uuid = str(meta.get("session_id") or "")
@@ -295,22 +334,34 @@ class CodexSessionsSource(Source):
                 or meta.get("source") == "exec"
             if uuid and started and cwd and not exec_run:
                 rollouts.append((started, uuid, cwd))
+        allowed = {r[1] for r in rollouts}
         out: dict[str, str] = {}
+        unresolved: list[tuple[str, str, float, int]] = []
+        for pr in self._live_codex_procs():
+            tid = self.state.thread_for_pid(pr[3], allowed)
+            if tid and tid not in out:
+                out[tid] = pr[0]
+            elif not tid:
+                unresolved.append(pr)
+        by_cwd: dict[str, list[tuple[str, str, float, int]]] = {}
+        for pr in unresolved:
+            by_cwd.setdefault(pr[1], []).append(pr)
+        taken = set(out)
         for cwd, procs in by_cwd.items():
             if len(procs) != 1:
                 continue
-            target, _, proc_start = procs[0]
-            mine = [r for r in rollouts
-                    if r[2] == cwd and r[0] >= proc_start - self._LAG_S]
+            target, _, proc_start, _pid = procs[0]
+            mine = [r for r in rollouts if r[2] == cwd and r[1] not in taken
+                    and r[0] >= proc_start - self._LAG_S]
             if mine:
                 out[max(mine)[1]] = target
         self._cp_cache, self._cp_ts = out, now
         return out
 
-    def _live_codex_procs(self) -> list[tuple[str, str, float]]:
-        """[(pane target, cwd, start epoch)] for every interactive `codex`
-        running under a tmux pane on our socket."""
-        out: list[tuple[str, str, float]] = []
+    def _live_codex_procs(self) -> list[tuple[str, str, float, int]]:
+        """[(pane target, cwd, start epoch, pid)] for every interactive
+        `codex` running under a tmux pane on our socket."""
+        out: list[tuple[str, str, float, int]] = []
         try:
             r = subprocess.run(
                 ["tmux", "-S", self.socket, "list-panes", "-a", "-F",
@@ -345,5 +396,5 @@ class CodexSessionsSource(Source):
                     continue
                 start = _proc_start(pid)
                 if start:
-                    out.append((target, cwd, start))
+                    out.append((target, cwd, start, pid))
         return out

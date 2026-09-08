@@ -97,6 +97,43 @@ carries the harness so colour can keep meaning state.
   next column. Keys are **sticky**: a session keeps its key while visible,
   so nothing moves between your glance and your press.
 
+### What a key is called
+
+Every session resolves to **one title**, and the deck key, the tmux pane
+border and the window list all show that same title — you should never have
+to translate between them.
+
+The title comes from the first of these that exists:
+
+1. a title **you** set — `tmux set-option -p @tally_title "pearl payout"` on
+   the pane. Nothing ever overwrites it.
+2. the **window name**, when that window holds exactly one pane (a window
+   with five sessions in it is named after the window, not any one of them).
+3. the **session name**, unless it is an auto one (`main`, `mainA`, `main-O`).
+   A `tally spawn <slug>` session keeps its slug.
+4. the **harness's own title** — Claude Code's generated conversation title,
+   Codex's thread title.
+5. the **directory** it is working in.
+
+The titles flow the other way too: the resolved title is written back to the
+pane as `@tally_title`, which `pane-border-format` reads, so the cc manager
+says what the deck says. This is what keeps five Codex panes in one window
+from all reading "openclaw" — Codex repaints the real pane title with its
+spinner and working directory on every frame, and a tmux user option is the
+one per-pane string a program cannot overwrite.
+
+The hub syncs titles on every poll, which covers you while the deck is
+connected. For the rest of the day, run the same pass from cron:
+
+```cron
+* * * * * flock -n /tmp/tally-titles.lock env PYTHONPATH=/path/to/tallydeck \
+    python3 -m tallydeck.titles >/dev/null 2>&1
+```
+
+Writes are change-only — a minute in which no session changed subject costs
+a couple of `tmux list-panes` calls and no redraw. Set `sync_titles = false`
+on a session source to turn the writing off and keep the labels.
+
 ### The bottom strip (Neo info bar)
 
 Two bars: your Claude accounts share the top one (one lane each), Codex

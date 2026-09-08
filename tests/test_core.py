@@ -627,19 +627,29 @@ def test_space_done_mutes_until_the_session_asks_again(tmp_path, monkeypatch):
 
 def test_multiwindow_sessions_label_by_window_topic(tmp_path, monkeypatch):
     """main/mainB hold many windows on DIFFERENT topics; the window name is
-    the topic, so it must name the tile — not the shared session name."""
+    the topic, so it must name the tile — not the shared session name.
+
+    The window has to hold ONE pane for its name to be about one session:
+    main-O:1 is five Codex sessions sharing a window, and naming all five
+    after the window is the bug this rule guards (titles.resolve_label)."""
+    from tallydeck.titles import PaneInfo
     proj = tmp_path / "-home-me"
     proj.mkdir()
     _write_jsonl(proj, "cafe0001", [
         {"type": "user", "cwd": "/home/me", "message": {"content": []}}])
-    src = ClaudeSessionsSource(root=str(tmp_path))
+    src = ClaudeSessionsSource(root=str(tmp_path), sync_titles=False)
     monkeypatch.setattr(src, "_session_panes", lambda: {"cafe0001": "mainB:3.1"})
     monkeypatch.setattr(src, "_all_pane_targets", lambda: {"mainB:3.1"})
-    src._sp_names = {"cafe0001": ("stonks-research", "5")}
+
+    def window(name, panes=1):
+        info = PaneInfo("mainB:3.1", "%1", "mainB", name, "3", panes, "", "")
+        monkeypatch.setattr(src.tmux, "info", lambda t, i=info: i)
+
+    window("stonks-research")
     assert src.poll()[0].label == "stonks-research"
-    src._sp_names = {"cafe0001": ("claude", "5")}     # auto-name → session
+    window("claude")                                  # auto-name → session
     assert src.poll()[0].label == "mainB"
-    src._sp_names = {"cafe0001": ("bash", "1")}       # single window → session
+    window("stonks-research", panes=5)                # shared → session
     assert src.poll()[0].label == "mainB"
 
 
@@ -1769,15 +1779,19 @@ def test_codex_pane_match_requires_the_rollout_to_postdate_the_process(tmp_path,
              ts=_iso(start - 3600))                # last session: before launch
     _rollout(day, "eeeeeeee-5555-4000-8000-000000000000", "/home/x/p",
              ts=_iso(start + 30))                  # this one: after launch
-    src = cx.CodexSessionsSource(root=str(tmp_path), dwell=0)
+    # codex_home points at an empty directory: no logs database, so no pid →
+    # thread answer, which is exactly when this fallback has to carry.
+    src = cx.CodexSessionsSource(root=str(tmp_path), dwell=0,
+                                 codex_home=str(tmp_path / "no-codex"),
+                                 sync_titles=False)
     monkeypatch.setattr(src, "_live_codex_procs",
-                        lambda: [("cx:1.1", "/home/x/p", start)])
+                        lambda: [("cx:1.1", "/home/x/p", start, 4242)])
     assert src._codex_panes() == {"eeeeeeee-5555-4000-8000-000000000000": "cx:1.1"}
     # Two live processes in one directory are ambiguous: a guess must not route.
     src._cp_ts = 0
     monkeypatch.setattr(src, "_live_codex_procs",
-                        lambda: [("cx:1.1", "/home/x/p", start),
-                                 ("cx:1.2", "/home/x/p", start)])
+                        lambda: [("cx:1.1", "/home/x/p", start, 4242),
+                                 ("cx:1.2", "/home/x/p", start, 4243)])
     assert src._codex_panes() == {}
 
 
