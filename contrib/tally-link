@@ -1,0 +1,142 @@
+#!/usr/bin/python3
+"""Text the links a session produced to Telegram.
+
+G, 2026-09-08: "I can't always click the links through this default terminal when
+it's running in tmux."
+
+That is a real constraint and not one worth fighting: terminal link handling varies
+by emulator, tmux adds another layer, and a link you cannot click is a link you
+retype by hand. Sending them to the phone sidesteps the terminal completely — the
+deck key is already in his hand, so one more press is cheaper than any amount of
+OSC-8 plumbing.
+
+Scans the session's own log backwards for URLs, newest first, de-duplicated, and
+sends them as one plain-text message. Local paths are included too: a built artifact
+at /home/openclaw/... is exactly as unclickable and exactly as useful to have on the
+phone when you are about to ask someone to look at it.
+
+Usage: tally-link <session-uuid> [label]
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+TG = "/home/openclaw/scripts/tg-send-logged.sh"
+G_CHAT = "39172309"
+MAX_LINKS = 12
+SCAN_RECORDS = 400          # far enough back to catch the link, not the whole run
+
+URL_RE = re.compile(r"https?://[^\s<>()\[\]{}'\"`]+")
+# Paths worth sending: built artifacts and reports, not every incidental file.
+PATH_RE = re.compile(r"(?<![\w/])(?:/home/openclaw|~)/[\w./@+-]+"
+                     r"\.(?:png|jpg|jpeg|pdf|html|md|json|csv|svg|mp4|txt)\b")
+
+
+def session_log(uuid: str) -> Path | None:
+    roots = [Path.home() / ".claude" / "projects",
+             Path("/home/openclaw/.claude/projects"),
+             Path("/home/openclaw/.openclaw/.claude-b/.claude/projects")]
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for f in root.glob(f"*/{uuid}.jsonl"):
+            return f
+    return None
+
+
+def useful(u: str) -> bool:
+    """Filter the two kinds of noise this reliably picks up.
+
+    Config fragments — an nginx line like `https://host$request_uri` is a template,
+    not a destination — and our own plumbing: a tool-results path under
+    .claude/projects is an internal artefact of how the session ran, never something
+    to open on a phone.
+    """
+    if "$" in u or "{" in u:
+        return False
+    if "/.claude/projects/" in u or "/tool-results/" in u:
+        return False
+    return True
+
+
+def collect(path: Path) -> list[str]:
+    lines = path.read_text(errors="replace").splitlines()[-SCAN_RECORDS:]
+    found: list[str] = []
+    seen = set()
+    for ln in reversed(lines):                 # newest first: most relevant first
+        try:
+            rec = json.loads(ln)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(rec, dict) or rec.get("type") not in ("assistant", "user"):
+            continue
+        content = (rec.get("message") or {}).get("content", [])
+        # content is EITHER a list of blocks OR a bare string — user records in
+        # particular are plain strings, and treating everything as blocks silently
+        # dropped them. That is why the first version found zero links in a file
+        # that visibly contained one.
+        if isinstance(content, str):
+            text = content
+        else:
+            if not isinstance(content, list):
+                content = [content]
+            parts = []
+            for i in content:
+                if isinstance(i, str):
+                    parts.append(i)
+                elif isinstance(i, dict):
+                    # tool_result output is where build artefacts and published
+                    # URLs usually surface, so read those too, not just prose.
+                    if i.get("type") in ("text", "tool_result"):
+                        c = i.get("text") or i.get("content") or ""
+                        parts.append(c if isinstance(c, str) else json.dumps(c))
+            text = " ".join(parts)
+        for m in list(URL_RE.finditer(text)) + list(PATH_RE.finditer(text)):
+            u = m.group(0).rstrip(".,;:)")
+            if not useful(u):
+                continue
+            if u not in seen:
+                seen.add(u)
+                found.append(u)
+        if len(found) >= MAX_LINKS:
+            break
+    return found[:MAX_LINKS]
+
+
+def main() -> int:
+    if len(sys.argv) < 2 or not sys.argv[1]:
+        print("usage: tally-link <session-uuid> [label]", file=sys.stderr)
+        return 2
+    uuid, label = sys.argv[1], (sys.argv[2] if len(sys.argv) > 2 else "session")
+
+    path = session_log(uuid)
+    if path is None:
+        print(f"no session log found for {uuid[:8]}", file=sys.stderr)
+        return 1
+    links = collect(path)
+    if not links:
+        # Say so on screen rather than sending an empty text — a message that says
+        # "no links" is noise on the phone when the answer is visible right here.
+        print(f"no links found in the last {SCAN_RECORDS} records of {label}")
+        return 0
+
+    body = f"🔗 links from {label}\n\n" + "\n\n".join(links)
+    try:
+        r = subprocess.run([TG, G_CHAT, "tally-link", body],
+                           capture_output=True, text=True, timeout=120)
+        ok = r.returncode == 0
+    except Exception:
+        ok = False
+    print(f"sent {len(links)} link(s) to Telegram" if ok
+          else "could not send — links are above, copy them from here:")
+    if not ok:
+        for u in links:
+            print("  " + u)
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
