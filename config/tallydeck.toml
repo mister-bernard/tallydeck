@@ -57,6 +57,21 @@ kind = "codex-sessions"
 include_exec = false
 
 [[sources]]
+# Background fleets: one aggregate key per group of one-shot runners, so a
+# fleet working in the background is VISIBLE without any of its workers being
+# able to demand attention. Off until you say otherwise — flip `enabled` and
+# the four c64 autopilot jobs (say) become one "c64 background" key whose
+# press opens the most recently active of their tmux windows.
+kind = "background-fleet"
+enabled = false
+sessions = ["oneshot"]     # the same disposable-runner sessions as above
+min_workers = 2            # one job is a job; two are a fleet
+idle_after = 300           # no output on any worker this long → idle, not working
+priority = 5               # above the one-shot floor (-10), below a hot session
+label_word = "fleet"       # key reads "<fleet> fleet"; "background" wraps mid-word
+# ignore = ["email"]       # fleet names never worth a key on this machine
+
+[[sources]]
 kind = "watchdir"
 
 [[sources]]

@@ -98,6 +98,24 @@ carries the harness so colour can keep meaning state.
   next column. Keys are **sticky**: a session keeps its key while visible,
   so nothing moves between your glance and your press.
 
+### Background fleets (one key, many workers)
+
+Disposable one-shot runners rank last on purpose — nobody answers one, so
+none of them may outrank a session that wants you. On a busy machine "last"
+means off the bottom of the deck, and a fleet of four background workers
+burning tokens for an hour shows up as nothing at all.
+
+The `background-fleet` source fixes that without lifting the floor: it reads
+the runner windows themselves and emits **one key per fleet**, grouped by the
+project prefix of the job label (`c64-B-fx-reel` → fleet `c64`). The key says
+`c64 fleet` / `4 jobs · 21m · fx, medium, music`, never flashes, and is
+working-or-idle only — it is visibility, not a request. Pressing it opens the
+most recently active worker's tmux window through the same popup every
+session key uses; the popup lists the other windows and the accounts the
+fleet is draining, read from the same meter as the info bar.
+
+Off unless you turn it on — see the stanza in `config/tallydeck.toml`.
+
 ### What a key is called
 
 Every session resolves to **one title**, and the deck key, the tmux pane

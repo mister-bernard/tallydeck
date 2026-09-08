@@ -20,6 +20,10 @@ fi
 [ -n "$ROUTE" ] || { echo "tally-popup-route: cannot find tally-route" >&2; exit 2; }
 LOG="${TALLY_POPUP_LOG:-$HOME/.openclaw/state/tally-popup.log}"
 TARGET="${1:-}"; UUID="${2:-}"; PROJ="${3:-}"; LABEL="${4:-}"; STATE="${5:-}"; ACCT="${6:-}"; SIGID="${7:-}"
+# Optional 8th: the brief to show in the popup, for a key with no session log
+# behind it to read one from (a background fleet is four transcripts, none of
+# which is "the" one). Absent — every caller before this — is unchanged.
+ASK="${8:-}"
 log() { printf '[%s] %s\n' "$(date -u +%H:%M:%SZ)" "$*" >> "$LOG" 2>/dev/null || true; }
 T() { tmux -S "$SOCKET" "$@"; }
 q() { printf '%q' "$1"; }
@@ -36,7 +40,7 @@ while IFS='|' read -r tty sess act; do
   [ $((NOW - ${act:-0})) -lt 43200 ] || continue
   log "route popup for $SIGID on $tty ($sess)"
   T display-popup -c "$tty" -w 95% -h 90% -E \
-    "$(q "$ROUTE") $(q "$tty") $(q "$sess") $(q "$TARGET") $(q "$UUID") $(q "$PROJ") $(q "$LABEL") $(q "$STATE") $(q "$ACCT") $(q "$SIGID") ''" \
+    "$(q "$ROUTE") $(q "$tty") $(q "$sess") $(q "$TARGET") $(q "$UUID") $(q "$PROJ") $(q "$LABEL") $(q "$STATE") $(q "$ACCT") $(q "$SIGID") $(q "$ASK")" \
     2>>"$LOG" &
   PIDS+=($!)
 done < <(T list-clients -F '#{client_tty}|#{client_session}|#{client_activity}' 2>/dev/null)

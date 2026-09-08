@@ -151,7 +151,14 @@ def document(session: str, project: str, label: str = "",
     decision = ask or tool or (decision_text(texts[0]) if texts else "")
     sections = []
     if decision:
-        sections.append(("THE ASK · answer in the session", decision))
+        # A supplied brief on a key that is NOT asking anything (a background
+        # fleet's roster) is a status report, and heading it "THE ASK" would
+        # invent a question. Anything derived from a transcript, and every
+        # alarm state, keeps the original heading.
+        sections.append((
+            "THE ASK · answer in the session"
+            if not ask or state in ("attention", "blocked") else "STATUS",
+            decision))
         support = decision_support(texts[0], decision) if texts and not tool and not ask else ""
         if support:
             sections.append(("CHOICES / RECOMMENDATION · from the session", support))

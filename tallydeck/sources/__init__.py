@@ -7,6 +7,7 @@ from .watchdir import WatchDirSource
 from .execsrc import ExecSource
 from .demo import DemoSource
 from .burn import TokenBurnSource
+from .fleet import BackgroundFleetSource
 
 REGISTRY: dict[str, type[Source]] = {
     "claude-sessions": ClaudeSessionsSource,
@@ -15,6 +16,7 @@ REGISTRY: dict[str, type[Source]] = {
     "exec": ExecSource,
     "demo": DemoSource,
     "tokenburn": TokenBurnSource,
+    "background-fleet": BackgroundFleetSource,
 }
 
 
