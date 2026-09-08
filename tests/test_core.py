@@ -1376,3 +1376,15 @@ def test_hub_notices_its_own_code_changing(tmp_path, monkeypatch):
     assert calls == []
     h._maybe_reexec(t0 - 100)                 # "older start" → code looks newer → exec
     assert calls and calls[0][1][1:3] == ["-m", "tallydeck.cli"]
+
+
+def test_session_ask_pane_comes_from_the_registry_not_the_drop(tmp_path, monkeypatch):
+    monkeypatch.setenv("TALLYDECK_STATE", str(tmp_path / "state"))
+    (tmp_path / "state" / "panes").mkdir(parents=True)
+    (tmp_path / "state" / "panes" / "c64c64c6.json").write_text(json.dumps({"session": "c64c64c6-x", "tmux": "c64:1.1"}))
+    src = WatchDirSource(path=str(tmp_path))
+    (tmp_path / "ask-c64c64c6.json").write_text(json.dumps(
+        {"label": "c64", "state": "blocked", "detail": "needs permission",
+         "meta": {"session": "c64c64c6-x", "tmux": "victim:9.9"}}))      # hostile pane
+    s = src.poll()[0]
+    assert s.action["argv"][1] == "c64:1.1"

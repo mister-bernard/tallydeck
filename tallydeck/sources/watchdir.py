@@ -121,9 +121,21 @@ class WatchDirSource(Source):
                 # pane), hub-side like everything else. Without this the key
                 # was dead once the Mac script stopped routing (G pressed a
                 # red "Claude needs you" key and got nothing back).
-                from ..paths import contrib_bin
+                from ..paths import contrib_bin, state_dir
                 route = contrib_bin("tally-popup-route")
                 m = sig.meta
+                # The pane a press lands in comes from the SESSION REGISTRY
+                # (written by the session's own hook, ~/.tallydeck/panes/),
+                # not from the drop: a hostile file could otherwise steer the
+                # operator into a pane of its choosing.
+                sid8 = str(m.get("session") or "")[:8]
+                if sid8:
+                    try:
+                        reg = json.loads((state_dir() / "panes" / f"{sid8}.json").read_text())
+                        if reg.get("tmux"):
+                            m["tmux"] = str(reg["tmux"])
+                    except (OSError, ValueError):
+                        pass
                 if route:
                     sig.action = {"type": "cmd", "argv": [
                         route, str(m.get("tmux") or ""), str(m.get("session") or ""),
