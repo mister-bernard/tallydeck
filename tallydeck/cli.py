@@ -172,6 +172,12 @@ def cmd_raise(cfg, args):
         if v is not None:
             d[k] = v
     d["updated"] = time.time()
+    # A raised ask is answerable hub-side only when it carries a `detail`
+    # (that is what the decide popup shows). Most raise sites put the whole
+    # question in --sublabel, so promote it rather than leave the key inert.
+    if not d.get("detail") and d.get("sublabel") \
+            and d["state"] in ("attention", "blocked"):
+        d["detail"] = d["sublabel"]
     # Raised from inside a Claude Code session (or a tmux pane)? Stamp the
     # identity so a press on this key lands the operator IN that session
     # with the ask on screen, instead of a bare "acked". Explicit flags win

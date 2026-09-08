@@ -757,6 +757,7 @@ def test_raise_stamps_the_raising_session(tmp_path, monkeypatch):
     cli.main(["raise", "aurora", "--state", "attention", "--label", "Aurora",
               "--sublabel", "cathode vs anode sphere?"])
     d = json.loads((tmp_path / "signals" / "aurora.json").read_text())
+    assert d["detail"] == "cathode vs anode sphere?"   # answerable hub-side
     assert d["meta"]["session"].startswith("deadbeef")
     assert d["meta"]["account"] == "B"
     assert d["meta"]["project"] == str(tmp_path)
