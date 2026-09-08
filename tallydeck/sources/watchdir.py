@@ -39,6 +39,8 @@ class WatchDirSource(Source):
     """opts: path (str), group (default 'sig')."""
 
     group = "sig"
+    # Overridable so a different deployment can point it elsewhere.
+    decide_cmd = "/home/openclaw/scripts/tally-popup-decide.sh"
 
     def __init__(self, **opts):
         super().__init__(**opts)
@@ -60,6 +62,15 @@ class WatchDirSource(Source):
                 sig = Signal(id=f"{self.group}/{fp.stem}", label=fp.stem,
                              sublabel="bad json", state=BLOCKED)
             sig.meta["file"] = str(fp)
+            # A raised flag that carries a `detail` is a QUESTION, so make pressing it
+            # answer the question by default. Without this the hub logs
+            # "press <id> (no action)" and whether anything happens depends entirely on
+            # the operator's client-side on_press being configured on another machine —
+            # which is exactly how two rounds were lost on 2026-09-08. The hub runs
+            # tmux, so it can put the popup up itself. An explicit action still wins.
+            if sig.action is None and (sig.detail or "").strip():
+                sig.action = {"type": "cmd",
+                              "argv": [self.decide_cmd, fp.stem]}
             if sig.expired():
                 fp.unlink(missing_ok=True)
                 continue
