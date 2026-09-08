@@ -51,19 +51,52 @@ class LocalLink:
 class PipeLink:
     """Speak the hub protocol over a spawned command's stdio."""
 
+    RECONNECT_AFTER = 3.0     # s between attempts once the pipe is gone
+
     def __init__(self, argv: list[str], log=lambda m: None):
-        self.proc = subprocess.Popen(
-            argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
-            bufsize=1)
+        self.argv = list(argv)
         self.log = log
         self._signals: list[Signal] = []
         self._lock = threading.Lock()
-        self._alive = True
-        threading.Thread(target=self._reader, daemon=True).start()
+        self._alive = False
+        self.reconnects = 0
+        self._last_try = 0.0
+        self.proc = None
+        self._spawn()
 
-    def _reader(self) -> None:
-        assert self.proc.stdout is not None
-        for line in self.proc.stdout:
+    def _spawn(self) -> None:
+        self.proc = subprocess.Popen(
+            self.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+            bufsize=1)
+        self._alive = True
+        self._last_try = time.monotonic()
+        threading.Thread(target=self._reader, args=(self.proc,), daemon=True).start()
+
+    def reconnect(self) -> bool:
+        """The hub died (a server-side restart, a dropped ssh): re-spawn the
+        connect command, keeping the last snapshot on the keys meanwhile.
+        Without this the deck froze on its last frame and the operator had
+        to relaunch the client for every hub change."""
+        if self.alive or time.monotonic() - self._last_try < self.RECONNECT_AFTER:
+            return False
+        try:
+            if self.proc is not None:
+                self.proc.kill()
+        except OSError:
+            pass
+        self.log("[link] hub gone — reconnecting")
+        try:
+            self._spawn()
+        except OSError as e:
+            self._last_try = time.monotonic()
+            self.log(f"[link] reconnect failed: {e}")
+            return False
+        self.reconnects += 1
+        return True
+
+    def _reader(self, proc) -> None:
+        assert proc.stdout is not None
+        for line in proc.stdout:
             try:
                 msg = json.loads(line)
             except json.JSONDecodeError:
@@ -79,7 +112,8 @@ class PipeLink:
                     self._signals = sigs
             elif msg.get("type") == "hello":
                 self.log(f"[link] connected to {msg.get('name')}")
-        self._alive = False
+        if proc is self.proc:
+            self._alive = False
 
     def poll(self) -> list[Signal]:
         with self._lock:
@@ -101,7 +135,7 @@ class PipeLink:
 
     @property
     def alive(self) -> bool:
-        return self._alive and self.proc.poll() is None
+        return self._alive and self.proc is not None and self.proc.poll() is None
 
     def close(self) -> None:
         try:
@@ -286,6 +320,8 @@ def run(link, surface, view: View, poll_every: float = 2.0,
         while True:
             now = time.monotonic()
             if now - last_poll >= poll_every or not signals:
+                if hasattr(link, "reconnect") and not getattr(link, "alive", True):
+                    link.reconnect()
                 signals = link.poll()
                 last_poll = now
                 notifier.offer(signals)

@@ -1490,3 +1490,30 @@ def test_notifier_announces_session_prompts_when_the_deck_is_away(tmp_path):
     (tmp_path / "hub.alive").touch()
     os.utime(root / "asker001.jsonl", None)                       # a new ask, but deck is back
     assert "Which one" not in once()
+
+
+def test_pipelink_reconnects_when_the_hub_dies_and_keeps_the_last_snapshot():
+    import sys, time as _t
+    from tallydeck.client import PipeLink
+    # a "hub" that says hello, sends one snapshot, and exits
+    hub = [sys.executable, "-c",
+           'import json,sys; print(json.dumps({"type":"hello","name":"t"})); '
+           'print(json.dumps({"type":"snapshot","signals":[{"id":"a","label":"a","state":"working"}]})); '
+           'sys.stdout.flush()']
+    link = PipeLink(hub)
+    link.RECONNECT_AFTER = 0.2
+    for _ in range(40):
+        if link.poll(): break
+        _t.sleep(0.05)
+    assert [s.id for s in link.poll()] == ["a"]
+    for _ in range(40):
+        if not link.alive: break
+        _t.sleep(0.05)
+    assert link.alive is False
+    assert [s.id for s in link.poll()] == ["a"]          # last frame stays up
+    _t.sleep(0.25)
+    assert link.reconnect() is True and link.reconnects == 1
+    for _ in range(40):
+        if link.alive or link.poll(): break
+        _t.sleep(0.05)
+    link.close()
