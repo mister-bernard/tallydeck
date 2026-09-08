@@ -85,6 +85,9 @@ class PipeLink:
     def press(self, sid: str, long: bool = False) -> None:
         self._send({"type": "press", "id": sid, "long": long})
 
+    def answer(self, sid: str, text: str) -> None:
+        self._send({"type": "answer", "id": sid, "text": text})
+
     def _send(self, obj: dict) -> None:
         try:
             assert self.proc.stdin is not None
@@ -102,6 +105,70 @@ class PipeLink:
             self.proc.terminate()
         except OSError:
             pass
+
+
+# ── native notifications (deck machine) ─────────────────────────────────────
+
+class Notifier:
+    """A raised question also lands as a native notification with a reply
+    field on the machine holding the deck — the one surface that works
+    with no tmux attached and no deck in reach. macOS via terminal-notifier
+    (`brew install terminal-notifier`); silently inactive without it. The
+    reply text goes back up the hub pipe as an `answer`, which the hub
+    validates against the raised flag before recording."""
+
+    def __init__(self, link, log=lambda m: None):
+        import shutil
+        self.link = link
+        self.log = log
+        self.bin = shutil.which("terminal-notifier")
+        self._seen: dict[str, str] = {}
+        self._threads: list = []
+
+    @property
+    def active(self) -> bool:
+        return bool(self.bin)
+
+    def offer(self, signals: list) -> None:
+        if not self.bin:
+            return
+        live = set()
+        for s in signals:
+            if s.group != "sig" or s.state not in ("attention", "blocked"):
+                continue
+            stem = s.id.split("/", 1)[-1]
+            if stem.startswith("ask-") or not (s.detail or "").strip():
+                continue
+            live.add(s.id)
+            opts = [str(o) for o in (s.meta.get("options") or [])]
+            key = f"{s.sublabel}|{'|'.join(opts)}"
+            if self._seen.get(s.id) == key:
+                continue
+            self._seen[s.id] = key
+            body = s.sublabel or s.detail
+            if opts:
+                body += "\n" + "  ".join(f"{i}·{o[:18]}" for i, o in enumerate(opts, 1))
+            t = threading.Thread(target=self._ask, args=(s.id, s.label, body),
+                                 daemon=True)
+            t.start()
+            self._threads.append(t)
+        for sid in [k for k in self._seen if k not in live]:
+            self._seen.pop(sid, None)
+
+    def _ask(self, sid: str, title: str, body: str) -> None:
+        try:
+            r = subprocess.run(
+                [self.bin, "-title", f"◆ {title}", "-message", body,
+                 "-reply", "answer…", "-timeout", "3600",
+                 "-group", f"tally-{sid}", "-sound", "default"],
+                capture_output=True, text=True, timeout=3700)
+            text = (r.stdout or "").strip()
+        except (OSError, subprocess.TimeoutExpired):
+            return
+        if not text or text.startswith("@"):      # @TIMEOUT / @CLOSED / …
+            return
+        self.log(f"[notify] answer for {sid}: {text[:40]}")
+        self.link.answer(sid, text)
 
 
 # ── run loop ─────────────────────────────────────────────────────────────────
@@ -172,6 +239,7 @@ def run(link, surface, view: View, poll_every: float = 2.0,
 
     pages_now = [1]   # updated each frame; touch behavior depends on it
     mural_now = [False]
+    notifier = Notifier(link, log=getattr(link, "log", lambda m: None))
 
     _URGENCY = {"blocked": 2, "attention": 1}
 
@@ -210,6 +278,7 @@ def run(link, surface, view: View, poll_every: float = 2.0,
             if now - last_poll >= poll_every or not signals:
                 signals = link.poll()
                 last_poll = now
+                notifier.offer(signals)
 
             layout = view.layout(signals)
             key_map = layout.keys

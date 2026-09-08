@@ -967,3 +967,38 @@ def test_wait_returns_the_answer_and_exits_when_the_flag_vanishes(tmp_path, monk
     with _pt.raises(SystemExit) as e:
         cli.main(["wait", "q", "--every", "0.1", "--timeout", "0.3"])
     assert e.value.code == 1
+
+
+def test_hub_answer_is_validated_against_a_raised_question(tmp_path, monkeypatch):
+    """The deck machine may only ANSWER a question the hub raised: a bare
+    digit must index the option list, session asks and unknown ids are
+    refused, and the answer lands in the same answers/<id>.json every
+    other surface writes."""
+    monkeypatch.setenv("TALLYDECK_STATE", str(tmp_path))
+    sig_dir = tmp_path / "signals"; sig_dir.mkdir()
+    (sig_dir / "q.json").write_text(json.dumps(
+        {"label": "Q", "state": "attention", "detail": "which?",
+         "meta": {"options": ["A · one", "B · two"]}}))
+    (sig_dir / "ask-abcd1234.json").write_text(json.dumps(
+        {"label": "live", "state": "blocked", "detail": "prompt",
+         "meta": {"session": "abcd1234-x"}}))
+    h = Hub([WatchDirSource(path=str(sig_dir))], log=lambda m: None)
+    monkeypatch.setattr(Hub, "_decide_bin", staticmethod(lambda: ""))
+    h.poll()
+    assert h.answer("sig/q", "9") is False               # no such option
+    assert h.answer("sig/ask-abcd1234", "1") is False    # a live session's prompt
+    assert h.answer("sig/nope", "1") is False
+    assert h.answer("sig/q", "2") is True
+    d = json.loads((tmp_path / "answers" / "q.json").read_text())
+    assert d["answer"] == "2 — B · two" and d["via"] == "deck-notification"
+    assert h.answer("sig/q", "  go with   one ") is True
+    assert json.loads((tmp_path / "answers" / "q.json").read_text())["answer"] == "go with one"
+
+
+def test_notifier_is_inert_without_terminal_notifier(monkeypatch):
+    from tallydeck.client import Notifier
+    import shutil
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    n = Notifier(link=None)
+    assert n.active is False
+    n.offer([Signal(id="sig/q", label="Q", state=ATTENTION, detail="?")])   # no crash

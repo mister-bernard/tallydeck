@@ -6,20 +6,23 @@ stdio, an SSH session, socat, whatever):
   hub → client   {"type": "hello", "v": 1, "name": "..."}
   hub → client   {"type": "snapshot", "signals": [ {...}, ... ]}
   client → hub   {"type": "press", "id": "cc/foo", "long": false}
+  client → hub   {"type": "answer", "id": "sig/foo", "text": "1"}
   client → hub   {"type": "ping"}   → hub replies {"type": "pong"}
 
 Snapshots are full-state (a fleet is tens of signals, not thousands);
 the hub sends one whenever the merged state changes, and a keepalive
 snapshot every KEEPALIVE seconds regardless.
 
-Security posture: the client can only name a signal id it wants pressed.
-Actions run hub-side and only if the hub's own sources/config defined
-them. Nothing arriving on the wire is ever executed.
+Security posture: the client can only name a signal id it wants pressed,
+or answer a question the hub itself has raised. Actions run hub-side and
+only if the hub's own sources/config defined them. An answer is accepted
+only for a currently-raised question and is recorded — never executed.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -107,6 +110,55 @@ class Hub:
         else:
             self.log(f"[hub] press {sid} (no action)")
 
+    # ── answers (from a native notification on the deck machine) ──────────
+
+    def answer(self, sid: str, text: str) -> bool:
+        """Record an operator answer to a raised question. Validated: the
+        id must be a currently-raised watchdir question (not a session
+        ask), and a bare digit must index its option list. Delivery and the
+        flag clear go through tally-decide's own --deliver pass so every
+        surface records answers the same way."""
+        sig = self._table.get(sid)
+        text = " ".join(str(text).split())[:500]
+        if sig is None or sig.group != "sig" or not text:
+            return False
+        stem = sid.split("/", 1)[-1]
+        if stem.startswith("ask-") or not (sig.detail or "").strip():
+            return False
+        opts = [str(o) for o in (sig.meta.get("options") or [])]
+        if text.isdigit():
+            n = int(text)
+            if not opts or not 1 <= n <= len(opts):
+                return False
+            text = f"{n} — {opts[n - 1]}"
+        from .paths import state_dir
+        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        adir = state_dir() / "answers"
+        adir.mkdir(parents=True, exist_ok=True)
+        (adir / f"{stem}.json").write_text(json.dumps(
+            {"id": stem, "answer": text, "at": ts, "label": sig.label,
+             "via": "deck-notification"}))
+        decide = self._decide_bin()
+        if decide:
+            try:
+                subprocess.Popen([decide, "--deliver", stem, sig.label, text, ts],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, start_new_session=True)
+            except OSError as e:
+                self.log(f"[hub] deliver failed: {e}")
+        self.log(f"[hub] answer {sid}: {text[:60]}")
+        return True
+
+    @staticmethod
+    def _decide_bin() -> str:
+        import shutil
+        from pathlib import Path
+        here = Path(__file__).resolve().parent.parent / "contrib" / "tally-decide"
+        for cand in (str(here), shutil.which("tally-decide") or ""):
+            if cand and os.access(cand, os.X_OK):
+                return cand
+        return ""
+
     # ── stdio server ─────────────────────────────────────────────────────────
 
     def serve_stdio(self) -> None:
@@ -136,6 +188,8 @@ class Hub:
                 t = msg.get("type")
                 if t == "press":
                     self.press(str(msg.get("id", "")), bool(msg.get("long")))
+                elif t == "answer":
+                    self.answer(str(msg.get("id", "")), str(msg.get("text", "")))
                 elif t == "ping":
                     send('{"type":"pong"}')
             stop.set()  # client hung up
