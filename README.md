@@ -16,7 +16,7 @@ tmux session with its own key; you decide when a key asks, from the deck,
 your phone, or a bare option number in chat.
 
 - **`tally spawn <slug> -c <dir> "<task>"`** starts the task as its own tmux
-  session (`<slug>`), claude fed the task as its first prompt. It appears
+  session (`<slug>`), with the calling harness fed the task as its first prompt. It appears
   as its own key as soon as it speaks; a second `<slug>` becomes `<slug>-2`.
 - **`tally offer <slug> "<one-line summary>" -c <dir> -p - <<'EOF' … EOF`** is
   the "run this in a dedicated session?" prompt as one command: it raises a
@@ -24,6 +24,12 @@ your phone, or a bare option number in chat.
   `1`/`2` on Telegram or Signal answers it), returns at once, and a detached
   waiter spawns on *yes* — the outcome is pasted back into the offering pane
   as a `[tally] …` line. The convention for agents lives in AGENTS.md.
+- **Harness inheritance:** Codex callers launch Codex (account O); Claude
+  callers launch Claude and preserve account A/B. Ordinary shell calls retain
+  Claude A as the fallback. Both commands accept `--harness codex|claude` or
+  `-a A|B|O` to override this; conflicting overrides are rejected. Offers show
+  the selected harness/account and save that choice before waiting for an
+  answer. A missing executable fails explicitly instead of switching harnesses.
 - **Phone fallback** covers session prompts too: with no deck connected, a
   permission prompt or a turn that ended with a question is announced once
   on Signal (notify-only — the answer belongs in that session). Raised

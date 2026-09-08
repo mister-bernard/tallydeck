@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""tally-offer <slug> "<one-line summary>" [-c cwd] [-a A|B] [-p task-file|-] [task text]
+"""tally-offer <slug> "<one-line summary>" [-c cwd] [-a A|B|O] [--harness claude|codex] [-p task-file|-] [task text]
 
 The "want me to run this in a dedicated session?" prompt, as one command.
 
@@ -29,6 +29,13 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+REPO = HERE.parent
+if not (REPO / "tallydeck").is_dir():
+    import pwd
+    REPO = Path(os.environ.get("TALLYDECK_HOME", str(Path(pwd.getpwuid(os.getuid()).pw_dir) / "projects/tallydeck")))
+sys.path.insert(0, str(REPO))
+from tallydeck.launch import resolve_launch, caller_harness
+from tallydeck.paths import safe_id
 TALLY = os.environ.get("TALLY_BIN") or str(HERE / "tally")
 SPAWN = os.environ.get("TALLY_SPAWN_BIN") or str(HERE / "tally-spawn")
 WAIT_S = float(os.environ.get("TALLY_OFFER_TIMEOUT", "900"))
@@ -67,7 +74,7 @@ def current_pane() -> str:
     if not os.environ.get("TMUX"):
         return ""
     try:
-        return subprocess.run(["tmux", "display", "-p", "#S:#I.#P"], capture_output=True,
+        return subprocess.run(["tmux", "-S", TMUX_SOCKET, "display", "-p", "-t", os.environ.get("TMUX_PANE", ""), "#S:#I.#P"], capture_output=True,
                               text=True, timeout=2).stdout.strip()
     except (OSError, subprocess.TimeoutExpired):
         return ""
@@ -79,28 +86,40 @@ def main(argv: list[str]) -> int:
     if len(argv) < 2 or argv[0] in ("-h", "--help"):
         print(__doc__, file=sys.stderr); return 2
     slug, summary = argv[0], argv[1]
+    if not safe_id(slug):
+        print("tally-offer: invalid slug", file=sys.stderr); return 2
     rest = argv[2:]
-    cwd, acct, task = os.getcwd(), "A", ""
+    cwd, acct, harness, task = os.getcwd(), "", "", ""
     i = 0
     while i < len(rest):
         a = rest[i]
+        if a in ("-c", "-a", "--account", "--harness", "-p") and i + 1 >= len(rest):
+            print(f"tally-offer: {a} needs a value", file=sys.stderr); return 2
         if a == "-c": cwd = rest[i + 1]; i += 2
-        elif a == "-a": acct = rest[i + 1]; i += 2
+        elif a in ("-a", "--account"): acct = rest[i + 1]; i += 2
+        elif a == "--harness": harness = rest[i + 1]; i += 2
         elif a == "-p":
             task = sys.stdin.read() if rest[i + 1] == "-" else Path(rest[i + 1]).read_text(); i += 2
+        elif a.startswith("--"):
+            print(f"tally-offer: unknown option {a}", file=sys.stderr); return 2
         else: task = a; i += 1
+    try:
+        route = resolve_launch(acct, harness)
+    except ValueError as e:
+        print(f"tally-offer: {e}", file=sys.stderr); return 2
+    acct, harness = route["account"], route["harness"]
     task = task.strip() or summary
     sd = state_dir()
     (sd / "offers").mkdir(parents=True, exist_ok=True)
     os.chmod(sd, 0o700)
     offer = sd / "offers" / f"{slug}.json"
     offer.write_text(json.dumps({"slug": slug, "summary": summary, "task": task, "cwd": cwd,
-                                 "account": acct, "pane": current_pane(),
-                                 "origin_session": os.environ.get("CLAUDE_SESSION_ID", ""),
+                                 "account": acct, "harness": harness, "pane": current_pane(),
+                                 "origin_session": os.environ.get("CODEX_THREAD_ID", "") if caller_harness(dict(os.environ)) == "codex" else os.environ.get("CLAUDE_SESSION_ID", ""),
                                  "at": time.time()}))
     r = subprocess.run([TALLY, "raise", f"offer-{slug}", "--state", "attention",
                         "--label", "Run separately?", "--sublabel", f"{summary} — dedicated session?",
-                        "--detail", f"{summary}\n\nRun this as its own session ({slug}) so it works on "
+                        "--detail", f"{summary}\n\nHarness: {harness} · account {acct}.\n\nRun this as its own session ({slug}) so it works on "
                                     f"in parallel and shows up as its own key, or keep it here in G?",
                         "--options", "1 · Yes, dedicated session|2 · No, here in G",
                         "--ttl", str(int(WAIT_S)), "--priority", "500"],
@@ -130,7 +149,10 @@ def waiter(slug: str) -> int:
         except ValueError:
             ans = r.stdout.strip()
         if ans.strip().startswith("1"):
-            sp = subprocess.run([SPAWN, slug, "-c", o["cwd"], "-a", o.get("account", "A"), "-p", "-"],
+            launch = [SPAWN, slug, "-c", o["cwd"], "-a", o.get("account", "A")]
+            if o.get("harness"):
+                launch += ["--harness", o["harness"]]
+            sp = subprocess.run(launch + ["-p", "-"],
                                 input=o["task"], capture_output=True, text=True, timeout=30)
             if sp.returncode == 0:
                 name = sp.stdout.strip()

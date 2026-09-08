@@ -1418,14 +1418,14 @@ def test_spawn_makes_its_own_tmux_session_with_the_task_as_first_prompt(tmp_path
     spawn = Path(__file__).resolve().parent.parent / "contrib" / "tally-spawn"
     env = dict(os.environ, TALLYDECK_STATE=str(tmp_path), TALLY_TMUX_SOCKET=sock, CLAUDE_BIN=str(fake))
     try:
-        r = subprocess.run([str(spawn), "demo-task", "-c", "/tmp", "Build it, test it, push."],
+        r = subprocess.run([str(spawn), "demo-task", "-a", "A", "-c", "/tmp", "Build it, test it, push."],
                            capture_output=True, text=True, env=env, timeout=20)
         assert r.returncode == 0 and r.stdout.strip() == "demo-task", r.stderr
         _t.sleep(0.8)
         assert "PROMPT:Build it, test it, push." in T("capture-pane", "-t", "demo-task", "-p").stdout
         rec = json.loads((tmp_path / "spawned" / "demo-task.json").read_text())
-        assert rec["target"] == "demo-task:1.1" and rec["cwd"] == "/tmp"
-        r2 = subprocess.run([str(spawn), "demo-task", "-c", "/tmp", "again"], capture_output=True, text=True, env=env, timeout=20)
+        assert rec["target"] == T("list-panes", "-t", "demo-task", "-F", "#S:#I.#P").stdout.strip() and rec["cwd"] == "/tmp"
+        r2 = subprocess.run([str(spawn), "demo-task", "-a", "A", "-c", "/tmp", "again"], capture_output=True, text=True, env=env, timeout=20)
         assert r2.stdout.strip() == "demo-task-2"                 # unique slugs
         assert subprocess.run([str(spawn), "../evil", "x"], capture_output=True, env=env).returncode == 2
     finally:
@@ -1443,7 +1443,7 @@ def test_offer_raises_a_decision_and_spawns_on_yes(tmp_path):
                TALLY_OFFER_TIMEOUT="30")
     env.pop("TMUX", None)
     try:
-        r = subprocess.run([sys.executable, str(contrib / "tally-offer"), "big-job", "Rebuild the datum", "-c", "/tmp",
+        r = subprocess.run([sys.executable, str(contrib / "tally-offer"), "big-job", "Rebuild the datum", "-a", "A", "-c", "/tmp",
                             "-p", "-"], input="Full brief here.", capture_output=True, text=True, env=env, timeout=20)
         assert r.returncode == 0, r.stderr
         d = json.loads((tmp_path / "signals" / "offer-big-job.json").read_text())
