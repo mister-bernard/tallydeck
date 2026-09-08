@@ -179,6 +179,11 @@ def cmd_raise(cfg, args):
     if not d.get("detail") and d.get("sublabel") \
             and d["state"] in ("attention", "blocked"):
         d["detail"] = d["sublabel"]
+    # A --markdown/--options raise is a question by definition; the hub keys
+    # its press action off `detail`, so never leave it empty (a research
+    # flag sat unanswerable for exactly this reason).
+    if not d.get("detail") and (args.markdown or args.options):
+        d["detail"] = d.get("sublabel") or d.get("label") or args.id
     # Raised from inside a Claude Code session (or a tmux pane)? Stamp the
     # identity so a press on this key lands the operator IN that session
     # with the ask on screen, instead of a bare "acked". Explicit flags win
@@ -206,6 +211,8 @@ def cmd_raise(cfg, args):
         meta["markdown"] = src.strip()
     if args.options:
         meta["options"] = [o.strip() for o in args.options.split("|") if o.strip()]
+    if not d.get("detail") and (meta.get("markdown") or meta.get("options")):
+        d["detail"] = d.get("sublabel") or d.get("label") or args.id
     if args.account:
         meta["account"] = args.account
     elif "account" not in meta and sid:

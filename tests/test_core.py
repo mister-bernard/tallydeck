@@ -918,6 +918,8 @@ def test_raise_carries_markdown_and_options(tmp_path, monkeypatch):
               "--options", "A · first | B · second"])
     d = json.loads((tmp_path / "signals" / "pick.json").read_text())
     assert d["meta"]["markdown"].startswith("## Pick one")
+    assert d["detail"]                      # the hub keys its action off this
+    assert WatchDirSource(path=str(tmp_path / "signals")).poll()[0].action
     assert d["meta"]["options"] == ["A · first", "B · second"]
     sig = WatchDirSource(path=str(tmp_path / "signals")).poll()[0]
     assert sig.meta["options"][1] == "B · second"
