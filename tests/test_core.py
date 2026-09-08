@@ -1535,18 +1535,15 @@ def test_burn_codex_lane_real_and_dummy():
     assert TokenBurnSource().signals_from(_burn_fixture()[0], targets, now=0)[0].meta["codex"] is None
 
 
-def test_meter2_renders_both_styles_and_the_toggle_flips():
-    from tallydeck.render.meter import draw_meter2, METER_STYLES
+def test_meter2_renders_the_split_bar_with_and_without_codex():
+    from tallydeck.render.meter import draw_meter2
     lanes = [{"id": "A", "pct": 26, "frac": 0.26, "target": 0.4, "clock": "1:48"},
              {"id": "B", "pct": 58, "frac": 0.58, "target": 0.7, "clock": "3:05"}]
     codex = {"id": "X", "pct": 37, "frac": 0.37, "target": 0.6, "clock": "2:10", "dummy": True}
-    imgs = {s: draw_meter2((248, 58), lanes, codex, hot="B", style=s) for s in METER_STYLES}
-    assert all(im.size == (248, 58) for im in imgs.values())
-    assert list(imgs["split"].getdata()) != list(imgs["quadrant"].getdata())
-    assert draw_meter2((248, 58), lanes, None, style="nope").size == (248, 58)   # unknown → split, no codex
-    v = View(profile=NEO)
-    assert v.layout([]).meter_style == "split"
-    assert v.toggle_meter_style() == "quadrant" and v.layout([]).meter_style == "quadrant"
+    a = draw_meter2((248, 58), lanes, codex, hot="B")
+    b = draw_meter2((248, 58), lanes, None, hot="A")
+    assert a.size == b.size == (248, 58)
+    assert list(a.getdata()) != list(b.getdata())
 
 
 def test_png_screen_face_uses_v2_with_two_lanes():
@@ -1554,7 +1551,6 @@ def test_png_screen_face_uses_v2_with_two_lanes():
     sig = Signal(id="burn/session", label="burn", state=WORKING, meta={
         "meter": True, "frac": 0.4, "lanes": [{"id": "A", "frac": 0.2, "pct": 20}, {"id": "B", "frac": 0.5, "pct": 50}],
         "codex": {"id": "X", "pct": 10, "frac": 0.1}})
-    v = View(profile=NEO, meter_style="quadrant")
-    lay = v.layout([sig])
-    assert lay.meter is sig and lay.meter_style == "quadrant"
+    lay = View(profile=NEO).layout([sig])
+    assert lay.meter is sig
     assert _screen_face(NEO, lay, 0.0).size == (248, 58)

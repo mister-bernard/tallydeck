@@ -25,7 +25,6 @@ class Layout:
     meter: Signal | None = None      # meta.meter signal → info bar, not a key
     offpage_urgent: bool = False     # something NOT visible needs the human
     mural: bool = False              # nothing live: keys become the Mr. B mural
-    meter_style: str = "split"       # info-bar layout: split | quadrant
 
 
 @dataclass
@@ -38,7 +37,6 @@ class View:
     sticky: bool = True      # a signal keeps its key while visible — keys
     _slots: dict = field(default_factory=dict)  # must not move under a finger
     mural: bool = True       # quiet deck → Mr. B mural instead of dark keys
-    meter_style: str = "split"   # split (Codex lane under A/B) | quadrant
     peek_until: float = 0.0  # a press on the mural shows the plain grid a while
 
     def layout(self, signals: list[Signal]) -> Layout:
@@ -107,12 +105,7 @@ class View:
         return Layout(keys=keys, page=self.page, pages=pages,
                       summary=summarize(signals),
                       meter=meters[0] if meters else None,
-                      offpage_urgent=offpage, mural=quiet,
-                      meter_style=self.meter_style)
-
-    def toggle_meter_style(self) -> str:
-        self.meter_style = "quadrant" if self.meter_style == "split" else "split"
-        return self.meter_style
+                      offpage_urgent=offpage, mural=quiet)
 
     def peek(self, seconds: float = 20.0) -> None:
         """A press on the mural: show the real grid for a while."""

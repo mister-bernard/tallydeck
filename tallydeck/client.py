@@ -290,15 +290,12 @@ def run(link, surface, view: View, poll_every: float = 2.0,
 
     def on_touch(direction: int) -> None:
         if direction > 0:
-            # Right point: cycle pages (wraps) when there are any; on a
-            # single page it flips the info-bar layout (split ⇄ quadrant).
+            # Right point: cycle pages (wraps) when there are any.
             if pages_now[0] > 1:
                 if view.page >= pages_now[0] - 1:
                     view.page = 0
                 else:
                     view.page_next()
-            else:
-                view.toggle_meter_style()
         else:
             # Left point is the beacon. Most urgent thing on ANOTHER page →
             # jump to that page first (see it in context); already visible →
@@ -358,7 +355,6 @@ def run(link, surface, view: View, poll_every: float = 2.0,
                          (k, v) for k, v in m.meta.items()
                          if isinstance(v, (str, int, float, bool)))),
                      int(wall * 0.5) if m is not None else 0,  # meter hatch tick
-                     layout.meter_style,
                      ("mural", int(wall)) if layout.mural else None,  # cursor
                      tuple(sorted((k, int(p * 14)) for k, p in fx_phase.items())),
                      int(wall / 2) if any(

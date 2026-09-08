@@ -252,9 +252,9 @@ def draw_meter(size: tuple[int, int], frac: float, left: str = "",
 # blocks, selected underlines on the times — that way Codex fits underneath.
 # Or squash it to the left and put Codex bottom-right. Build both."
 #
-# Two styles, switchable live (right touch point on a single-page deck):
-#   split     A/B split bar full width on top, Codex lane underneath
-#   quadrant  A/B split bar on the left ~62%, clocks top-right, Codex bottom-right
+# Layout: the A/B split bar full width on top, the Codex lane underneath.
+# (A "quadrant" variant — bar left, clocks top-right, Codex bottom-right —
+# was built alongside and dropped: G judged it, it did not look good.)
 
 LANE_COLORS = {          # letter, fill ramp, notch — one hue per account
     "A": ("#00E5FF", ("#063C48", "#0FA7C4", "#00E5FF")),
@@ -262,7 +262,6 @@ LANE_COLORS = {          # letter, fill ramp, notch — one hue per account
     "X": ("#8CFF5A", ("#173A12", "#4FB33A", "#8CFF5A")),   # Codex
 }
 LANE_FALLBACK = ("#FFB224", ("#3F2C08", "#B07A16", "#FFB224"))
-METER_STYLES = ("split", "quadrant")
 
 
 def lane_color(lane_id: str) -> tuple[str, tuple[str, str, str]]:
@@ -331,27 +330,17 @@ def _chip(d, x1: int, cy: int, text: str, font, color: str, underline: bool,
 
 
 def draw_meter2(size: tuple[int, int], lanes: list[dict], codex: dict | None,
-                hot: str = "", t: float = 0.0, style: str = "split") -> Image.Image:
+                hot: str = "", t: float = 0.0) -> Image.Image:
     w, h = size[0] * SS, size[1] * SS
     img = Image.new("RGB", (w, h), BG)
     d = ImageDraw.Draw(img)
     for y in range(0, h, 2 * SS):                        # scanlines
         d.line([(0, y), (w, y)], fill=GRID, width=1)
     lanes = [l for l in lanes if isinstance(l, dict)][:2]
-    style = style if style in METER_STYLES else "split"
     inset = round(h * 0.10)
-
-    if style == "split":
-        bar_x0, bar_x1 = inset, w - inset
-        bar_y0, bar_y1 = inset, round(h * 0.60)
-        codex_box = (inset, round(h * 0.68), w - inset, h - inset)
-        clocks_in_bar = True
-    else:                                                # quadrant
-        bar_x0, bar_x1 = inset, round(w * 0.60)
-        bar_y0, bar_y1 = inset, h - inset
-        codex_box = (round(w * 0.64), round(h * 0.55), w - inset, h - inset)
-        clocks_box = (round(w * 0.64), inset, w - inset, round(h * 0.47))
-        clocks_in_bar = False
+    bar_x0, bar_x1 = inset, w - inset
+    bar_y0, bar_y1 = inset, round(h * 0.60)
+    codex_box = (inset, round(h * 0.68), w - inset, h - inset)
 
     # ── the shared A/B bar ───────────────────────────────────────────────────
     n = max(1, len(lanes))
@@ -377,23 +366,9 @@ def draw_meter2(size: tuple[int, int], lanes: list[dict], codex: dict | None,
         d.text((bar_x0 + round(span * 0.30) + f_letter.size + SS * 2, y0 + (span - f_pct.size) / 2 - SS),
                f"{round(float(lane.get('pct', 0)))}%", font=f_pct, fill="#F2F6FF",
                stroke_width=SS + 1, stroke_fill=(3, 4, 8))
-        if clocks_in_bar and lane.get("clock"):
+        if lane.get("clock"):
             _chip(d, bar_x1 - round(span * 0.25), (y0 + y1) // 2, str(lane["clock"]),
                   f_clock, accent, underline=bool(hot and lane.get("id") == hot))
-
-    if style == "quadrant":                             # clocks stacked top-right
-        cx0, cy0, cx1, cy1 = clocks_box
-        rows = max(1, len(lanes))
-        rh = (cy1 - cy0) / rows
-        f_c = theme.font("semibold", max(7, round(rh * 0.72)))
-        for i, lane in enumerate(lanes):
-            if not lane.get("clock"):
-                continue
-            accent, _ = lane_color(lane.get("id", ""))
-            cy = round(cy0 + i * rh + rh / 2)
-            d.text((cx0, cy - f_c.size // 2), str(lane.get("id", ""))[:1], font=f_c, fill=accent)
-            _chip(d, cx1, cy, str(lane["clock"]), f_c, accent,
-                  underline=bool(hot and lane.get("id") == hot))
 
     # ── Codex lane ───────────────────────────────────────────────────────────
     if codex:
@@ -408,7 +383,7 @@ def draw_meter2(size: tuple[int, int], lanes: list[dict], codex: dict | None,
         d = ImageDraw.Draw(img)
         f_l = theme.font("display", max(7, round(ch * 0.66)))
         f_p = theme.font("semibold", max(6, round(ch * 0.50)))
-        label = "CODEX" if style == "split" else "X"
+        label = "CODEX"
         d.text((x0 + round(ch * 0.35), y0 + (ch - f_l.size) / 2 - SS), label, font=f_l,
                fill=accent, stroke_width=SS + 1, stroke_fill=(3, 4, 8))
         lw = d.textlength(label, font=f_l)
