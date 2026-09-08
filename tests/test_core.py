@@ -1350,3 +1350,29 @@ def test_working_but_silent_for_long_is_stalled_not_blue(tmp_path):
     os.utime(p, (t0, t0))
     assert ClaudeSessionsSource(root=str(tmp_path)).poll()[0].state == IDLE
     assert ClaudeSessionsSource(root=str(tmp_path), stall=3600).poll()[0].state == WORKING
+
+
+def test_session_ask_gets_the_router_popup_action(tmp_path):
+    """A permission prompt (ask-<sid>) must open the router on press, hub-side —
+    the Mac script no longer routes, so without this the red key was dead."""
+    src = WatchDirSource(path=str(tmp_path))
+    (tmp_path / "ask-c64c64c6.json").write_text(json.dumps(
+        {"label": "c64", "state": "blocked", "detail": "Claude needs your permission to use Bash",
+         "meta": {"session": "c64c64c6-x", "tmux": "c64:1.1", "project": "/p", "account": "A"}}))
+    s = src.poll()[0]
+    assert s.action and s.action["argv"][0].endswith("tally-popup-route")
+    assert s.action["argv"][1] == "c64:1.1" and s.action["argv"][2] == "c64c64c6-x"
+    assert "tally-popup-decide" not in s.action["argv"][0]
+
+
+def test_hub_notices_its_own_code_changing(tmp_path, monkeypatch):
+    from tallydeck import hub as hubmod
+    h = Hub([], log=lambda m: None)
+    t0 = h.code_mtime()
+    assert t0 > 0
+    calls = []
+    monkeypatch.setattr(hubmod.os, "execv", lambda *a: calls.append(a))
+    h._maybe_reexec(t0)                       # unchanged → no exec
+    assert calls == []
+    h._maybe_reexec(t0 - 100)                 # "older start" → code looks newer → exec
+    assert calls and calls[0][1][1:3] == ["-m", "tallydeck.cli"]

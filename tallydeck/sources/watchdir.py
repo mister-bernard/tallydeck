@@ -115,6 +115,20 @@ class WatchDirSource(Source):
             if sig.action is None and not is_session_ask and (sig.detail or "").strip():
                 sig.action = {"type": "cmd",
                               "argv": [self._decide_cmd(), stem]}
+            elif sig.action is None and is_session_ask:
+                # A live session parked at its own prompt: the press opens
+                # the ROUTER on the operator's terminal (⏎ lands in that
+                # pane), hub-side like everything else. Without this the key
+                # was dead once the Mac script stopped routing (G pressed a
+                # red "Claude needs you" key and got nothing back).
+                from ..paths import contrib_bin
+                route = contrib_bin("tally-popup-route")
+                m = sig.meta
+                if route:
+                    sig.action = {"type": "cmd", "argv": [
+                        route, str(m.get("tmux") or ""), str(m.get("session") or ""),
+                        str(m.get("project") or ""), sig.label[:24], sig.state,
+                        str(m.get("account") or ""), sig.id]}
             if sig.expired():
                 fp.unlink(missing_ok=True)
                 continue

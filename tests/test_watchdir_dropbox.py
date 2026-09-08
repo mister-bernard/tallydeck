@@ -62,7 +62,7 @@ class DropBoxIsHostile(unittest.TestCase):
             "label": "sess", "state": "blocked",
             "sublabel": "Claude is waiting for your input",
             "detail": "Claude is waiting for your input"}})
-        self.assertIsNone(sigs[0].action)
+        self.assertTrue(sigs[0].action and sigs[0].action['argv'][0].endswith('tally-popup-route'), 'a session ask opens the ROUTER (to its pane), never the decide popup')
 
     def tearDown(self):
         if getattr(self, "tmp", None):

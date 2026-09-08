@@ -36,6 +36,7 @@ PROTOCOL_VERSION = 1
 KEEPALIVE = 20.0
 OPEN_AFTER = 0.7      # s an action must survive to count as "opened"
 HEARTBEAT = 5.0       # s between hub.alive touches while a client is connected
+RELOAD_CHECK = 5.0    # s between checks of our own source tree
 
 
 class Hub:
@@ -174,6 +175,39 @@ class Hub:
                 return cand
         return ""
 
+    # ── self-reload ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def code_mtime() -> float:
+        """Newest mtime across the package and contrib helpers."""
+        from pathlib import Path
+        root = Path(__file__).resolve().parent
+        newest = 0.0
+        for d in (root, root.parent / "contrib"):
+            try:
+                for p in d.rglob("*"):
+                    if p.is_file() and "__pycache__" not in p.parts:
+                        newest = max(newest, p.stat().st_mtime)
+            except OSError:
+                pass
+        return newest
+
+    def _maybe_reexec(self, started_mtime: float) -> None:
+        """A `git pull` on the hub host used to need the operator to quit
+        and relaunch the deck — every fix tonight ended with 'relaunch it'.
+        exec keeps fds 0/1 (the ssh pipe to the deck) so the client never
+        notices beyond a fresh hello."""
+        if self.code_mtime() <= started_mtime + 0.5:
+            return
+        self.log("[hub] code changed on disk — re-exec")
+        self._clear_heartbeat()
+        try:
+            sys.stdout.flush()
+            os.execv(sys.executable, [sys.executable, "-m", "tallydeck.cli", "serve"]
+                     + [a for a in sys.argv[1:] if a != "serve"])
+        except OSError as e:
+            self.log(f"[hub] re-exec failed: {e}")
+
     # ── presence ─────────────────────────────────────────────────────────────
 
     def heartbeat(self) -> None:
@@ -242,8 +276,14 @@ class Hub:
         threading.Thread(target=beater, daemon=True).start()
         last_sent = ""
         last_time = 0.0
+        started_mtime = self.code_mtime()
+        last_check = time.time()
         try:
             while not stop.is_set():
+                if time.time() - last_check > RELOAD_CHECK:
+                    last_check = time.time()
+                    if not self._inflight:            # never mid-popup
+                        self._maybe_reexec(started_mtime)
                 signals = self.poll()
                 line = self.snapshot_line(signals)
                 now = time.time()
