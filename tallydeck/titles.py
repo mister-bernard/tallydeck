@@ -71,11 +71,14 @@ _GENERIC_WINDOW = {"", "1", "bash", "zsh", "sh", "fish", "claude", "claude-b",
 # human's and is left alone forever.
 SRC_AUTO = "tallydeck"
 
-# Two lengths, deliberately. A 96px key wraps two short lines, so a key label
-# is a headline; a pane border in the manager is as wide as the pane and can
-# hold the whole subject. Same resolution, cut differently.
+# ONE length, everywhere. G, 2026-09-08: "realistically we don't have that
+# many characters for titles on the Stream Deck, so we shouldn't use whole
+# sentences — let's just make them really concise and nice." A pane border
+# could hold more, but then the border and the key would say different
+# things about the same session, which is the confusion this whole file
+# exists to remove.
 KEY_LIMIT = 24
-TITLE_LIMIT = 64
+TITLE_LIMIT = KEY_LIMIT
 
 # Conversational run-up. "So, tell me about yourself" is about yourself, not
 # about so.
@@ -85,15 +88,38 @@ _FILLER = re.compile(
     r"i would like you to|i need you to|let'?s|lets|go ahead and|"
     r"just|actually|btw|fyi)\b[\s,:—-]*", re.I)
 
+# Words that carry no topic. G, 2026-09-08: "we don't have that many
+# characters for titles on the Stream Deck, so we shouldn't use whole
+# sentences — let's just make them really concise and nice." Two to four
+# words, ~12-20 characters. Getting there from a chat opener means throwing
+# away the scaffolding of the sentence and keeping the nouns: "I'm just
+# testing if this shows up in the thingamajig properly" is about a
+# thingamajig, and every other word in it is grammar.
+_STOP = frozenset("""
+a an the this that these those there here it its it's is are was were be been
+being am i i'm i've i'd i'll me my mine we we're our ours us you you're you've
+your yours he him his she her hers they them their theirs
+and or but if then than so as because since while when where what which who
+whom whose why how of in on at to for with without from by about into over
+under again further once all any both each few more most other some such no
+nor not only own same too very can could shall should will would may might
+must do does did doing done have has had having get gets got getting go goes
+going went make makes made making let lets put puts run runs ran
+please just really quite pretty maybe perhaps actually basically simply kind
+sort thing things stuff bit lot lots way ways
+tell tells told say says said see sees saw look looks think thinks want wants
+need needs know knows like likes working up out off down now new
+show shows showing shown properly correctly exactly currently still again
+also even ever back first last next best better good great nice pretty
+heard hear everything something anything nothing yes yeah nope thanks thank
+""".split())
 
-def headline(text: str, limit: int = 24) -> str:
-    """A key-sized headline off the front of a message.
+# Never worth a key: a bare number, a single letter, punctuation.
+_WORD = re.compile(r"[A-Za-z0-9][\w.+#/@-]*")
 
-    96 pixels of key, two wrapped lines. Machine tags (`[telegram reply ← …]`,
-    `[tally] …`), markdown chrome and code spans say nothing at that size, and
-    a message that opens with "So," wastes three of the characters that do.
-    Cut on a word boundary — a title sheared mid-word reads as corruption.
-    """
+
+def _clean(text: str) -> str:
+    """Strip everything that is chrome rather than subject."""
     t = re.sub(r"```.*?```", " ", str(text or ""), flags=re.S)
     t = re.sub(r"`[^`\n]*`", " ", t)
     t = re.sub(r"^\s*(?:\[[^\]]{0,80}\]|<[^>\n]{0,80}>)\s*", "", t)
@@ -101,18 +127,69 @@ def headline(text: str, limit: int = 24) -> str:
     t = t.split("\n\n")[0].strip().splitlines()[0] if t.strip() else ""
     t = _FILLER.sub("", t.strip())
     t = re.sub(r"[*_`#>]+", "", t)
-    t = " ".join(t.split())
-    # First sentence, when there is one and it is not the whole paragraph.
-    first = re.split(r"(?<=[.!?])\s+", t)[0]
-    if 4 <= len(first) <= limit + 12:
-        t = first
-    t = t.rstrip(" .,:;|·—-")
-    if len(t) <= limit:
-        return t
-    cut = t[:limit + 1]
+    return " ".join(t.split()).strip(" .,:;|·—-")
+
+
+def _fit(text: str, limit: int) -> str:
+    """Word-boundary truncation — a title sheared mid-word reads as damage."""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit + 1]
     sp = cut.rfind(" ")
-    return (cut[:sp] if sp >= max(8, limit // 2)
-            else t[:limit]).rstrip(" .,:;|·—-")
+    return (cut[:sp] if sp >= max(6, limit // 3)
+            else text[:limit]).rstrip(" .,:;|·—-")
+
+
+def headline(text: str, limit: int = 24) -> str:
+    """A 2-4 word topic for a 96-pixel key.
+
+    Text that is already a title — Claude Code's ai-title, a window a human
+    named, a spawn slug — passes through untouched; it is short and it is
+    about the subject already. A sentence does not: it is mostly grammar, and
+    the first 24 characters of one ("I'm just testing if this") name nothing.
+    Those get reduced to the content words, in the order they were written,
+    which is the closest thing to a topic available without asking a model
+    what the conversation is about.
+    """
+    t = _clean(text)
+    if not t:
+        return ""
+    if len(t) <= limit and not t.endswith("?"):
+        return t                        # already a title; leave it alone
+    # First sentence first: a question or a one-liner followed by detail.
+    first = re.split(r"(?<=[.!?])\s+", t)[0].rstrip(" .!?,:;")
+    if 4 <= len(first) <= limit:
+        return first[:1].upper() + first[1:]
+    # Bare numbers are never a topic ("… (Run separately?): 1 — 1").
+    words = [w for w in _WORD.findall(t) if w.lower() not in _STOP
+             and len(w) > 1 and not w.isdigit()][:8]
+    topic = _pack(words, limit)
+    # A path, a slug or an identifier IS the subject of the sentence it is in.
+    # If packing had to skip one to fit a couple of short verbs, the verbs
+    # were the wrong choice — "Read directory Answer" says nothing that
+    # "autopilot/PLAYBOOK.md" does not say better. Only a genuinely long token
+    # earns this: ordinary words like "categorization" must not displace the
+    # three that came before them.
+    if words:
+        anchor = max(words, key=len)
+        if len(anchor) >= max(12, limit * 2 // 3) and len(anchor) <= limit \
+                and anchor not in topic.split():
+            topic = _pack(words[words.index(anchor):], limit)
+    if len(topic) < 3:                  # nothing but grammar: fall back
+        topic = _fit(t, limit)
+    topic = _fit(topic, limit)
+    return topic[:1].upper() + topic[1:] if topic else ""
+
+
+def _pack(words: list[str], limit: int, most: int = 4) -> str:
+    """As many of these words, in order, as fit — skipping any that do not."""
+    out: list[str] = []
+    for w in words:
+        if len(" ".join(out + [w])) <= limit:
+            out.append(w)
+            if len(out) == most:
+                break
+    return " ".join(out)
 
 
 # ── Claude Code ─────────────────────────────────────────────────────────────
@@ -261,11 +338,21 @@ class CodexState:
 # ── tmux ────────────────────────────────────────────────────────────────────
 
 class PaneInfo:
+    """A pane, and the two titles on it.
+
+    We keep a copy of what we last wrote (`@tally_title_auto`) beside the
+    live value (`@tally_title`). Anything that makes them differ — G typing
+    `tmux set-option -p @tally_title "Deck titles"`, another agent setting one
+    — is by definition not ours, and is never overwritten. A flag saying
+    "tallydeck wrote this" could not tell the difference: the flag would still
+    be sitting there from OUR last write when a human overwrote the value.
+    """
+
     __slots__ = ("target", "pane_id", "session", "window", "window_index",
-                 "window_panes", "title", "title_src", "window_src")
+                 "window_panes", "title", "title_auto", "window_auto")
 
     def __init__(self, target, pane_id, session, window, window_index,
-                 window_panes, title, title_src, window_src=""):
+                 window_panes, title, title_auto, window_auto=""):
         self.target = target
         self.pane_id = pane_id
         self.session = session
@@ -273,20 +360,21 @@ class PaneInfo:
         self.window_index = window_index
         self.window_panes = window_panes
         self.title = title             # @tally_title
-        self.title_src = title_src     # @tally_title_src
-        self.window_src = window_src   # @tally_window_src
+        self.title_auto = title_auto   # @tally_title_auto — our last write
+        self.window_auto = window_auto  # @tally_window_auto — our last rename
 
     @property
     def manual_title(self) -> str:
         """A title we did not write is a human's and outranks everything."""
-        return self.title if self.title and self.title_src != SRC_AUTO else ""
+        return self.title if self.title and self.title != self.title_auto \
+            else ""
 
     @property
     def manual_window(self) -> str:
         """A window name WE wrote is a copy of the title, not a decision about
         it. Reading it back as if a human had chosen it would freeze the label
         at whatever the title said the first time we synced."""
-        if self.window_src == SRC_AUTO:
+        if self.window and self.window == self.window_auto:
             return ""
         if self.window in _GENERIC_WINDOW or self.window.isdigit():
             return ""
@@ -318,7 +406,7 @@ class Tmux:
         fmt = _SEP.join((
             "#{session_name}:#{window_index}.#{pane_index}", "#{pane_id}",
             "#{session_name}", "#{window_index}", "#{window_panes}",
-            "#{@tally_title_src}", "#{@tally_window_src}", "#{@tally_title}",
+            "#{@tally_title_auto}", "#{@tally_window_auto}", "#{@tally_title}",
             "#{window_name}"))
         out: dict[str, PaneInfo] = {}
         for ln in self._run("list-panes", "-a", "-F", fmt).splitlines():
@@ -341,14 +429,12 @@ class Tmux:
 
     def set_pane_title(self, target: str, title: str) -> None:
         self._run("set-option", "-p", "-t", target, "@tally_title", title)
-        self._run("set-option", "-p", "-t", target, "@tally_title_src",
-                  SRC_AUTO)
+        self._run("set-option", "-p", "-t", target, "@tally_title_auto", title)
 
     def rename_window(self, session: str, index: str, name: str) -> None:
         target = f"{session}:{index}"
         self._run("rename-window", "-t", target, name)
-        self._run("set-option", "-w", "-t", target, "@tally_window_src",
-                  SRC_AUTO)
+        self._run("set-option", "-w", "-t", target, "@tally_window_auto", name)
 
 
 _TMUX: dict[str, Tmux] = {}
@@ -420,8 +506,7 @@ class TitleSync:
                 continue
             if info.title != title:
                 self.tmux.set_pane_title(target, title)
-                info.title = title
-                info.title_src = SRC_AUTO
+                info.title = info.title_auto = title
                 writes += 1
             # A single-pane window can carry the title in its name, where the
             # window list and the terminal window title can both see it. A
@@ -430,7 +515,7 @@ class TitleSync:
             if info.window_panes == 1 and not info.manual_window \
                     and info.window != short:
                 self.tmux.rename_window(info.session, info.window_index, short)
-                info.window, info.window_src = short, SRC_AUTO
+                info.window = info.window_auto = short
                 writes += 1
         return writes
 

@@ -19,14 +19,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tallydeck.titles import (CodexState, PaneInfo, TitleSync, SRC_AUTO,
+from tallydeck.titles import (CodexState, PaneInfo, TitleSync,
                               claude_ai_title, headline, resolve_label)
 
 
 def pane(target="main-O:1.1", session="main-O", window="1", index="1",
-         npanes=1, title="", title_src="", window_src=""):
+         npanes=1, title="", title_auto="", window_auto=""):
     return PaneInfo(target, "%1", session, window, index, npanes, title,
-                    title_src, window_src)
+                    title_auto, window_auto)
 
 
 class Headline(unittest.TestCase):
@@ -35,19 +35,42 @@ class Headline(unittest.TestCase):
             headline("[telegram reply <- gmacd, chat=39172309] fix the meter",
                      24), "fix the meter")
 
-    def test_conversational_run_up_is_dropped(self):
+    def test_a_sentence_is_reduced_to_its_topic(self):
+        # G, 2026-09-08: "we shouldn't use whole sentences — let's just make
+        # them really concise and nice." The first 24 characters of a sentence
+        # ("I'm just testing if this") name nothing at all.
         self.assertEqual(headline("So, tell me about the burn meter", 24),
-                         "tell me about the burn")
+                         "Burn meter")
+        self.assertEqual(
+            headline("I'm just testing if this shows up in the thingamajig "
+                     "properly.", 24), "Testing thingamajig")
+
+    def test_a_title_is_left_as_it_was_written(self):
+        # Claude Code's ai-title, a spawn slug, a window a human named: short
+        # and already about the subject. Do not "improve" them.
+        for t in ("RAM problem fixes", "Session titles", "session-titles",
+                  "C64 migration"):
+            self.assertEqual(headline(t, 24), t)
 
     def test_cuts_on_a_word_boundary(self):
         out = headline("Automatic relevant session titles for the deck", 24)
-        self.assertEqual(out, "Automatic relevant")
+        self.assertEqual(out, "Automatic relevant deck")
         self.assertFalse(out.endswith(" "))
 
+    def test_stays_inside_the_key(self):
+        for t in ("Read autopilot/PLAYBOOK.md in your working directory and "
+                  "report back in four lines",
+                  "[tally] decision for offer-session-titles (Run "
+                  "separately?): 1 — 1 · Yes",
+                  "Can you make it so the Stream Deck shows what each "
+                  "session is doing?"):
+            out = headline(t, 24)
+            self.assertLessEqual(len(out), 24, out)
+            self.assertGreaterEqual(len(out), 4, out)
+            self.assertLessEqual(len(out.split()), 4, out)
+
     def test_code_span_is_not_a_title(self):
-        # The question mark stays: "run this?" is asking, and on an amber key
-        # that is the whole point.
-        self.assertEqual(headline("`rm -rf /` run this?", 24), "run this?")
+        self.assertEqual(headline("`rm -rf /` run this?", 24), "Run this")
 
     def test_first_sentence_wins_over_the_paragraph(self):
         self.assertEqual(
@@ -59,7 +82,7 @@ class Precedence(unittest.TestCase):
     def test_human_pane_title_beats_everything(self):
         self.assertEqual(resolve_label(
             harness_title="Codex integration with TokenBurn",
-            pane=pane(title="pearl payout", title_src=""),
+            pane=pane(title="pearl payout"),
             session_name="pearlbridge"), "pearl payout")
 
     def test_our_own_pane_title_does_not_beat_the_harness(self):
@@ -67,7 +90,7 @@ class Precedence(unittest.TestCase):
         # own output back as if a human had typed it.
         self.assertEqual(resolve_label(
             harness_title="RAM problem fixes",
-            pane=pane(title="Old subject", title_src=SRC_AUTO),
+            pane=pane(title="Old subject", title_auto="Old subject"),
             session_name="mainB"), "RAM problem fixes")
 
     def test_window_name_names_the_session_only_when_alone(self):
@@ -79,7 +102,7 @@ class Precedence(unittest.TestCase):
                          "deck work")
 
     def test_our_own_window_name_is_not_a_human_name(self):
-        p = pane(window="deck work", npanes=1, window_src=SRC_AUTO)
+        p = pane(window="deck work", npanes=1, window_auto="deck work")
         self.assertEqual(resolve_label(harness_title="newer subject", pane=p),
                          "newer subject")
 
@@ -153,14 +176,14 @@ class Sync(unittest.TestCase):
         return t, TitleSync(t, every=0)
 
     def test_unchanged_title_writes_nothing(self):
-        p = pane(title="RAM problem fixes", title_src=SRC_AUTO,
-                 window="RAM problem fixes", window_src=SRC_AUTO)
+        p = pane(title="RAM problem fixes", title_auto="RAM problem fixes",
+                 window="RAM problem fixes", window_auto="RAM problem fixes")
         t, s = self.sync({"mainB:1.2": p})
         s.push([("mainB:1.2", "RAM problem fixes")], force=True)
         self.assertEqual((t.titles, t.renames), ([], []))
 
     def test_manual_title_is_never_overwritten(self):
-        t, s = self.sync({"mainB:1.2": pane(title="mine", title_src="")})
+        t, s = self.sync({"mainB:1.2": pane(title="mine")})
         s.push([("mainB:1.2", "RAM problem fixes")], force=True)
         self.assertEqual(t.titles, [])
 
@@ -336,7 +359,7 @@ class TwoCodexSessionsInOneDirectory(unittest.TestCase):
     def test_each_key_is_named_after_its_own_thread(self):
         labels = {s.meta["session"]: s.label for s in self.src.poll()}
         self.assertEqual(labels[self.A], "Automatic session titles")
-        self.assertEqual(labels[self.B], "are you the best at 3D")
+        self.assertEqual(labels[self.B], "3D work")
         self.assertNotIn("openclaw", labels.values())
 
     def test_each_session_gets_its_own_key(self):

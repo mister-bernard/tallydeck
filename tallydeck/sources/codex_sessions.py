@@ -33,8 +33,7 @@ from pathlib import Path
 
 from ..signal import Signal, WORKING, ATTENTION, SUCCESS, IDLE
 from ..paths import contrib_bin
-from ..titles import (TITLE_LIMIT, CodexState, TitleSync, resolve_label,
-                      tmux_for)
+from ..titles import CodexState, TitleSync, resolve_label, tmux_for
 from .base import Source
 from .claude_sessions import _tail_lines, _load, asks_question, _age_str
 
@@ -205,10 +204,7 @@ class CodexSessionsSource(Source):
             label = resolve_label(harness_title=harness_title, pane=info,
                                   cwd=cwd) or "codex"
             if pane and not is_exec:
-                # tmux has room for the whole title; a 96px key does not.
-                titled.append((pane, resolve_label(
-                    harness_title=harness_title, pane=info, cwd=cwd,
-                    limit=TITLE_LIMIT)))
+                titled.append((pane, label))   # same topic on every surface
             rate = self._burn_rate(uuid, now, size)
             sub = _age_str(now - mtime)
             if rate >= 20:

@@ -36,8 +36,7 @@ from pathlib import Path
 
 from ..signal import Signal, WORKING, ATTENTION, SUCCESS, IDLE
 from ..paths import signals_dir, acked_dir, contrib_bin
-from ..titles import (TITLE_LIMIT, TitleSync, claude_ai_title, resolve_label,
-                      tmux_for)
+from ..titles import (TitleSync, claude_ai_title, resolve_label, tmux_for)
 from .base import Source
 
 TAIL_BYTES = 65536
@@ -402,10 +401,8 @@ class ClaudeSessionsSource(Source):
                 label = resolve_label(harness_title=harness_title, pane=info,
                                       session_name=sess, cwd=full)
                 if pane and not oneshot:
-                    # tmux has room for the whole title; a 96px key does not.
-                    self._titled.append((pane, resolve_label(
-                        harness_title=harness_title, pane=info,
-                        session_name=sess, cwd=full, limit=TITLE_LIMIT)))
+                    # Same topic on every surface: key, pane border, window.
+                    self._titled.append((pane, label))
                 # The press is HUB-OWNED, like a raised question: the hub
                 # runs tmux, so it puts the router popup up on the operator's
                 # attached terminal(s) itself. Nothing on the deck machine has

@@ -103,10 +103,19 @@ Every session resolves to **one title**, and the deck key, the tmux pane
 border and the window list all show that same title — you should never have
 to translate between them.
 
+A title is a **topic, not a sentence**: two to four words, 24 characters at
+the outside, because that is what a 96-pixel key can say. A harness title
+that is already one ("RAM problem fixes") is used as written; a chat opener
+is reduced to the words in it that carry the subject, so "I'm just testing
+if this shows up in the thingamajig properly" becomes `Testing thingamajig`
+rather than the first 24 characters of itself.
+
 The title comes from the first of these that exists:
 
 1. a title **you** set — `tmux set-option -p @tally_title "pearl payout"` on
-   the pane. Nothing ever overwrites it.
+   the pane. Nothing ever overwrites it: tallydeck keeps a copy of its own
+   last write beside it, so any value that differs from that copy is someone
+   else's and is left alone.
 2. the **window name**, when that window holds exactly one pane (a window
    with five sessions in it is named after the window, not any one of them).
 3. the **session name**, unless it is an auto one (`main`, `mainA`, `main-O`).
