@@ -52,13 +52,20 @@ def render_png(profile: DeviceProfile, layout: Layout,
     d.rounded_rectangle([0, 0, W - 1, H - 1], radius=CORNER * scale,
                         fill="#16171B", outline="#26282E", width=scale)
 
+    faces = None
+    if layout.mural:
+        from . import mural
+        faces = mural.tiles(profile, t)
     for i, sig in enumerate(layout.keys):
         r, c = divmod(i, profile.cols)
         x = bez + c * (kp + gap)
         y = bez + r * (kp + gap)
-        face = draw_key(sig, profile.key_px,
-                        lit=bool(sig and lit.get(sig.id)),
-                        askpage=int(t / 2)).resize((kp, kp))
+        if faces is not None:
+            face = faces[i].resize((kp, kp))
+        else:
+            face = draw_key(sig, profile.key_px,
+                            lit=bool(sig and lit.get(sig.id)),
+                            askpage=int(t / 2)).resize((kp, kp))
         img.paste(face, (x, y))
         d.rounded_rectangle([x - 1, y - 1, x + kp, y + kp],
                             radius=6 * scale, outline="#000000", width=scale)

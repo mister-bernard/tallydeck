@@ -8,6 +8,7 @@ into pages. Key 0 is top-left; keys read left-to-right, top-to-bottom.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
 from .devices import DeviceProfile
@@ -23,6 +24,7 @@ class Layout:
     summary: str
     meter: Signal | None = None      # meta.meter signal → info bar, not a key
     offpage_urgent: bool = False     # something NOT visible needs the human
+    mural: bool = False              # nothing live: keys become the Mr. B mural
 
 
 @dataclass
@@ -34,6 +36,8 @@ class View:
     page: int = 0            # column; "rows": left→right per row
     sticky: bool = True      # a signal keeps its key while visible — keys
     _slots: dict = field(default_factory=dict)  # must not move under a finger
+    mural: bool = True       # quiet deck → Mr. B mural instead of dark keys
+    peek_until: float = 0.0  # a press on the mural shows the plain grid a while
 
     def layout(self, signals: list[Signal]) -> Layout:
         meters = [s for s in signals if s.meta.get("meter")]
@@ -92,10 +96,20 @@ class View:
         offpage = any(s.state in urgent
                       for s in ordered[:self.page * per_page]
                       + ordered[(self.page + 1) * per_page:])
+        # Quiet = nobody needs the operator and nothing is in motion. Done
+        # and idle sessions still exist (a press on the mural peeks at them),
+        # but they are not a reason to keep eight dark tiles on the desk.
+        live = {"blocked", "attention", "working"}
+        quiet = self.mural and not any(s.state in live for s in signals) \
+            and time.time() >= self.peek_until
         return Layout(keys=keys, page=self.page, pages=pages,
                       summary=summarize(signals),
                       meter=meters[0] if meters else None,
-                      offpage_urgent=offpage)
+                      offpage_urgent=offpage, mural=quiet)
+
+    def peek(self, seconds: float = 20.0) -> None:
+        """A press on the mural: show the real grid for a while."""
+        self.peek_until = time.time() + seconds
 
     def jump_to(self, sid: str) -> None:
         """Flip to the page holding this signal (rank order, latest layout)."""

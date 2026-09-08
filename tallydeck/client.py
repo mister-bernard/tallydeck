@@ -149,7 +149,11 @@ def run(link, surface, view: View, poll_every: float = 2.0,
         else:
             held.discard(index)
             t0 = pressed_at.pop(index, None)
-            if t0 is not None and index < len(key_map):
+            if mural_now[0]:
+                # The mural is not a key: any press lifts it for a look at
+                # the plain grid (done/idle sessions), then it comes back.
+                view.peek()
+            elif t0 is not None and index < len(key_map):
                 sig = key_map[index]
                 if sig is not None:
                     long = (time.monotonic() - t0) >= LONG_PRESS
@@ -158,6 +162,7 @@ def run(link, surface, view: View, poll_every: float = 2.0,
         wake.set()
 
     pages_now = [1]   # updated each frame; touch behavior depends on it
+    mural_now = [False]
 
     _URGENCY = {"blocked": 2, "attention": 1}
 
@@ -200,6 +205,7 @@ def run(link, surface, view: View, poll_every: float = 2.0,
             layout = view.layout(signals)
             key_map = layout.keys
             pages_now[0] = layout.pages
+            mural_now[0] = layout.mural
             flashing = [s for s in layout.keys if s and s.wants_flash]
             wall = time.time()   # epoch, so all surfaces blink in phase
             lit = {s.id: theme.flash_lit(s.state, wall) for s in flashing}
@@ -215,6 +221,7 @@ def run(link, surface, view: View, poll_every: float = 2.0,
                          (k, v) for k, v in m.meta.items()
                          if isinstance(v, (str, int, float, bool)))),
                      int(wall * 0.5) if m is not None else 0,  # meter hatch tick
+                     ("mural", int(wall)) if layout.mural else None,  # cursor
                      int(wall / 2) if any(
                          s and s.state in ("attention", "blocked")
                          and len(s.sublabel) > 55 for s in layout.keys)

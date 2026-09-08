@@ -823,3 +823,39 @@ def test_press_script_gets_the_decks_own_ssh_target():
     assert ssh_host(["/usr/bin/ssh", "-tt", "me@box"]) == "me@box"
     assert ssh_host(["tallyd"]) == ""
     assert ssh_host(None) == ""
+
+
+# ── the quiet-deck mural ─────────────────────────────────────────────────────
+
+def test_mural_only_when_nothing_is_live(monkeypatch):
+    v = View(profile=NEO)
+    assert v.layout([]).mural is True
+    assert v.layout([Signal(id="a", label="a", state=IDLE),
+                     Signal(id="b", label="b", state=SUCCESS)]).mural is True
+    for live in (WORKING, ATTENTION, BLOCKED):
+        assert v.layout([Signal(id="a", label="a", state=live)]).mural is False
+    # a press on the mural peeks at the plain grid, then it returns
+    v.peek(seconds=60)
+    assert v.layout([]).mural is False
+    v.peek_until = 0.0
+    assert v.layout([]).mural is True
+    assert View(profile=NEO, mural=False).layout([]).mural is False
+
+
+def test_mural_tiles_cover_every_key_and_render_everywhere(tmp_path):
+    from tallydeck.render import mural
+    from tallydeck.render.png import render_png
+    from tallydeck.render.term import render_term
+    tiles = mural.tiles(NEO, t=0)
+    assert len(tiles) == NEO.keys
+    assert all(t.size == (NEO.key_px, NEO.key_px) for t in tiles)
+    # it is a picture, not eight dark keys: every tile has ink on it
+    assert all(t.convert("L").getextrema()[1] > 60 for t in tiles)
+    art = mural.text(NEO)
+    assert "> all quiet_" in art and "@" in art
+    assert "> all quiet " in mural.text(NEO, t=1)     # the cursor blinks
+    lay = View(profile=NEO).layout([])
+    assert lay.mural
+    img = render_png(NEO, lay, scale=1, t=0)
+    assert img.size[0] > 0
+    assert "all quiet" in render_term(NEO, lay)

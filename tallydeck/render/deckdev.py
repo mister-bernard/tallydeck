@@ -103,7 +103,20 @@ class DeckSurface:
              t: float = 0.0, pressed: frozenset = frozenset()) -> None:
         with self._lock:
             askpage = int(t / 2)
-            for i, sig in enumerate(layout.keys[:self.profile.keys]):
+            if layout.mural:
+                from . import mural
+                imgs = mural.tiles(self.profile, t)
+                for i, img in enumerate(imgs[:self.profile.keys]):
+                    key = ("mural", i, int(t) % 2, i in pressed)
+                    if self._drawn.get(i) == key:
+                        continue
+                    native = self._pil.to_native_key_format(
+                        self.deck,
+                        self._pil.create_scaled_key_image(self.deck, img))
+                    self.deck.set_key_image(i, native)
+                    self._drawn[i] = key
+            for i, sig in enumerate(
+                    [] if layout.mural else layout.keys[:self.profile.keys]):
                 is_lit = bool(sig and lit.get(sig.id))
                 is_pressed = i in pressed
                 paged = bool(sig and sig.state in ("attention", "blocked")

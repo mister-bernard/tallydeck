@@ -25,6 +25,13 @@ Hot attention keys show **the actual question**, wrapped across the key —
 long asks alternate between two pages of text (watch the little dots), so
 you often know your answer before you press.
 
+**When nothing is live** — nobody blocked, nobody asking, nothing working —
+the eight keys stop being eight dark tiles and become one picture: Mr. B in
+ASCII, fedora and magnifier on the left, the name across the top, a
+blinking `> all quiet_` bottom-right. Any press peeks at the plain grid
+(your done and idle sessions) for twenty seconds. Turn it off with
+`[view] mural = false`.
+
 Finished is not the same as waiting. A session that ends its turn with a
 report goes **green**; only one that ends with a question goes **orange**.
 Red is never earned by finishing — a normally completed turn is not an

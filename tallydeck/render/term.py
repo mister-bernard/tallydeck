@@ -47,6 +47,9 @@ def _cell_lines(sig: Signal | None, lit: bool) -> list[str]:
 def render_term(profile: DeviceProfile, layout: Layout,
                 lit: dict[str, bool] | None = None) -> str:
     lit = lit or {}
+    if layout.mural:
+        from . import mural
+        return mural.text(profile) + "\n\n  " + layout.summary
     rows_out: list[str] = []
     for r in range(profile.rows):
         cells = []

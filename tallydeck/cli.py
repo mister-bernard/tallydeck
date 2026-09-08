@@ -49,7 +49,8 @@ def _view(cfg: dict, args) -> View:
     return View(profile=PROFILES[dev],
                 pinned=list(cfg["view"].get("pinned", [])),
                 hide_idle=bool(cfg["view"].get("hide_idle", False)),
-                fill=str(cfg["view"].get("fill", "columns")))
+                fill=str(cfg["view"].get("fill", "columns")),
+                mural=bool(cfg["view"].get("mural", True)))
 
 
 def _link(cfg: dict, args):

@@ -77,6 +77,7 @@ def font(kind: str, size: int) -> ImageFont.FreeTypeFont:
         "display": "InterDisplay-Bold.ttf",
         "semibold": "Inter-SemiBold.ttf",
         "regular": "Inter-Regular.ttf",
+        "mono": "DejaVuSansMono.ttf",     # the mural's ASCII cells
     }
     candidates = [str(_FONT_DIR / names.get(kind, names["regular"]))] + _FALLBACKS
     for path in candidates:
