@@ -11,11 +11,11 @@ plus option cards when `meta.options` is set. A digit picks an option, `a` opens
 free-text answer, Enter leaves the flag raised, Esc/q dismisses.
 
 On an answer: log + answer file at once, fireworks, gone — the popup does not
-linger on a "recorded" card (G: "I want it fast, fast"). Delivery to G's Telegram
-session (so the raising agent learns the outcome) and clearing the flag happen in
-a detached background pass; the flag is cleared LAST, only after delivery
-succeeded, so a failure keeps the key flashing rather than silently losing the
-question.
+linger on a "recorded" card (G: "I want it fast, fast"). A detached pass then
+tells the session that ASKED — pasted straight into its tmux pane, found by the
+CLAUDE_SESSION_ID the raise stamped — and clears the flag. Nothing goes to G's
+Telegram: he pressed the key, he knows (G, 2026-09-08: "I know I clicked the
+thing"). A raiser without a live pane learns via `tally wait` / the answers file.
 """
 from __future__ import annotations
 
@@ -378,10 +378,68 @@ def main(argv: list[str]) -> int:
     return 0
 
 
+TMUX_SOCKET = os.environ.get("TALLY_TMUX_SOCKET", "/tmp/tmux-1000/cc")
+
+
+def _pane_of_session(session_id: str) -> str:
+    """tmux target of the pane whose process tree carries this
+    CLAUDE_SESSION_ID (only visible while a tool subprocess is alive, or via
+    the claude process itself). '' if not found."""
+    if not session_id:
+        return ""
+    try:
+        r = subprocess.run(["tmux", "-S", TMUX_SOCKET, "list-panes", "-a", "-F",
+                            "#{session_name}:#{window_index}.#{pane_index} #{pane_pid}"],
+                           capture_output=True, text=True, timeout=3)
+        ps = subprocess.run(["ps", "-eo", "pid=,ppid="], capture_output=True, text=True, timeout=3)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    kids: dict = {}
+    for ln in ps.stdout.splitlines():
+        parts = ln.split()
+        if len(parts) == 2:
+            kids.setdefault(int(parts[1]), []).append(int(parts[0]))
+    want = f"CLAUDE_SESSION_ID={session_id}".encode()
+    for ln in (r.stdout or "").splitlines():
+        parts = ln.split()
+        if len(parts) != 2 or not parts[1].isdigit():
+            continue
+        stack, seen = [int(parts[1])], 0
+        while stack and seen < 64:
+            pid = stack.pop(); seen += 1
+            try:
+                env = Path(f"/proc/{pid}/environ").read_bytes()
+            except OSError:
+                env = b""
+            if want in env.split(b"\0"):
+                return parts[0]
+            stack.extend(kids.get(pid, []))
+    return ""
+
+
+def _paste_into_pane(target: str, text: str) -> bool:
+    """One line into a Claude pane, the way Telegraph does it: buffer +
+    bracketed paste, then Enter. Control characters stripped first."""
+    import re as _re
+    clean = _re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", " ", text).strip()
+    buf = f"tally-{os.getpid()}-{int(time.time() * 1000)}"
+    T = ["tmux", "-S", TMUX_SOCKET]
+    try:
+        subprocess.run(T + ["load-buffer", "-b", buf, "-"], input=clean, text=True,
+                       check=True, timeout=5)
+        subprocess.run(T + ["paste-buffer", "-p", "-d", "-b", buf, "-t", target],
+                       check=True, timeout=5)
+        time.sleep(0.15)
+        subprocess.run(T + ["send-keys", "-t", target, "Enter"], check=True, timeout=5)
+        return True
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return False
+
+
 def deliver(sid: str, label: str, answer: str, ts: str) -> int:
-    """Background half of an answer: Telegram first, clear the flag LAST.
-    No-op unless the answer on disk is the one we were handed (a lost race
-    must not deliver, and must not clear the winner's flag)."""
+    """Background half of an answer: tell the session that asked, then clear
+    the flag LAST. No-op unless the answer on disk is the one we were handed
+    (a lost race must not deliver, and must not clear the winner's flag)."""
     import re as _re
     if not _re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", sid) or ".." in sid:
         return 1
@@ -392,30 +450,24 @@ def deliver(sid: str, label: str, answer: str, ts: str) -> int:
         cur = {}
     if cur.get("at") != ts or cur.get("answer") != answer:
         return 1
+    flag = {}
+    try:
+        flag = json.loads(f.read_text())
+    except (OSError, ValueError):
+        pass
+    session = str((flag.get("meta") or {}).get("session") or "")
+    pane = _pane_of_session(session) if session else ""
     delivered = False
-    if os.access(TG, os.X_OK):
-        for attempt in range(3):             # Telegram hiccups are common; retry
-            try:
-                r = subprocess.run([TG, G_CHAT, "tally-decide",
-                                    f"DECISION — {label} ({sid})\n\n{answer}\n\n"
-                                    f"(answered from the deck popup at {ts})"],
-                                   capture_output=True, text=True, timeout=30)
-                delivered = r.returncode == 0
-            except (OSError, subprocess.TimeoutExpired):
-                delivered = False
-            if delivered:
-                break
-            time.sleep(2 * (attempt + 1))
-    elif os.environ.get("TALLY_TG_SEND") in ("", None) and not os.path.exists(TG):
-        delivered = True                     # no Telegram on this host: nothing to deliver
-    if not delivered:
-        # The answer FILE is the record (tally wait reads it); the Telegram
-        # note is a courtesy. A flag must never outlive its answer.
-        try:
-            with open(LOG, "a") as fh:
-                fh.write(f"[{ts}] {sid} :: WARNING Telegram delivery failed (answer recorded, flag cleared)\n")
-        except OSError:
-            pass
+    if pane:
+        delivered = _paste_into_pane(
+            pane, f"[tally] decision for {sid} ({label}): {answer}  "
+                  f"— answered on the deck at {ts}; `tally wait {sid} --json` has it.")
+    try:
+        with open(LOG, "a") as fh:
+            fh.write(f"[{ts}] {sid} :: delivered to pane {pane}\n" if delivered else
+                     f"[{ts}] {sid} :: no live pane for the raiser; answer file only\n")
+    except OSError:
+        pass
     try:
         if os.access(TALLY_BIN, os.X_OK):
             subprocess.run([TALLY_BIN, "clear", sid], capture_output=True, timeout=10)
@@ -423,7 +475,7 @@ def deliver(sid: str, label: str, answer: str, ts: str) -> int:
         pass
     if f.exists():
         f.unlink(missing_ok=True)
-    return 0 if delivered else 1
+    return 0
 
 
 if __name__ == "__main__":
