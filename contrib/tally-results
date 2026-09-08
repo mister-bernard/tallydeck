@@ -1,0 +1,130 @@
+#!/usr/bin/python3
+"""What a finished session actually produced.
+
+G, 2026-09-08: "When I click on a green one (which is done), I want it to show me a
+pop-up with the results." The brief already showed the session's closing paragraph,
+which is what it SAID. This is what it DID: the files it wrote, the commits it made,
+and the links it produced — the three things you want when deciding whether a
+finished job needs anything more from you.
+
+Read from the session's own log rather than from git or the filesystem, because the
+question is "what did THIS session do", not "what is the repo state now" — another
+session may have touched the same tree since.
+
+Usage: tally-results <session-uuid> [width]
+Prints nothing at all when there is nothing to show: an empty "Results" heading is
+worse than no heading, because it reads as "it produced nothing" rather than "this
+was a conversation, not a build".
+"""
+import json
+import re
+import sys
+from pathlib import Path
+
+MAX_PER_SECTION = 8
+SCAN = 600
+
+C = {"dim": "\033[38;2;110;116;138m", "hd": "\033[1;38;2;242;246;255m",
+     "ok": "\033[38;2;67;183;93m", "acc": "\033[38;2;0;229;255m", "off": "\033[0m"}
+
+URL_RE = re.compile(r"https?://[^\s<>()\[\]{}'\"`]+")
+# A commit line the session actually ran, and the sha git printed back.
+SHA_RE = re.compile(r"\b([0-9a-f]{7,40})\b")
+
+
+def session_log(uuid: str):
+    for root in (Path("/home/openclaw/.claude/projects"),
+                 Path("/home/openclaw/.openclaw/.claude-b/.claude/projects"),
+                 Path.home() / ".claude" / "projects"):
+        if root.is_dir():
+            for f in root.glob(f"*/{uuid}.jsonl"):
+                return f
+    return None
+
+
+def gather(path: Path):
+    """(written files, git commit commands, links) — newest first, de-duplicated."""
+    files, commits, links = [], [], []
+    seen = {"f": set(), "c": set(), "l": set()}
+
+    def add(bucket, key, val):
+        if val and val not in seen[key]:
+            seen[key].add(val)
+            bucket.append(val)
+
+    lines = path.read_text(errors="replace").splitlines()[-SCAN:]
+    for ln in reversed(lines):
+        try:
+            rec = json.loads(ln)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        content = (rec.get("message") or {}).get("content", [])
+        if isinstance(content, str):
+            for m in URL_RE.finditer(content):
+                add(links, "l", m.group(0).rstrip(".,;:)"))
+            continue
+        if not isinstance(content, list):
+            continue
+        for i in content:
+            if not isinstance(i, dict):
+                continue
+            if i.get("type") == "tool_use":
+                inp = i.get("input") or {}
+                if i.get("name") in ("Write", "Edit", "NotebookEdit"):
+                    add(files, "f", inp.get("file_path"))
+                elif i.get("name") == "Bash":
+                    cmd = str(inp.get("command", ""))
+                    if re.search(r"\bgit\b[^|;]*\bcommit\b", cmd):
+                        # The description is written for a human; prefer it.
+                        add(commits, "c", str(inp.get("description") or "git commit"))
+            elif i.get("type") in ("text", "tool_result"):
+                t = i.get("text") or i.get("content") or ""
+                if not isinstance(t, str):
+                    t = json.dumps(t)
+                for m in URL_RE.finditer(t):
+                    u = m.group(0).rstrip(".,;:)")
+                    if "$" not in u and "/tool-results/" not in u:
+                        add(links, "l", u)
+    return files, commits, links
+
+
+def main() -> int:
+    if len(sys.argv) < 2 or not sys.argv[1]:
+        return 0
+    path = session_log(sys.argv[1])
+    if path is None:
+        return 0
+    try:
+        width = int(sys.argv[2]) if len(sys.argv) > 2 else 76
+    except ValueError:
+        width = 76
+
+    files, commits, links = gather(path)
+    if not (files or commits or links):
+        return 0                      # a conversation, not a build — say nothing
+
+    out = [f"  {C['hd']}RESULTS{C['off']}"]
+    def section(title, items, colour):
+        if not items:
+            return
+        out.append(f"  {C['dim']}{title}{C['off']}")
+        for v in items[:MAX_PER_SECTION]:
+            out.append(f"  {colour}▌{C['off']} {str(v)[:width]}")
+        if len(items) > MAX_PER_SECTION:
+            out.append(f"  {C['dim']}  … and {len(items) - MAX_PER_SECTION} more{C['off']}")
+
+    section(f"files written ({len(files)})", files, C["ok"])
+    section(f"commits ({len(commits)})", commits, C["ok"])
+    section(f"links ({len(links)})  — press l to have these texted to you",
+            links, C["acc"])
+    print("\n".join(out))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception:
+        sys.exit(0)     # never let a results block break the popup it decorates

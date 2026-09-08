@@ -70,6 +70,16 @@ ensure_resurrected() {
   --session "$UUID" --project "$PROJ" --label "$LABEL" --state "$STATE" \
   --ask "$ASK"
 
+# For a FINISHED session, what it said is only half the answer — G asked for what it
+# actually produced (2026-09-08: "when I click on a green one, I want it to show me a
+# pop-up with the results"). Files written, commits made, links emitted. Prints
+# nothing when the session was a conversation rather than a build, because an empty
+# RESULTS heading reads as "it produced nothing".
+if [ "$STATE" = "success" ] && [ -n "$UUID" ]; then
+  echo
+  "$(dirname "$(realpath "$0")")/tally-results" "$UUID" 2>/dev/null || true
+fi
+
 LIVE=""; [ -n "$TARGET" ] && LIVE=1
 # A raised flag that carries an ask is a QUESTION, not a place to go. It inherits the
 # tmux target of whichever session raised it, so without this the router offered
