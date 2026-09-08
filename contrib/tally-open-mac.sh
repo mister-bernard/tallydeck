@@ -45,6 +45,13 @@ set -u
 HOST="${TALLY_SSH_HOST:-claw}"
 SOCKET="${TALLY_TMUX_SOCKET:-/tmp/tmux-1000/cc}"
 
+# Which branch a press took is otherwise invisible from the hub, and diagnosing it
+# by asking "what did you see?" costs a round trip per guess. One line per press,
+# locally, so a wrong landing is answered by reading a file instead of speculating.
+TRACE="${TALLY_TRACE:-$HOME/.tally-press.log}"
+trace() { printf '%s %s\n' "$(date '+%H:%M:%S')" "$*" >> "$TRACE" 2>/dev/null || true; }
+trace "PRESS id=${TALLY_ID:-} group=${TALLY_GROUP:-} state=${TALLY_STATE:-} tmux=${TALLY_TMUX:-} detail=${#TALLY_DETAIL} long=${TALLY_LONG:-0}"
+
 # Route session keys, and every raised/hook signal — with a session behind
 # it or not (the popup then shows the ask and offers "done"). Anything else
 # (demo keys, the burn meter) has nothing to open.
@@ -204,11 +211,13 @@ EOF
       # through to the fresh-window path instead of vanishing silently. The
       # ssh stays open while the popup is up; that is fine — we are a
       # fire-and-forget child of the deck client.
+      trace "  -> popup on $PICK_TTY (session $PICK_SESS)"
       if ssh -o BatchMode=yes "$HOST" \
            "tmux -S '$SOCKET' display-popup -c $(q "$PICK_TTY") -w 95% -h 90% -E $(q "$ROUTE")" \
            >/dev/null 2>&1; then
         exit 0
       fi
+      trace "  -> popup FAILED, falling through to a fresh window"
     fi
   fi
 fi
@@ -236,6 +245,7 @@ else
   REMOTE="exec bash -l"
 fi
 
+trace "  -> fresh window: ${REMOTE%% *}"
 CMD="ssh -t ${HOST} \"${REMOTE}\""
 esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 
