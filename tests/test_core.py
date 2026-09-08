@@ -1527,6 +1527,7 @@ def test_burn_codex_lane_real_and_dummy():
     src = TokenBurnSource(codex_dummy=True)
     m = src.signals_from(payload, targets, now=0)[0].meta
     assert m["codex"]["dummy"] is True and m["codex"]["id"] == "X"
+    assert m["lanes"][0]["burned_m"] > 0 and m["lanes"][0]["target_m"] > 0   # for the overlay figures
     payload["accounts"].append({"id": "codex", "provider": "openai", "enabled": True,
                                 "session_pct": 41, "session_reset": "2026-09-07T08:00:00+00:00"})
     m = src.signals_from(payload, targets, now=0)[0].meta

@@ -338,20 +338,30 @@ def _chip(d, x1: int, cy: int, text: str, font, color: str, underline: bool,
     return bx0
 
 
+def _engrave(d, xy, text, font, fill):
+    d.text(xy, text, font=font, fill=fill, stroke_width=SS + 1, stroke_fill=(3, 4, 8))
+
+
+def _mtok(lane: dict) -> str:
+    b, tg = lane.get("burned_m"), lane.get("target_m")
+    if b is None or tg is None:
+        return ""
+    return f"{b:.1f}M/{tg:.1f}M"
+
+
 def draw_meter2(size: tuple[int, int], lanes: list[dict], codex: dict | None,
                 hot: str = "", t: float = 0.0) -> Image.Image:
-    """Two equal bars: the shared A/B bar on top (A its colour on the top
-    half, B its colour on the bottom half — one bar, two fills), Codex on
-    the bottom. Insets and gutters are as tight as the bezel allows so every
-    glyph gets the height it can: at 58 px tall there is no room to waste."""
+    """Two equal bars as the BACKDROP; big colour-coded numerals as the
+    display. Top: the shared A/B bar (A its colour on the top half, B on the
+    bottom) with the two percentages side by side on the left, the two
+    countdowns side by side on the right, the token figures small between
+    them — everything in its account's colour, so large overlapping
+    elements stay readable (G, 2026-09-08). Bottom: Codex, same treatment."""
     w, h = size[0] * SS, size[1] * SS
     img = Image.new("RGB", (w, h), BG)
     d = ImageDraw.Draw(img)
-    # faint vertical wash + scanlines: depth without noise
     for y in range(h):
-        k = y / max(1, h - 1)
-        c = theme.mix("#070910", "#0B0E18", k)
-        d.line([(0, y), (w, y)], fill=c)
+        d.line([(0, y), (w, y)], fill=theme.mix("#070910", "#0B0E18", y / max(1, h - 1)))
     for y in range(0, h, 3 * SS):
         d.line([(0, y), (w, y)], fill=GRID, width=1)
 
@@ -366,14 +376,11 @@ def draw_meter2(size: tuple[int, int], lanes: list[dict], codex: dict | None,
         d.rounded_rectangle([x0 - SS, y0 - SS, x1 + SS, y1 + SS], radius=radius + SS,
                             fill="#0A0D15", outline="#222739", width=SS)
 
-    # ── the shared A/B bar ───────────────────────────────────────────────────
+    # ── backdrop: the shared A/B bar ─────────────────────────────────────────
     x0, y0, x1, y1 = ab
     n = max(1, len(lanes))
     span = (y1 - y0) / n
     frame(ab, round(span))
-    f_letter = theme.font("display", max(8, round(span * 0.92)))
-    f_pct = theme.font("semibold", max(7, round(span * 0.66)))
-    f_clock = theme.font("semibold", max(7, round(span * 0.66)))
     for i, lane in enumerate(lanes):
         ly0, ly1 = round(y0 + i * span), round(y0 + (i + 1) * span)
         accent, ramp = lane_color(lane.get("id", ""))
@@ -381,18 +388,56 @@ def draw_meter2(size: tuple[int, int], lanes: list[dict], codex: dict | None,
         _half_bar(img, d, x0, x1, ly0, ly1, float(lane.get("frac", 0.0)),
                   float(tgt) if tgt else None, ramp, accent, t,
                   round_top=(i == 0), round_bottom=(i == n - 1))
-        d = ImageDraw.Draw(img)
-        lx = x0 + round(span * 0.55)
-        d.text((lx, ly0 + (span - f_letter.size) / 2 - SS), str(lane.get("id", ""))[:1],
-               font=f_letter, fill=accent, stroke_width=SS + 1, stroke_fill=(3, 4, 8))
-        d.text((lx + f_letter.size * 0.78 + SS * 3, ly0 + (span - f_pct.size) / 2 - SS),
-               f"{round(float(lane.get('pct', 0)))}%", font=f_pct, fill="#F4F7FF",
-               stroke_width=SS + 1, stroke_fill=(3, 4, 8))
-        if lane.get("clock"):
-            _chip(d, x1 - round(span * 0.30), (ly0 + ly1) // 2, str(lane["clock"]),
-                  f_clock, accent, underline=bool(hot and lane.get("id") == hot))
+    d = ImageDraw.Draw(img)
 
-    # ── Codex: its own full bar, same height as the A/B bar ─────────────────
+    # ── overlay: big numerals across the whole bar ───────────────────────────
+    bh = y1 - y0
+    f_big = theme.font("display", max(10, round(bh * 0.74)))
+    f_tag = theme.font("semibold", max(7, round(bh * 0.34)))
+    f_small = theme.font("semibold", max(7, round(bh * 0.27)))
+    cy = (y0 + y1) / 2
+    pad = round(bh * 0.30)
+    # left cluster: A% B%
+    x = x0 + pad
+    for lane in lanes:
+        accent, _ = lane_color(lane.get("id", ""))
+        tag = str(lane.get("id", ""))[:1]
+        _engrave(d, (x, cy - f_tag.size * 0.55 - f_big.size * 0.28), tag, f_tag, accent)
+        x += d.textlength(tag, font=f_tag) + SS * 2
+        pct = f"{round(float(lane.get('pct', 0)))}%"
+        _engrave(d, (x, cy - f_big.size * 0.58), pct, f_big, accent)
+        x += d.textlength(pct, font=f_big) + pad
+    left_end = x
+    # right cluster: countdowns, right-aligned, A then B; hot one underlined
+    clocks = [(l, str(l.get("clock") or "")) for l in lanes if l.get("clock")]
+    xr = x1 - pad
+    for lane, clock in reversed(clocks):
+        accent, _ = lane_color(lane.get("id", ""))
+        cw = d.textlength(clock, font=f_big)
+        xr -= cw
+        _engrave(d, (xr, cy - f_big.size * 0.58), clock, f_big, accent)
+        if hot and lane.get("id") == hot:
+            uy = cy + f_big.size * 0.50
+            d.line([(xr, uy), (xr + cw, uy)], fill=theme.hex_rgb(accent), width=SS * 2)
+        xr -= pad
+    right_start = xr + pad
+    # middle: token figures, small, colour-coded, STACKED (A over B) so both
+    # fit between the two big clusters
+    figs = [(lane_color(l.get("id", ""))[0], _mtok(l)) for l in lanes if _mtok(l)]
+    if figs:
+        widest = max(d.textlength(f, font=f_small) for _, f in figs)
+        room = right_start - left_end + pad          # the cluster pads are slack
+        if widest > room:                             # no room for both: the hot one
+            figs = [f for f in figs if hot and f[0] == lane_color(hot)[0]][:1] or figs[:1]
+            widest = max(d.textlength(f, font=f_small) for _, f in figs)
+        if widest <= room:
+            fx = left_end - pad / 2 + (room - widest) / 2
+            rows = len(figs)
+            for k, (col, f) in enumerate(figs):
+                fy = cy - (rows * f_small.size) / 2 + k * f_small.size * 1.05 - SS
+                _engrave(d, (fx, fy), f, f_small, col)
+
+    # ── Codex: same treatment on its own bar ────────────────────────────────
     if codex:
         x0, y0, x1, y1 = cx
         ch = y1 - y0
@@ -402,19 +447,33 @@ def draw_meter2(size: tuple[int, int], lanes: list[dict], codex: dict | None,
         _half_bar(img, d, x0, x1, y0, y1, float(codex.get("frac", 0.0)),
                   float(tgt) if tgt else None, ramp, accent, t, True, True)
         d = ImageDraw.Draw(img)
-        f_l = theme.font("display", max(8, round(ch * 0.58)))
-        f_p = theme.font("semibold", max(7, round(ch * 0.44)))
-        lx = x0 + round(ch * 0.30)
-        d.text((lx, y0 + (ch - f_l.size) / 2 - SS), "CODEX", font=f_l, fill=accent,
-               stroke_width=SS + 1, stroke_fill=(3, 4, 8))
-        px = lx + d.textlength("CODEX", font=f_l) + SS * 5
-        d.text((px, y0 + (ch - f_p.size) / 2 - SS), f"{round(float(codex.get('pct', 0)))}%",
-               font=f_p, fill="#F4F7FF", stroke_width=SS + 1, stroke_fill=(3, 4, 8))
-        if codex.get("dummy"):                           # stand-in data: whisper it
-            f_d = theme.font("regular", max(6, round(ch * 0.26)))
-            d.text((px + d.textlength("00%", font=f_p) + SS * 6, y0 + (ch - f_d.size) / 2),
-                   "dummy", font=f_d, fill="#3C4458")
-        if codex.get("clock"):
-            _chip(d, x1 - round((ab[3] - ab[1]) / 2 * 0.30), (y0 + y1) // 2, str(codex["clock"]),
-                  theme.font("semibold", max(7, round(ch * 0.46))), accent, underline=(hot == "X"))
+        cy = (y0 + y1) / 2
+        x = x0 + pad
+        _engrave(d, (x, cy - f_tag.size * 0.55 - f_big.size * 0.28), "CODEX", f_tag, accent)
+        x += d.textlength("CODEX", font=f_tag) + SS * 3
+        pct = f"{round(float(codex.get('pct', 0)))}%"
+        _engrave(d, (x, cy - f_big.size * 0.58), pct, f_big, accent)
+        x += d.textlength(pct, font=f_big) + pad
+        clock = str(codex.get("clock") or "")
+        xr = x1 - pad
+        if clock:
+            cw = d.textlength(clock, font=f_big)
+            xr -= cw
+            _engrave(d, (xr, cy - f_big.size * 0.58), clock, f_big, accent)
+            if hot == "X":
+                uy = cy + f_big.size * 0.50
+                d.line([(xr, uy), (xr + cw, uy)], fill=theme.hex_rgb(accent), width=SS * 2)
+        mid = _mtok(codex)
+        tag = "dummy" if codex.get("dummy") else ""
+        mw = d.textlength(mid, font=f_small) if mid else 0
+        tw = d.textlength(tag, font=f_small) if tag else 0
+        room = (xr - pad) - x
+        total = mw + (SS * 8 + tw if tag else 0)
+        if total <= room:
+            fx = x + (room - total) / 2
+            if mid:
+                _engrave(d, (fx, cy - f_small.size * 0.55), mid, f_small, accent)
+                fx += mw + SS * 8
+            if tag:                                      # stand-in data: whisper it
+                d.text((fx, cy - f_small.size * 0.55), tag, font=f_small, fill="#3C4458")
     return img.resize(size, Image.LANCZOS)

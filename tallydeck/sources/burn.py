@@ -118,6 +118,8 @@ class TokenBurnSource(Source):
                 # already names the account — no "A 1:42" repetition).
                 "mid": f"{round(pct)}%  ·  {pct / 100.0 * limit / 1e6:.1f}M "
                        f"of {tgt_pct / 100.0 * limit / 1e6:.1f}M",
+                "burned_m": pct / 100.0 * limit / 1e6,
+                "target_m": tgt_pct / 100.0 * limit / 1e6,
                 "clock": self._fmt_remaining(remaining),
             })
         codex = self._codex_lane(payload, targets, now)
@@ -167,11 +169,15 @@ class TokenBurnSource(Source):
             t = targets.get(acct.get("id"), {})
             tgt_pct = float(t.get("target_pct_5h", t.get("target_pct", 100)))
             remaining = self._remaining(acct.get("session_reset") or acct.get("weekly_reset"), now)
+            limit = float(t.get("window_5h_limit", t.get("window_limit", 0)) or 0)
             return {"id": "X", "provider": acct.get("provider"), "pct": float(pct),
                     "frac": float(pct) / 100.0, "target": tgt_pct / 100.0,
+                    "burned_m": float(pct) / 100.0 * limit / 1e6 if limit else None,
+                    "target_m": tgt_pct / 100.0 * limit / 1e6 if limit else None,
                     "remaining_s": remaining, "clock": self._fmt_remaining(remaining)}
         if self.codex_dummy:
             return {"id": "X", "provider": "codex", "pct": 37.0, "frac": 0.37, "target": 0.6,
+                    "burned_m": 3.3, "target_m": 5.4,
                     "remaining_s": 7800.0, "clock": "2:10", "dummy": True}
         return None
 
