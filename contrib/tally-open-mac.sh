@@ -215,7 +215,13 @@ fi
 
 # ── fallback: no real attached window anywhere → open a fresh one ────────────
 
-if [ -n "$TARGET" ]; then
+if [ "${TALLY_GROUP:-}" = "sig" ] && [ -n "$ASK" ]; then
+  # A raised flag is a QUESTION. It inherits the tmux target of whoever raised it,
+  # so testing $TARGET first sent G to the asking session's terminal — which is
+  # exactly what he reported: "it still just opens up the main terminal". The ask
+  # has to win over the inherited target here, the same way it does in the popup.
+  REMOTE="~/.local/bin/tally-decide $(q "${TALLY_ID#sig/}")"
+elif [ -n "$TARGET" ]; then
   # attach -t with the FULL session:window.pane sets the current window too
   # (verified on tmux 3.4) — attaching to just the session landed on
   # whatever window that session happened to show.
