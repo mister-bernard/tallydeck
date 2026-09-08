@@ -129,6 +129,13 @@ class WatchDirSource(Source):
                         route, str(m.get("tmux") or ""), str(m.get("session") or ""),
                         str(m.get("project") or ""), sig.label[:24], sig.state,
                         str(m.get("account") or ""), sig.id]}
+                else:
+                    # No router on this host. Say so ON THE KEY rather than
+                    # shipping a red key that does nothing when pressed — a dead
+                    # key is the exact fault this branch exists to fix, and it is
+                    # invisible from the deck (the hub logs "no action" on the
+                    # host, which the operator is not looking at).
+                    sig.sublabel = "no router installed"
             if sig.expired():
                 fp.unlink(missing_ok=True)
                 continue

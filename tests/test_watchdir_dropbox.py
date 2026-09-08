@@ -64,6 +64,29 @@ class DropBoxIsHostile(unittest.TestCase):
             "detail": "Claude is waiting for your input"}})
         self.assertTrue(sigs[0].action and sigs[0].action['argv'][0].endswith('tally-popup-route'), 'a session ask opens the ROUTER (to its pane), never the decide popup')
 
+    def test_a_missing_router_is_visible_rather_than_a_dead_key(self):
+        """If the router cannot be resolved the key must SAY so.
+
+        The branch above exists because a session ask with no action is a red
+        key that does nothing when pressed — G hit exactly that on 2026-09-08.
+        Falling back to no action on a host without contrib/ would restore the
+        same fault, and it is invisible from the deck.
+        """
+        import tallydeck.sources.watchdir as wd
+        real = wd.contrib_bin if hasattr(wd, "contrib_bin") else None
+        import tallydeck.paths as paths
+        orig = paths.contrib_bin
+        paths.contrib_bin = lambda name: ""
+        try:
+            sigs = self.poll({"ask-cafe.json": {
+                "label": "sess", "state": "blocked", "detail": "waiting"}})
+        finally:
+            paths.contrib_bin = orig
+            if real is not None:
+                wd.contrib_bin = real
+        self.assertIsNone(sigs[0].action)
+        self.assertIn("no router", (sigs[0].sublabel or "").lower())
+
     def tearDown(self):
         if getattr(self, "tmp", None):
             self.tmp.cleanup()
