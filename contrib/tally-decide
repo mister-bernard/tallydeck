@@ -57,9 +57,13 @@ def block(text, indent=""):
 print("=" * (w + 2))
 print(f"  {d.get('label','?').upper()}  —  decision needed")
 print("=" * (w + 2)); print()
-block(d.get("sublabel", ""), "  "); print()
-if d.get("detail"):
-    block(d["detail"], "  ")
+sub = str(d.get("sublabel", "")).strip()
+det = str(d.get("detail", "")).strip()
+block(sub, "  "); print()
+# `tally raise` promotes sublabel into detail when no --detail was given, so on a
+# bare raise the two are the same string — printing both just says it twice.
+if det and det != sub:
+    block(det, "  ")
 print()
 PY
 
