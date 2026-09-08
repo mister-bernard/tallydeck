@@ -79,10 +79,43 @@ def cmd_ls(cfg, args):
         link.close()
 
 
+_SSH_OPTS_WITH_ARG = {"-o", "-p", "-i", "-l", "-F", "-J", "-b", "-c", "-D",
+                      "-e", "-E", "-I", "-L", "-m", "-O", "-Q", "-R", "-S",
+                      "-w", "-W", "-B"}
+
+
+def ssh_host(connect) -> str:
+    """The `user@host` (or alias) the deck client itself ssh's to.
+
+    The press script needs to reach the same hub, and it used to guess
+    ("claw") — on a machine where that alias resolved to the wrong user the
+    guess died with "g@claw: Permission denied (publickey)" while the deck
+    was happily connected the whole time. The one address known to work is
+    the one in [client] connect; hand it over as TALLY_SSH_HOST (an explicit
+    env value still wins)."""
+    argv = [str(a) for a in (connect or [])]
+    if not argv or os.path.basename(argv[0]) != "ssh":
+        return ""
+    i = 1
+    while i < len(argv):
+        a = argv[i]
+        if a in _SSH_OPTS_WITH_ARG:
+            i += 2
+            continue
+        if a.startswith("-"):
+            i += 1
+            continue
+        return a
+    return ""
+
+
 def _on_press_cmd(cfg) -> list[str] | None:
     cmd = cfg.get("client", {}).get("on_press")
     if not cmd:
         return None
+    host = ssh_host(cfg.get("client", {}).get("connect"))
+    if host:
+        os.environ.setdefault("TALLY_SSH_HOST", host)   # inherited by the press
     # Expand ~ here: this argv is executed LOCALLY, so an unexpanded tilde is a
     # path that does not exist rather than a shell that will resolve it. The
     # tracked config uses ~ deliberately, since a Mac's /Users/<you> and a

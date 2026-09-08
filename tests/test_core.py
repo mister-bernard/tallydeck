@@ -809,3 +809,16 @@ def test_brief_shows_the_ask_without_a_log(tmp_path):
     out = build("", "", label="Aurora", roots=[tmp_path], state="attention",
                 ask="cathode vs anode sphere?")
     assert "THE ASK" in out and "cathode vs anode sphere?" in out
+
+
+def test_press_script_gets_the_decks_own_ssh_target():
+    """The Mac press script guessed the hub alias; on a machine where that
+    alias resolved to the wrong user it died with 'Permission denied' while
+    the deck was connected fine. Derive it from what the deck uses."""
+    from tallydeck.cli import ssh_host
+    assert ssh_host(["ssh", "claw", "~/.local/bin/tallyd"]) == "claw"
+    assert ssh_host(["ssh", "-o", "BatchMode=yes", "-p", "2222",
+                     "openclaw@hub.example", "tallyd"]) == "openclaw@hub.example"
+    assert ssh_host(["/usr/bin/ssh", "-tt", "me@box"]) == "me@box"
+    assert ssh_host(["tallyd"]) == ""
+    assert ssh_host(None) == ""

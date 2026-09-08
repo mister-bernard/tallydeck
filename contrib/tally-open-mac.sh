@@ -40,8 +40,10 @@
 # First run triggers macOS Automation permission prompts — grant them once.
 set -u
 
-# An ssh ALIAS from your ~/.ssh/config — never a hostname or address here.
-# Override with TALLY_SSH_HOST if yours is named something else.
+# Where the hub is. The deck client exports TALLY_SSH_HOST from its own
+# [client] connect line, so this is whatever address the deck itself is
+# using — the one address proven to work. Set it yourself to override; the
+# bare alias is only a last resort. Never a hostname or address in here.
 HOST="${TALLY_SSH_HOST:-claw}"
 SOCKET="${TALLY_TMUX_SOCKET:-/tmp/tmux-1000/cc}"
 
@@ -65,6 +67,16 @@ ASK=""
 if [ "${TALLY_GROUP:-}" = "sig" ]; then
   ASK="${TALLY_DETAIL:-}"
   [ -n "$ASK" ] || ASK="${TALLY_SUBLABEL:-}"
+fi
+
+# A raised flag that carries a question is answered HUB-SIDE: the hub runs
+# tmux, so on press it puts tally-decide up on the most recently active
+# attached client itself (watchdir's default action). Handling it here as
+# well produced two answers to one press — the hub's popup, plus a fresh
+# Terminal window from the fallback below whose ssh then failed. One owner.
+if [ "${TALLY_GROUP:-}" = "sig" ] && [ -n "${TALLY_DETAIL:-}" ]; then
+  trace "  -> hub owns this ask (decide popup); nothing to do here"
+  exit 0
 fi
 
 # Long press already acted hub-side (snooze) — opening the router on top
@@ -224,13 +236,7 @@ fi
 
 # ── fallback: no real attached window anywhere → open a fresh one ────────────
 
-if [ "${TALLY_GROUP:-}" = "sig" ] && [ -n "$ASK" ]; then
-  # A raised flag is a QUESTION. It inherits the tmux target of whoever raised it,
-  # so testing $TARGET first sent G to the asking session's terminal — which is
-  # exactly what he reported: "it still just opens up the main terminal". The ask
-  # has to win over the inherited target here, the same way it does in the popup.
-  REMOTE="~/.local/bin/tally-decide $(q "${TALLY_ID#sig/}")"
-elif [ -n "$TARGET" ]; then
+if [ -n "$TARGET" ]; then
   # attach -t with the FULL session:window.pane sets the current window too
   # (verified on tmux 3.4) — attaching to just the session landed on
   # whatever window that session happened to show.
