@@ -85,7 +85,14 @@ class WatchDirSource(Source):
             # the operator's client-side on_press being configured on another machine —
             # which is exactly how two rounds were lost on 2026-09-08. The hub runs
             # tmux, so it can put the popup up itself. An explicit action still wins.
-            if sig.action is None and (sig.detail or "").strip():
+            # `ask-<sid>.json` is a LIVE Claude session parked at its own prompt, not a
+            # question this deck can answer. Its answer has to be typed into that pane;
+            # capturing it in a popup would write to a decisions log the waiting session
+            # never reads, and the session would sit there blocked regardless. Those keys
+            # keep the default routing, which takes you to the pane. Only agent-raised
+            # flags get the answer-here treatment.
+            is_session_ask = fp.stem.startswith("ask-")
+            if sig.action is None and not is_session_ask and (sig.detail or "").strip():
                 sig.action = {"type": "cmd",
                               "argv": [self._decide_cmd(), fp.stem]}
             if sig.expired():
