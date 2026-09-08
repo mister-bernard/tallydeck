@@ -116,8 +116,11 @@ def _option(answer: str, options: list[str]) -> str | None:
         return f"{n} — {options[n - 1]}" if options and 1 <= n <= len(options) else None
     m = re.fullmatch(r"([A-Za-z])[.)]?", a)
     if m and options:
+        # A lone letter answers a LETTERED label only ("A · Signal-first",
+        # "B) keep"). "y" must not pick "Yes stop it" — that is an ack to
+        # whoever he is talking to, not an option.
         hits = [(i, o) for i, o in enumerate(options, 1)
-                if o.strip().upper().startswith(m.group(1).upper())]
+                if re.match(r"^\s*" + re.escape(m.group(1)) + r"\s*[·.)\-:]", o.strip(), re.I)]
         return f"{hits[0][0]} — {hits[0][1]}" if len(hits) == 1 else None
     return None
 

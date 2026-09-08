@@ -1280,3 +1280,13 @@ def test_telegram_path_is_digits_only_fresh_only_and_never_swallows(tmp_path):
     r = run("hush 1h")
     assert r["handled"] is True and r["swallow"] is False   # set, but the session sees it
     assert (tmp_path / "hush").exists()
+
+
+def test_lone_letter_only_answers_a_lettered_label(tmp_path):
+    raise_, run = _answer_runner(tmp_path)
+    raise_("q", ["Yes stop it", "Keep"])
+    assert run({"text": "y"})["handled"] is False          # an ack, not "Yes stop it"
+    raise_("q2", ["A · Signal-first", "B · ntfy"])
+    (tmp_path / "signals" / "q.json").unlink(); (tmp_path / "pending" / "q.json").unlink()
+    r = run({"text": "b"})
+    assert r["handled"] and r["answer"].startswith("2 — B")
