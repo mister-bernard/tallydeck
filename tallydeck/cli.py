@@ -213,6 +213,16 @@ def cmd_raise(cfg, args):
         meta["tmux"] = args.tmux
     else:
         meta.pop("tmux", None)
+    # Where to DELIVER the answer (never where to route a press): the pane
+    # `tally raise` ran in. The session-id scan can only see a session while
+    # a tool subprocess is alive, so this is the reliable address.
+    if os.environ.get("TMUX") and "raiser_pane" not in meta:
+        try:
+            meta["raiser_pane"] = subprocess.run(
+                ["tmux", "display", "-p", "#S:#I.#P"], capture_output=True,
+                text=True, timeout=2).stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            pass
     if args.markdown:
         src = sys.stdin.read() if args.markdown == "-" else \
             Path(args.markdown).expanduser().read_text()

@@ -417,6 +417,14 @@ def _pane_of_session(session_id: str) -> str:
     return ""
 
 
+def _pane_alive(target: str) -> bool:
+    try:
+        return subprocess.run(["tmux", "-S", TMUX_SOCKET, "display", "-p", "-t", target,
+                               "#{pane_id}"], capture_output=True, timeout=3).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def _paste_into_pane(target: str, text: str) -> bool:
     """One line into a Claude pane, the way Telegraph does it: buffer +
     bracketed paste, then Enter. Control characters stripped first."""
@@ -455,8 +463,13 @@ def deliver(sid: str, label: str, answer: str, ts: str) -> int:
         flag = json.loads(f.read_text())
     except (OSError, ValueError):
         pass
-    session = str((flag.get("meta") or {}).get("session") or "")
-    pane = _pane_of_session(session) if session else ""
+    meta = flag.get("meta") or {}
+    session = str(meta.get("session") or "")
+    pane = str(meta.get("raiser_pane") or "")
+    if pane and not _pane_alive(pane):
+        pane = ""
+    if not pane and session:
+        pane = _pane_of_session(session)
     delivered = False
     if pane:
         delivered = _paste_into_pane(

@@ -941,7 +941,7 @@ def test_raise_update_keeps_label_and_never_routes_to_the_raisers_pane(tmp_path,
     cli.main(["raise", "q", "--options", "A|B"])
     d = json.loads((tmp_path / "signals" / "q.json").read_text())
     assert d["label"] == "Big Q"
-    assert "tmux" not in d["meta"]
+    assert "tmux" not in d["meta"]                # never a routing target
     assert d["meta"]["session"].startswith("cafe")
     cli.main(["raise", "q", "--tmux", "work:1.1"])
     d = json.loads((tmp_path / "signals" / "q.json").read_text())
