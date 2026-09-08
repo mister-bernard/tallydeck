@@ -49,9 +49,9 @@ class TokenBurnSource(Source):
         # the lane whose countdown gets the underline.
         self.hot_window = float(opts.get("hot_window", 300))
         self._pct_hist: dict[str, list[tuple[float, float]]] = {}
-        # Codex (OpenAI) is joining tokenburn; until its /accounts entry
-        # exists, `codex_dummy = true` paints a stand-in lane so the layout
-        # can be built and judged with something on it.
+        # Codex is Account O in tokenburn (provider "codex") and the lane runs
+        # on server truth. `codex_dummy = true` survives only as a way to see
+        # the layout with something on it when no such account is configured.
         self.codex_dummy = bool(opts.get("codex_dummy", False))
         self.codex_providers = tuple(opts.get("codex_providers", ("openai", "codex")))
         # Account O's numbers come from a cron snapshot (10-min refresh). Older
