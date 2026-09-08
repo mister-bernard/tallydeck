@@ -1,10 +1,25 @@
 #!/usr/bin/python3
-"""Clear the deck's BLOCKED signal once the session got its answer."""
+"""Clear the deck's hook-raised signal once the session got its answer.
+Same per-user state dir as tally-hook-notify (passwd home, not $HOME)."""
 import json, sys, os
+
+
+def state_dir():
+    env = os.environ.get("TALLYDECK_STATE")
+    if env:
+        return os.path.expanduser(env)
+    try:
+        import pwd
+        home = pwd.getpwuid(os.getuid()).pw_dir
+    except Exception:
+        home = os.path.expanduser("~")
+    return os.path.join(home, ".tallydeck")
+
+
 try:
     sid = (json.load(sys.stdin).get("session_id") or "")[:8]
     if sid:
-        os.unlink(os.path.expanduser(f"~/.tallydeck/signals/ask-{sid}.json"))
+        os.unlink(os.path.join(state_dir(), "signals", f"ask-{sid}.json"))
 except Exception:
     pass
 sys.exit(0)

@@ -8,7 +8,8 @@
 #
 # tallydeck runs this on every short press and passes the signal as
 # environment: TALLY_ID, TALLY_LABEL, TALLY_GROUP, TALLY_STATE, TALLY_PROJECT,
-# TALLY_SESSION, TALLY_TMUX, TALLY_LONG.
+# TALLY_SESSION, TALLY_TMUX, TALLY_ACCOUNT, TALLY_SUBLABEL, TALLY_DETAIL,
+# TALLY_LONG.
 #
 # THE MODEL
 # ---------
@@ -20,7 +21,12 @@
 #           (link-window: it appears in your window list, tiled your way;
 #           the source session keeps it — fully reversible)
 #   r     → (paneless sessions) resume the Claude session in a new window
+#   ␣     → done: retire the alert (the ONLY way a press clears one)
 #   other → dismiss; nothing anywhere has changed
+#
+# A raised signal with no session behind it (a script's `tally raise`) still
+# gets the popup — showing its ask — so pressing a flashing key always shows
+# you WHAT wanted you before anything is acknowledged.
 #
 # WHY THE TITLE TOKENS
 # --------------------
@@ -39,11 +45,19 @@ set -u
 HOST="${TALLY_SSH_HOST:-claw}"
 SOCKET="${TALLY_TMUX_SOCKET:-/tmp/tmux-1000/cc}"
 
-# Route session keys AND raised/hook signals that point at a session.
-# Anything else (burn meter etc.) has nothing to open.
-if [ "${TALLY_GROUP:-}" != "cc" ] \
+# Route session keys, and every raised/hook signal — with a session behind
+# it or not (the popup then shows the ask and offers "done"). Anything else
+# (demo keys, the burn meter) has nothing to open.
+if [ "${TALLY_GROUP:-}" != "cc" ] && [ "${TALLY_GROUP:-}" != "sig" ] \
    && [ -z "${TALLY_TMUX:-}" ] && [ -z "${TALLY_SESSION:-}" ]; then
   exit 0
+fi
+# What the key was asking, for the popup. Sublabel is the short ask; detail
+# the long form; a session key's sublabel is just an age, so leave it out.
+ASK=""
+if [ "${TALLY_GROUP:-}" = "sig" ]; then
+  ASK="${TALLY_DETAIL:-}"
+  [ -n "$ASK" ] || ASK="${TALLY_SUBLABEL:-}"
 fi
 
 # Long press already acted hub-side (snooze) — opening the router on top
@@ -185,7 +199,7 @@ EOF
       # the app forward so the popup isn't born behind something.
       focus_by_token "TALLY[$PICK_TTY]" \
         || /usr/bin/osascript -e "tell application \"$APP\" to activate" 2>/dev/null
-      ROUTE="~/.local/bin/tally-route $(q "$PICK_TTY") $(q "$PICK_SESS") $(q "$TARGET") $(q "${TALLY_SESSION:-}") $(q "${TALLY_PROJECT:-}") $(q "${TALLY_LABEL:-}") $(q "${TALLY_STATE:-}") $(q "${TALLY_ACCOUNT:-}")"
+      ROUTE="~/.local/bin/tally-route $(q "$PICK_TTY") $(q "$PICK_SESS") $(q "$TARGET") $(q "${TALLY_SESSION:-}") $(q "${TALLY_PROJECT:-}") $(q "${TALLY_LABEL:-}") $(q "${TALLY_STATE:-}") $(q "${TALLY_ACCOUNT:-}") $(q "${TALLY_ID:-}") $(q "$ASK")"
       # Foreground: a failed dispatch (dead client, wrong socket) must fall
       # through to the fresh-window path instead of vanishing silently. The
       # ssh stays open while the popup is up; that is fine — we are a
@@ -206,9 +220,12 @@ if [ -n "$TARGET" ]; then
   # (verified on tmux 3.4) — attaching to just the session landed on
   # whatever window that session happened to show.
   REMOTE="tmux -S ${SOCKET} attach -t $(q "$TARGET") \\; select-pane -t $(q "$TARGET")"
-elif [ -n "${TALLY_PROJECT:-}" ]; then
+elif [ -n "${TALLY_PROJECT:-}" ] || [ -n "${TALLY_SESSION:-}" ]; then
   # Brief + [r]esume choice, then shell — never a silent bare prompt.
-  REMOTE="~/.local/bin/tally-land $(q "${TALLY_PROJECT}") $(q "${TALLY_SESSION:-}") $(q "${TALLY_LABEL:-}") $(q "${TALLY_STATE:-}") $(q "${TALLY_ACCOUNT:-}")"
+  REMOTE="~/.local/bin/tally-land $(q "${TALLY_PROJECT:-}") $(q "${TALLY_SESSION:-}") $(q "${TALLY_LABEL:-}") $(q "${TALLY_STATE:-}") $(q "${TALLY_ACCOUNT:-}")"
+elif [ -n "$ASK" ]; then
+  # A raised flag with nothing to land in: show the ask, wait for a key.
+  REMOTE="TALLY_POPUP=1 ~/.local/bin/tally-brief '' '' $(q "${TALLY_LABEL:-}") $(q "${TALLY_STATE:-}") $(q "$ASK")"
 else
   REMOTE="exec bash -l"
 fi

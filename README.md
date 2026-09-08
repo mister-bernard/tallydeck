@@ -15,15 +15,26 @@ into the exact session that's asking — briefed, focused, ready to type.
 
 | Light | State | Meaning | What to do |
 |---|---|---|---|
-| 🟠 **Orange, flashing** | `attention` | The session finished its turn or asked you a question — **your move.** Flashes for 5 minutes, then holds steady orange (still your move, done shouting). | Press it |
-| 🔴 **Red, double-pulse** | `blocked` | A hard stop: permission request, failed gate, something that cannot proceed without you. Raised the instant it happens. | Press it now |
+| 🟠 **Orange, flashing** | `attention` | The session **asked you something** — a question in its last message, a plan waiting for approval, an `AskUserQuestion` — and is waiting on the answer. Flashes for 5 minutes, then holds steady orange (still your move, done shouting). | Press it |
+| 🔴 **Red, double-pulse** | `blocked` | A hard stop: a permission prompt, a failed gate, a flag a script raised as blocked. Cannot proceed without you. Raised the instant it happens. | Press it now |
 | 🔵 **Blue** | `working` | Agent busy — running tools, thinking, writing. Needs nothing. | Enjoy |
-| 🟢 **Green** | `success` | Finished well; expires off the deck on its own. | Nothing |
+| 🟢 **Green** | `success` | **Finished its turn and asked for nothing.** Reads `done · 4m`. Stays until the session goes stale (30 min) or you mute it. | Nothing |
 | ⚫ **Gray / dark** | `idle` / `offline` | Alive but quiet, or gone stale. | Nothing |
 
 Hot attention keys show **the actual question**, wrapped across the key —
 long asks alternate between two pages of text (watch the little dots), so
 you often know your answer before you press.
+
+Finished is not the same as waiting. A session that ends its turn with a
+report goes **green**; only one that ends with a question goes **orange**.
+Red is never earned by finishing — a normally completed turn is not an
+emergency, and a deck that says otherwise trains you to ignore it.
+
+**Pressing never acknowledges.** A short press on any flashing key shows
+you what it wants (the router popup, with the ask at the top) and leaves
+the alarm up. Only the popup's `␣ done`, `tally clear`, or a long press
+retires it — an alarm must never disappear on an action whose result you
+did not see.
 
 ### The line above each tile (the tally bar)
 

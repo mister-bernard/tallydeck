@@ -125,6 +125,8 @@ def summarize(signals: list[Signal]) -> str:
         parts.append(f"{counts[ATTENTION]} need you")
     if counts.get(WORKING):
         parts.append(f"{counts[WORKING]} working")
+    if counts.get(SUCCESS):
+        parts.append(f"{counts[SUCCESS]} done")
     if not parts:
         parts.append("all quiet")
     return " · ".join(parts)

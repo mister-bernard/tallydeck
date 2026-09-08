@@ -63,12 +63,33 @@ source shout over a blocked one.
 
 ## The Claude session heuristic
 
-Ported from cc-fkeys: in a Claude Code session JSONL, if the last record is
-a `user` message the model is processing (WORKING); if it's an `assistant`
-message the model finished and the human owes a reply (ATTENTION); other
-record types are IDLE; sessions untouched for 30 min drop off. One key per
-project (most recent session wins) — the operator thinks in projects, not
-session ids.
+In a Claude Code session JSONL, walk back to the last *conversational*
+record, skipping bookkeeping types (`attachment`, `system`, `cost-state`,
+`last-prompt`, `ai-title`, `mode`, …) — on current Claude Code most logs
+end in one of those, and reading only the literal last record left most of
+a live fleet showing IDLE. Then:
+
+- `user` (a prompt or a tool result) → Claude's move → WORKING
+- `assistant` with a `tool_use` pending → a tool is running → WORKING
+- `assistant` pending `AskUserQuestion`/`ExitPlanMode` → ATTENTION
+- `assistant`, turn ended, last message asks a question → ATTENTION
+- `assistant`, turn ended, no ask → SUCCESS (green, quiet, `done · 4m`)
+
+"Asks a question" = a `?` in the final paragraph (code spans stripped) or a
+short list of decision phrases (*should I*, *your call*, *sign-off*,
+*decision needed*…). Deliberately narrow — a closing "let me know if…" is a
+courtesy, not an ask, and every false amber trains the operator to ignore
+the deck. A `system/turn_duration` record after the assistant record is
+Claude Code's own end-of-turn marker: when present the verdict is final and
+skips the dwell below. Sessions untouched for 30 min drop off. One key per
+pane; paneless sessions collapse per project (most recent wins), except
+that a session asking for the human is never collapsed away.
+
+Red is reserved for hooks and scripts: the Notification hook raises
+BLOCKED for `permission_prompt` only, ATTENTION for elicitation /
+`agent_needs_input`, and nothing for `idle_prompt` ("waiting for your
+input" is merely the turn being over — v1 raised BLOCKED for every type,
+so every finished session went red a minute after it stopped talking).
 
 ## Surfaces are pixel-identical
 
@@ -97,8 +118,9 @@ and the Home Assistant deck integrations (2026-09):
 - **Attention dwell.** Claude Code logs tool results as `user` records, so
   a session's tail flaps assistant/user/assistant… mid-turn. Two prior
   projects independently hit this as icon flicker. Our fix: an assistant
-  tail only counts as ATTENTION once the log has been quiet for
-  `dwell` seconds (default 15). Hysteresis is mandatory, not polish.
+  tail only counts as ATTENTION/SUCCESS once the log has been quiet for
+  `dwell` seconds (default 15), unless Claude Code's own end-of-turn
+  marker is present. Hysteresis is mandatory, not polish.
 - **Write suppression.** The hardware surface fingerprints each key's
   content and skips unchanged HID writes; flashing 2 of 8 keys costs 2
   updates per frame, not 8. (Companion goes further with content-hash

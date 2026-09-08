@@ -114,7 +114,8 @@ def run(link, surface, view: View, poll_every: float = 2.0,
     machine the deck is plugged into (pop a terminal window, ring a bell,
     raise an app). It receives the signal as TALLY_* environment variables:
     TALLY_ID, TALLY_LABEL, TALLY_GROUP, TALLY_STATE, TALLY_PROJECT,
-    TALLY_SESSION, TALLY_LONG.
+    TALLY_SESSION, TALLY_TMUX, TALLY_ACCOUNT, TALLY_SUBLABEL, TALLY_DETAIL,
+    TALLY_LONG.
     """
     pressed_at: dict[int, float] = {}
     held: set[int] = set()
@@ -132,6 +133,7 @@ def run(link, surface, view: View, poll_every: float = 2.0,
                    TALLY_SESSION=str(sig.meta.get("session", "")),
                    TALLY_TMUX=str(sig.meta.get("tmux", "")),
                    TALLY_ACCOUNT=str(sig.meta.get("account", "")),
+                   TALLY_SUBLABEL=sig.sublabel, TALLY_DETAIL=sig.detail,
                    TALLY_LONG="1" if long else "0")
         try:
             subprocess.Popen(on_press_cmd, env=env,

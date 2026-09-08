@@ -136,9 +136,9 @@ def test_watchdir_lifecycle(tmp_path):
     assert "sig/gone" not in sigs                      # expired = reaped
     assert not (tmp_path / "gone.json").exists()
 
-    # short press acks; long press deletes
-    src.on_press(sigs["sig/deploy"])
-    assert json.loads((tmp_path / "deploy.json").read_text())["state"] == "idle"
+    # short press is hands-off (the client shows it); long press deletes
+    assert src.on_press(sigs["sig/deploy"]) is False
+    assert json.loads((tmp_path / "deploy.json").read_text())["state"] == "blocked"
     src.on_press(sigs["sig/deploy"], long=True)
     assert not (tmp_path / "deploy.json").exists()
 
@@ -183,8 +183,9 @@ def test_claude_sessions_dwell_masks_midturn_flap(tmp_path):
                                      "message": {"content": []}}])
     assert ClaudeSessionsSource(
         root=str(tmp_path)).poll()[0].state == WORKING
+    # quiet, ended, nothing asked → finished, not "your move"
     assert ClaudeSessionsSource(
-        root=str(tmp_path), dwell=0).poll()[0].state == ATTENTION
+        root=str(tmp_path), dwell=0).poll()[0].state == SUCCESS
 
 
 def test_claude_sessions_one_key_per_project(tmp_path):
@@ -577,7 +578,8 @@ def test_oneshots_never_shout_and_sink(tmp_path, monkeypatch):
     src = ClaudeSessionsSource(root=str(tmp_path))
     monkeypatch.setattr(src, "_session_panes", lambda: {"aaaa1111": "oneshot:1.3"})
     s = src.poll()[0]
-    assert s.state == WORKING          # an ended one-shot never flashes
+    assert s.state == SUCCESS          # an ended one-shot never flashes
+    assert s.wants_flash is False
     assert s.priority < 0              # ranks below every persistent session
     assert s.meta["oneshot"] is True
 
@@ -597,6 +599,7 @@ def test_beacon_jump_to_finds_the_alert_page():
 def test_space_done_mutes_until_the_session_asks_again(tmp_path, monkeypatch):
     import os
     from pathlib import Path
+    monkeypatch.setenv("TALLYDECK_STATE", str(tmp_path / "state"))
     proj = tmp_path / "-home-me-projects-w"
     proj.mkdir()
     p = _write_jsonl(proj, "feedbeef", [{"type": "assistant", "message": {
@@ -604,7 +607,7 @@ def test_space_done_mutes_until_the_session_asks_again(tmp_path, monkeypatch):
         "content": [{"type": "text", "text": "Decision needed on the rollout."}]}}])
     t = time.time() - 120
     os.utime(p, (t, t))
-    ack = Path.home() / ".tallydeck" / "acked" / "feedbeef"
+    ack = tmp_path / "state" / "acked" / "feedbeef"
     ack.parent.mkdir(parents=True, exist_ok=True)
     ack.touch()                                     # space pressed
     src = ClaudeSessionsSource(root=str(tmp_path))
@@ -631,3 +634,178 @@ def test_multiwindow_sessions_label_by_window_topic(tmp_path, monkeypatch):
     assert src.poll()[0].label == "mainB"
     src._sp_names = {"cafe0001": ("bash", "1")}       # single window → session
     assert src.poll()[0].label == "mainB"
+
+
+# ── state categorization: finished is green, asking is amber ─────────────────
+
+def _quiet(p, age=120):
+    import os
+    t = time.time() - age
+    os.utime(p, (t, t))
+
+
+def test_bookkeeping_tail_does_not_hide_the_conversation(tmp_path):
+    """Current Claude Code ends most logs with attachment / system /
+    last-prompt / cost-state records. 15 of 18 live sessions read IDLE
+    because the classifier only knew 'user' and 'assistant' tails."""
+    proj = tmp_path / "-home-me-projects-w"
+    proj.mkdir()
+    p = _write_jsonl(proj, "aaaa0001", [
+        {"type": "assistant", "message": {"stop_reason": "end_turn",
+         "content": [{"type": "text", "text": "Shipped the fix and pushed."}]}},
+        {"type": "attachment", "attachment": {"type": "x"}},
+        {"type": "system", "subtype": "stop_hook_summary"},
+        {"type": "system", "subtype": "turn_duration"},
+        {"type": "last-prompt", "lastPrompt": "fix it"},
+        {"type": "cost-state", "totalCostUSD": 1.0},
+    ])
+    # turn_duration is Claude Code's own end-of-turn marker: final even
+    # while the log is fresh — no dwell needed.
+    s = ClaudeSessionsSource(root=str(tmp_path)).poll()[0]
+    assert s.state == SUCCESS
+    assert s.sublabel.startswith("done")
+    assert s.wants_flash is False
+
+    # a tool still running, buried under bookkeeping, is WORKING
+    p2 = _write_jsonl(proj, "aaaa0002", [
+        {"type": "assistant", "message": {"stop_reason": "tool_use",
+         "content": [{"type": "tool_use", "name": "Bash", "input": {}}]}},
+        {"type": "attachment"}, {"type": "last-prompt"}, {"type": "cost-state"},
+    ])
+    _quiet(p2)
+    # and a human prompt under bookkeeping is WORKING too
+    p3 = _write_jsonl(proj, "aaaa0003", [
+        {"type": "user", "message": {"content": [{"type": "text", "text": "go"}]}},
+        {"type": "mode", "mode": "normal"}, {"type": "atis-latch"},
+    ])
+    _quiet(p3)
+    from tallydeck.sources.claude_sessions import classify, _tail_lines
+    assert classify(_tail_lines(p2)) == (WORKING, False)
+    assert classify(_tail_lines(p3)) == (WORKING, False)
+
+
+def test_finished_is_success_asking_is_attention(tmp_path):
+    proj = tmp_path / "-home-me-projects-w"
+    proj.mkdir()
+    done = _write_jsonl(proj, "bbbb0001", [
+        {"type": "assistant", "message": {"stop_reason": "end_turn",
+         "content": [{"type": "text", "text":
+                      "All 42 tests pass. Committed as 1a2b3c and pushed."}]}}])
+    _quiet(done)
+    from tallydeck.sources.claude_sessions import classify, _tail_lines
+    assert classify(_tail_lines(done)) == (SUCCESS, False)
+    ask = _write_jsonl(proj, "bbbb0002", [
+        {"type": "assistant", "message": {"stop_reason": "end_turn",
+         "content": [{"type": "text", "text":
+                      "Two options: keep A or switch to B.\n\n"
+                      "Which do you want?"}]}}])
+    _quiet(ask)
+    assert classify(_tail_lines(ask)) == (ATTENTION, False)
+    src = ClaudeSessionsSource(root=str(tmp_path))
+    by = {s.meta["session"]: s for s in src.poll()}
+    assert by["bbbb0002"].state == ATTENTION
+    assert "Which do you want" in by["bbbb0002"].sublabel   # the ask on the key
+    assert by["bbbb0002"].wants_flash is True
+
+
+def test_asks_question_heuristics():
+    from tallydeck.sources.claude_sessions import asks_question as q
+    assert q("Done. Which branch should this land on?")
+    assert q("I need your sign-off before pushing to main.")
+    assert q("Your call: keep the old key or rotate it.")
+    assert q("Ready. Should I push?")
+    # reports are reports — even when they mention questions or hedge
+    assert not q("Fixed the bug (was the `?` in the regex). Tests green.")
+    assert not q("Open question: is the cache safe?\n\nEither way, shipped "
+                 "the fix and it is live now.")
+    assert not q("Let me know if you want the same treatment elsewhere.")
+    assert not q("```\nwhat?\n```\nAll done.")
+    assert not q("")
+
+
+def test_summarize_counts_finished():
+    assert summarize([Signal(id="a", label="a", state=SUCCESS),
+                      Signal(id="b", label="b", state=WORKING)]) \
+        == "1 working · 1 done"
+
+
+def test_raised_flag_short_press_never_acks_silently(tmp_path):
+    """The Aurora key: flashing, pressed, 'acked' — and the operator never
+    saw what it asked. Reading is the client's job; only an explicit
+    done/long-press/clear may retire it."""
+    src = WatchDirSource(path=str(tmp_path))
+    (tmp_path / "aurora.json").write_text(json.dumps(
+        {"label": "Aurora", "state": "attention",
+         "sublabel": "cathode vs anode sphere?"}))
+    sig = src.poll()[0]
+    assert src.on_press(sig) is False
+    d = json.loads((tmp_path / "aurora.json").read_text())
+    assert d["state"] == "attention" and d["sublabel"] != "acked"
+    assert src.on_press(sig, long=True) is True
+    assert not (tmp_path / "aurora.json").exists()
+
+
+def test_raise_stamps_the_raising_session(tmp_path, monkeypatch):
+    """`tally raise` from inside a Claude session must produce a key that
+    routes back INTO that session, with the ask — not an orphan flag."""
+    from tallydeck import cli
+    monkeypatch.setenv("TALLYDECK_STATE", str(tmp_path))
+    monkeypatch.setenv("CLAUDE_SESSION_ID", "deadbeef-0000-4000-8000-000000000000")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/home/x/.claude-b")
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.chdir(tmp_path)
+    cli.main(["raise", "aurora", "--state", "attention", "--label", "Aurora",
+              "--sublabel", "cathode vs anode sphere?"])
+    d = json.loads((tmp_path / "signals" / "aurora.json").read_text())
+    assert d["meta"]["session"].startswith("deadbeef")
+    assert d["meta"]["account"] == "B"
+    assert d["meta"]["project"] == str(tmp_path)
+    sig = WatchDirSource(path=str(tmp_path / "signals")).poll()[0]
+    assert sig.meta["session"].startswith("deadbeef")
+    cli.main(["clear", "aurora"])
+    assert not (tmp_path / "signals" / "aurora.json").exists()
+
+
+def test_notification_hook_raises_only_for_real_asks(tmp_path):
+    """idle_prompt = 'waiting for your input' = the turn merely ended. It
+    was raised as BLOCKED, so every finished session went red a minute
+    after it stopped talking."""
+    import subprocess, sys, os
+    from pathlib import Path
+    hook = Path(__file__).resolve().parent.parent / "contrib" / "tally-hook-notify"
+    env = dict(os.environ, TALLYDECK_STATE=str(tmp_path), TMUX="")
+    env.pop("TMUX")
+
+    def fire(kind, sid, msg):
+        subprocess.run([sys.executable, str(hook)], input=json.dumps(
+            {"session_id": sid, "cwd": "/tmp/p", "notification_type": kind,
+             "message": msg}), text=True, env=env, check=True, timeout=10)
+    fire("idle_prompt", "11111111-a", "Claude is waiting for your input")
+    assert not list((tmp_path / "signals").glob("*.json")) \
+        if (tmp_path / "signals").exists() else True
+    fire("permission_prompt", "22222222-b", "Claude needs your permission to use Bash")
+    d = json.loads((tmp_path / "signals" / "ask-22222222.json").read_text())
+    assert d["state"] == "blocked" and d["priority"] == 900
+    fire("elicitation_dialog", "33333333-c", "The server wants a value")
+    d = json.loads((tmp_path / "signals" / "ask-33333333.json").read_text())
+    assert d["state"] == "attention"
+    fire("agent_completed", "44444444-d", "Agent finished")
+    assert not (tmp_path / "signals" / "ask-44444444.json").exists()
+    # older Claude Code without notification_type: classify by message
+    subprocess.run([sys.executable, str(hook)], input=json.dumps(
+        {"session_id": "55555555-e", "cwd": "/tmp/p",
+         "message": "Claude is waiting for your input"}),
+        text=True, env=env, check=True, timeout=10)
+    assert not (tmp_path / "signals" / "ask-55555555.json").exists()
+    # and clear removes it from the same dir
+    clear = hook.parent / "tally-hook-clear"
+    subprocess.run([sys.executable, str(clear)], input=json.dumps(
+        {"session_id": "22222222-b"}), text=True, env=env, check=True, timeout=10)
+    assert not (tmp_path / "signals" / "ask-22222222.json").exists()
+
+
+def test_brief_shows_the_ask_without_a_log(tmp_path):
+    from tallydeck.brief import build
+    out = build("", "", label="Aurora", roots=[tmp_path], state="attention",
+                ask="cathode vs anode sphere?")
+    assert "THE ASK" in out and "cathode vs anode sphere?" in out

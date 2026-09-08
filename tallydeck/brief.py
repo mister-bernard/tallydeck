@@ -16,12 +16,15 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import zlib
 import subprocess
 import time
 from pathlib import Path
 
+from .paths import cache_dir
+
 WIDTH = 74
-CACHE_DIR = Path.home() / ".tallydeck" / "cache"
+CACHE_DIR = cache_dir()
 
 # ── palette (matches the deck) ───────────────────────────────────────────────
 
@@ -177,7 +180,7 @@ def _age(seconds: float) -> str:
 
 def build(session: str, project: str, label: str = "",
           roots: list[Path] | None = None, state: str = "",
-          tasks_cmd: list[str] | None = None) -> str:
+          tasks_cmd: list[str] | None = None, ask: str = "") -> str:
     roots = roots or [Path.home() / ".claude" / "projects"]
     title = label or os.path.basename(project.rstrip("/")) or project
     sc, dot = STATE_C.get(state, STATE_C["idle"])
@@ -193,6 +196,16 @@ def build(session: str, project: str, label: str = "",
     L.append(f"{pad}{sc}{dot}{R}  {TITLE}{title}{R}   {chip}")
     L.append(f"{pad}   {PATH}{project}{R}")
     L.append(rule)
+
+    # An explicitly raised ask (tally raise / a hook) comes first: it is the
+    # reason the key was flashing, and it may be the only thing there is —
+    # a raised flag need not have a session log behind it at all.
+    if ask:
+        L.append(f"{pad}{BOLD}THE ASK{R}")
+        L.append("")
+        for ln in _wrap(" ".join(ask.split())[:800], WIDTH - 4):
+            L.append(f"{pad}{sc}▌{R} {ln}")
+        L.append("")
 
     # the ask / where it left off — a block quote in the state color
     if fp:
@@ -226,17 +239,18 @@ def build(session: str, project: str, label: str = "",
 
 def build_cached(session: str, project: str, label: str = "",
                  roots: list[Path] | None = None, state: str = "",
-                 tasks_cmd: list[str] | None = None) -> str:
+                 tasks_cmd: list[str] | None = None, ask: str = "") -> str:
     """Cache keyed on the session log's identity — same log, same brief."""
     roots = roots or [Path.home() / ".claude" / "projects"]
     fp = _session_file(session, roots) if session else None
     if fp is None:
-        return build(session, project, label, roots, state, tasks_cmd)
+        return build(session, project, label, roots, state, tasks_cmd, ask)
     try:
         st = fp.stat()
-        stamp = f"{st.st_mtime_ns}:{st.st_size}:{state}"
+        stamp = (f"{st.st_mtime_ns}:{st.st_size}:{state}:"
+                 f"{zlib.crc32(ask.encode('utf-8', 'replace')):08x}")
     except OSError:
-        return build(session, project, label, roots, state, tasks_cmd)
+        return build(session, project, label, roots, state, tasks_cmd, ask)
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache = CACHE_DIR / f"brief-{session[:8]}.ans"
     try:
@@ -245,7 +259,7 @@ def build_cached(session: str, project: str, label: str = "",
             return body
     except OSError:
         pass
-    out = build(session, project, label, roots, state, tasks_cmd)
+    out = build(session, project, label, roots, state, tasks_cmd, ask)
     try:
         cache.write_text(stamp + "\n" + out)
     except OSError:

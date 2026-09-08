@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tally-route <client_tty> <cur_sess> <target> <uuid> <project> <label> <state> [account]
+# tally-route <client_tty> <cur_sess> <target> <uuid> <project> <label> <state> [account] [signal_id] [ask]
 #
 # The attention router, run inside a floating tmux popup over whatever the
 # operator is viewing. One menu, always — every option works whether the
@@ -10,11 +10,17 @@
 #           Ctrl-b d puts it back / leaves it running.
 #   t     → open it as a TAB (window) of your current session
 #   s     → SPLIT it into your current window, side by side
-#   ␣     → DONE: mute this alert until the session asks anew
+#   ␣     → DONE: mute this alert until the session asks anew; for a raised
+#           flag (`tally raise` / hook) this retires the flag itself
 #   other → dismiss; nothing anywhere changes
+#
+# A raised flag with no session behind it still gets the popup: the ask is
+# shown, ␣ retires it, anything else leaves it flashing. Reading is not
+# acknowledging.
 set -u
 TTY="${1:-}"; CUR="${2:-}"; TARGET="${3:-}"; UUID="${4:-}"
 PROJ="${5:-}"; LABEL="${6:-}"; STATE="${7:-}"; ACCT="${8:-}"
+SIGID="${9:-}"; ASK="${10:-}"
 SOCKET="${TALLY_TMUX_SOCKET:-/tmp/tmux-1000/cc}"
 T() { tmux -S "$SOCKET" "$@"; }
 export PYTHONPATH="${TALLYDECK_HOME:-$HOME/projects/tallydeck}${PYTHONPATH:+:$PYTHONPATH}"
@@ -61,24 +67,34 @@ ensure_resurrected() {
 }
 
 /usr/bin/python3 -m tallydeck.cli brief \
-  --session "$UUID" --project "$PROJ" --label "$LABEL" --state "$STATE"
+  --session "$UUID" --project "$PROJ" --label "$LABEL" --state "$STATE" \
+  --ask "$ASK"
 
 LIVE=""; [ -n "$TARGET" ] && LIVE=1
 printf '  \033[38;2;44;48;62m%s\033[0m\n' "──────────────────────────────────────────────────────────────────────────"
-printf '  \033[1;38;2;0;229;255m⏎\033[0m open floating%s    \033[1;38;2;0;229;255mt\033[0m tab here    \033[1;38;2;0;229;255ms\033[0m split here    \033[1;38;2;0;229;255m␣\033[0m done (mute)    \033[2mother dismisses\033[0m\n' \
-  "$([ -n "$LIVE" ] || printf '\033[2m (resumes)\033[0m')"
+if [ -n "$LIVE" ] || [ -n "$UUID" ]; then
+  printf '  \033[1;38;2;0;229;255m⏎\033[0m open floating%s    \033[1;38;2;0;229;255mt\033[0m tab here    \033[1;38;2;0;229;255ms\033[0m split here    \033[1;38;2;0;229;255m␣\033[0m done (mute)    \033[2mother dismisses\033[0m\n' \
+    "$([ -n "$LIVE" ] || printf '\033[2m (resumes)\033[0m')"
+else
+  printf '  \033[1;38;2;0;229;255m␣\033[0m done (retire this flag)    \033[2many other key dismisses — the flag stays up\033[0m\n'
+fi
 drain_input
 IFS= read -r -n 1 -s -t 120 key 2>/dev/null || exit 0
 
 SESS="${TARGET%%:*}"
 case "$key" in
   " ")  # DONE — inbox-style: mute this alert until the session asks anew
+    STATE_DIR="${TALLYDECK_STATE:-$HOME/.tallydeck}"
     if [ -n "$UUID" ]; then
       SID8=$(printf '%s' "$UUID" | cut -c1-8)
-      rm -f "$HOME/.tallydeck/signals/ask-$SID8.json"
-      mkdir -p "$HOME/.tallydeck/acked"
-      touch "$HOME/.tallydeck/acked/$SID8"
+      rm -f "$STATE_DIR/signals/ask-$SID8.json"
+      mkdir -p "$STATE_DIR/acked"
+      touch "$STATE_DIR/acked/$SID8"
     fi
+    # A raised flag is retired outright: "done" on a flag means the flag.
+    case "$SIGID" in
+      sig/*) /usr/bin/python3 -m tallydeck.cli clear "${SIGID#sig/}" >/dev/null 2>&1 || true ;;
+    esac
     exit 0 ;;
   ""|r|R)  # GO THERE, floating
     if [ -n "$LIVE" ]; then

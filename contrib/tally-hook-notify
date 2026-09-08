@@ -1,11 +1,64 @@
 #!/usr/bin/python3
-"""Claude Code Notification hook → raise a BLOCKED signal on the Stream Deck.
-Fires when a session needs the human (permission request / waiting input)."""
+"""Claude Code Notification hook → a key on the Stream Deck, by KIND.
+
+Claude Code sends several notification types through this one hook, and
+only some of them mean the operator must act:
+
+  permission_prompt       Claude cannot proceed without a yes   → BLOCKED (red)
+  elicitation_*dialog,
+  agent_needs_input       something is asking a question        → ATTENTION (amber)
+  idle_prompt             "waiting for your input" — the turn is simply over;
+                          the session source already paints that green
+                                                                → nothing
+  auth_success, agent_completed, elicitation_complete/response,
+  quota_*                 informational                         → nothing
+
+The first version raised BLOCKED for every type, so every normally finished
+session went red sixty seconds after it stopped talking.
+
+Writes the signal into the PER-USER state dir (passwd home), not $HOME: a
+second Claude account runs under its own HOME and its prompts must still
+reach the hub. Override with TALLYDECK_STATE.
+"""
 import json, sys, time, os
+
+BLOCKING = {"permission_prompt"}
+ASKING = {"elicitation_dialog", "elicitation_url_dialog", "agent_needs_input"}
+
+
+def state_dir():
+    env = os.environ.get("TALLYDECK_STATE")
+    if env:
+        return os.path.expanduser(env)
+    try:
+        import pwd
+        home = pwd.getpwuid(os.getuid()).pw_dir
+    except Exception:
+        home = os.path.expanduser("~")
+    return os.path.join(home, ".tallydeck")
+
+
 try:
     d = json.load(sys.stdin)
     sid = (d.get("session_id") or "")[:8]
-    if sid:
+    kind = str(d.get("notification_type") or "")
+    msg = " ".join((d.get("message") or "").split())
+    if not kind:
+        # Older Claude Code: classify by the message text instead.
+        low = msg.lower()
+        if "permission" in low:
+            kind = "permission_prompt"
+        elif "waiting for your input" in low:
+            kind = "idle_prompt"
+        else:
+            kind = "agent_needs_input"
+    if kind in BLOCKING:
+        state, prio = "blocked", 900
+    elif kind in ASKING:
+        state, prio = "attention", 700
+    else:
+        state = ""
+    if sid and state:
         cwd = d.get("cwd") or ""
         home = os.environ.get("HOME", "")
         # Second account = a session running under its own CLAUDE_CONFIG_DIR.
@@ -26,17 +79,17 @@ try:
                 label, _, pane = out.partition("|")
             except Exception:
                 label = pane = ""
-        msg = " ".join((d.get("message") or "needs input").split())
-        p = os.path.expanduser("~/.tallydeck/signals")
+        msg = msg or "needs input"
+        p = os.path.join(state_dir(), "signals")
         os.makedirs(p, exist_ok=True)
         with open(f"{p}/ask-{sid}.json", "w") as fh:
             json.dump({"label": label or os.path.basename(cwd) or "claude",
-                       "state": "blocked", "sublabel": msg[:40],
-                       "detail": msg, "priority": 900, "ttl": 1800,
+                       "state": state, "sublabel": msg[:40],
+                       "detail": msg, "priority": prio, "ttl": 1800,
                        "updated": time.time(),
                        "meta": {"session": d.get("session_id") or "",
                                 "project": cwd, "tmux": pane,
-                                "account": acct}}, fh)
+                                "account": acct, "kind": kind}}, fh)
 except Exception:
     pass
 sys.exit(0)

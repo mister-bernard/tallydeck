@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -23,7 +25,7 @@ from .devices import PROFILES
 from .hub import Hub
 from .signal import Signal, STATES, IDLE, rank
 from .sources import make as make_source
-from .sources.watchdir import DEFAULT_DIR
+from .paths import signals_dir
 from .view import View
 from .client import LocalLink, PipeLink, run
 
@@ -117,8 +119,9 @@ def cmd_deck(cfg, args):
 
 
 def cmd_raise(cfg, args):
-    DEFAULT_DIR.mkdir(parents=True, exist_ok=True)
-    fp = DEFAULT_DIR / f"{args.id}.json"
+    sdir = signals_dir()
+    sdir.mkdir(parents=True, exist_ok=True)
+    fp = sdir / f"{args.id}.json"
     d = {}
     if fp.is_file():
         try:
@@ -136,6 +139,35 @@ def cmd_raise(cfg, args):
         if v is not None:
             d[k] = v
     d["updated"] = time.time()
+    # Raised from inside a Claude Code session (or a tmux pane)? Stamp the
+    # identity so a press on this key lands the operator IN that session
+    # with the ask on screen, instead of a bare "acked". Explicit flags win
+    # over the environment.
+    meta = dict(d.get("meta") or {})
+    sid = args.session or os.environ.get("CLAUDE_SESSION_ID", "")
+    if sid:
+        meta["session"] = sid
+    if args.project:
+        meta["project"] = args.project
+    elif "project" not in meta and sid:
+        meta["project"] = os.getcwd()
+    if args.tmux:
+        meta["tmux"] = args.tmux
+    elif "tmux" not in meta and os.environ.get("TMUX"):
+        try:
+            meta["tmux"] = subprocess.run(
+                ["tmux", "display", "-p", "#S:#I.#P"], capture_output=True,
+                text=True, timeout=2).stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    if args.account:
+        meta["account"] = args.account
+    elif "account" not in meta and sid:
+        marker = os.environ.get("TALLY_ACCT_B_MARKER", ".claude-b")
+        cfgdir = os.environ.get("CLAUDE_CONFIG_DIR") or os.environ.get("HOME", "")
+        meta["account"] = "B" if marker in cfgdir else "A"
+    if meta:
+        d["meta"] = meta
     Signal.from_dict({**d, "id": args.id})     # validate before writing
     fp.write_text(json.dumps(d, indent=2))
     print(fp)
@@ -154,11 +186,11 @@ def cmd_brief(cfg, args):
     tasks_cmd = cfg.get("brief", {}).get("tasks_cmd") or None
     print(build_cached(args.session or "", args.project or "",
                        args.label or "", roots or None, args.state or "",
-                       tasks_cmd))
+                       tasks_cmd, ask=args.ask or ""))
 
 
 def cmd_clear(cfg, args):
-    fp = DEFAULT_DIR / f"{args.id}.json"
+    fp = signals_dir() / f"{args.id}.json"
     if fp.is_file():
         fp.unlink()
         print(f"cleared {args.id}")
@@ -211,6 +243,11 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--progress", type=float)
     sp.add_argument("--priority", type=int)
     sp.add_argument("--ttl", type=float)
+    sp.add_argument("--session", help="claude session uuid (default: "
+                    "$CLAUDE_SESSION_ID)")
+    sp.add_argument("--project", help="project path (default: cwd)")
+    sp.add_argument("--tmux", help="tmux pane target (default: this pane)")
+    sp.add_argument("--account", help="account badge, e.g. A or B")
 
     sp = sub.add_parser("clear", help="remove a raised signal")
     sp.add_argument("id")
@@ -220,6 +257,7 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--project", help="project path")
     sp.add_argument("--label")
     sp.add_argument("--state")
+    sp.add_argument("--ask", help="the ask text, for signals without a log")
     return p
 
 

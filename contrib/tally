@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# tally — tallydeck CLI (raise/clear/ls/brief…) for any session on this box.
+#
+# Resolves the checkout from the PASSWD home, not $HOME: a Claude session for
+# a second account runs with HOME pointed at its own config dir, and
+# `$HOME/projects/tallydeck` simply does not exist there — every
+# `tally raise` from that half of the fleet died with ModuleNotFoundError.
+H="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)"
+[ -n "$H" ] || H="$HOME"
+export PYTHONPATH="${TALLYDECK_HOME:-$H/projects/tallydeck}${PYTHONPATH:+:$PYTHONPATH}"
+exec /usr/bin/python3 -m tallydeck.cli "$@"

@@ -14,8 +14,13 @@ or equivalently:
 
 The filename (sans .json) becomes the signal id within this source's
 group. Delete the file — or let its ttl lapse — and the key frees up.
-A short press on one of these keys acknowledges it: attention/blocked
-signals are downgraded in place; a long press deletes the file.
+
+Pressing one of these keys never clears it by itself. An alarm must not
+vanish on an action whose result the operator could not see — a short
+press used to downgrade the signal in place, so pressing a flashing key
+"acknowledged" an ask nobody had read. Now a short press is the client's
+to route (it shows the ask); only the popup's explicit "done", `tally
+clear`, or a long press retires the file.
 """
 
 from __future__ import annotations
@@ -23,10 +28,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ..signal import Signal, ATTENTION, BLOCKED, IDLE
+from ..signal import Signal, BLOCKED
+from ..paths import signals_dir
 from .base import Source
 
-DEFAULT_DIR = Path.home() / ".tallydeck" / "signals"
+DEFAULT_DIR = signals_dir()
 
 
 class WatchDirSource(Source):
@@ -36,7 +42,7 @@ class WatchDirSource(Source):
 
     def __init__(self, **opts):
         super().__init__(**opts)
-        self.path = Path(opts.get("path", DEFAULT_DIR)).expanduser()
+        self.path = Path(opts.get("path") or signals_dir()).expanduser()
 
     def poll(self) -> list[Signal]:
         signals: list[Signal] = []
@@ -65,19 +71,8 @@ class WatchDirSource(Source):
         if not fp.is_file():
             return False
         if long:
-            fp.unlink(missing_ok=True)
+            fp.unlink(missing_ok=True)   # the one explicit hub-side dismiss
             return True
-        if sig.meta.get("session"):
-            # Backed by a live session: the press routes the operator there.
-            # Auto-acking here cleared flashes the operator never actually saw.
-            return False
-        if sig.state in (ATTENTION, BLOCKED):
-            try:
-                d = json.loads(fp.read_text())
-                d["state"] = IDLE
-                d["sublabel"] = "acked"
-                fp.write_text(json.dumps(d, indent=2))
-                return True
-            except (OSError, json.JSONDecodeError):
-                return False
+        # Short press: hands-off. The client routes it (popup with the ask,
+        # or the session that raised it); nothing here may change state.
         return False

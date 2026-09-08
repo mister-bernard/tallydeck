@@ -1,25 +1,41 @@
 """Claude Code sessions → signals.
 
-Ports the cc-fkeys heuristics: scan ~/.claude/projects/*/*.jsonl, read the
-tail, and infer state from the last record:
+Scan ~/.claude/projects/*/*.jsonl, read the tail, and infer state from the
+last CONVERSATIONAL record — the log is full of bookkeeping records
+(attachment, system, cost-state, last-prompt, ai-title, mode…) that say
+nothing about whose move it is, and on current Claude Code most tails end
+in one of those. Skipping them:
 
-  last record "user"       → the human spoke last; Claude is processing → WORKING
-  last record "assistant"  → Claude finished and is waiting on the human → ATTENTION
-  anything else            → IDLE
-  mtime older than `stale` → dropped entirely
+  user (prompt or tool result)   → Claude's move                 → WORKING
+  assistant, tool_use pending    → a tool is running             → WORKING
+  assistant, AskUserQuestion /
+    ExitPlanMode pending         → it is asking you              → ATTENTION
+  assistant, turn ended, asks    → it is asking you              → ATTENTION
+  assistant, turn ended, no ask  → it finished; nothing to do    → SUCCESS
+  nothing conversational         →                                  IDLE
+  mtime older than `stale`       → dropped entirely
 
-Press: tries to focus a tmux pane whose cwd matches the session's project.
+A `system/turn_duration` record after the last assistant record is Claude
+Code's own end-of-turn marker: when it is present the verdict is final and
+the dwell window (below) is skipped.
+
+The distinction that matters on the deck: a session that merely FINISHED
+is green and quiet. Only one that is WAITING ON AN ANSWER is amber and
+flashes. Red is reserved for hard stops raised by hooks (permission prompt)
+or explicitly by scripts.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
 
-from ..signal import Signal, WORKING, ATTENTION, IDLE
+from ..signal import Signal, WORKING, ATTENTION, SUCCESS, IDLE
+from ..paths import signals_dir, acked_dir
 from .base import Source
 
 TAIL_BYTES = 65536
@@ -42,46 +58,96 @@ def _tail_lines(path: Path) -> list[str]:
     return chunk.decode("utf-8", errors="replace").strip().splitlines()[-MAX_LINES:]
 
 
-def _last_record_type(lines: list[str]) -> str:
+def _load(ln: str) -> dict | None:
+    ln = ln.strip()
+    if not ln:
+        return None
+    try:
+        rec = json.loads(ln)
+    except json.JSONDecodeError:
+        return None
+    return rec if isinstance(rec, dict) else None
+
+
+# Tools that ARE the question: they block on the human by design.
+ASK_TOOLS = ("AskUserQuestion", "ExitPlanMode")
+
+# Phrases that mark an ended turn as waiting on a decision even without a
+# question mark. Deliberately narrow: a closing "let me know if…" is a
+# courtesy, not an ask, and every false positive here is a key flashing at
+# someone for nothing.
+_ASK_RE = re.compile(
+    r"\b(should i|shall i|your call|please (confirm|approve|advise|choose|pick)"
+    r"|sign[- ]?off|awaiting your|waiting (on|for) your?\b"
+    r"|needs? your (decision|approval|input|answer|go|ok|sign)"
+    r"|blocked on you|go/no[- ]go|(decision|approval|sign[- ]?off) needed"
+    r"|needs? (a|your) (decision|approval))\b", re.I)
+
+
+def asks_question(text: str) -> bool:
+    """Does this final assistant text want an answer, or is it a report?
+
+    A question mark in the LAST paragraph is an ask (that is where a real
+    question lands; a "?" buried mid-report is usually rhetorical or
+    quoted). Otherwise a small set of decision phrases anywhere near the
+    end. Code blocks are stripped first — a shell snippet's `?` is not a
+    question."""
+    text = re.sub(r"```.*?```", " ", text, flags=re.S)
+    text = re.sub(r"`[^`\n]*`", " ", text)
+    text = re.sub(r"<thinking>.*?</thinking>", " ", text, flags=re.S)
+    text = text.strip()
+    if not text:
+        return False
+    paras = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    tail = paras[-1] if paras else text
+    if "?" in tail:
+        return True
+    return bool(_ASK_RE.search(text[-600:]))
+
+
+def classify(lines: list[str]) -> tuple[str, bool]:
+    """(state, final) from the tail of a session log.
+
+    Walks backwards to the last conversational record, skipping the
+    bookkeeping types. `final` is True when Claude Code's own end-of-turn
+    marker (system/turn_duration) sits after that record — then the state
+    is not a guess and needs no dwell."""
+    ended = False
     for ln in reversed(lines):
-        ln = ln.strip()
-        if not ln:
+        rec = _load(ln)
+        if rec is None:
             continue
-        try:
-            rec = json.loads(ln)
-        except json.JSONDecodeError:
+        t = rec.get("type")
+        if t == "system":
+            if rec.get("subtype") == "turn_duration":
+                ended = True
             continue
-        if isinstance(rec, dict):
-            return rec.get("type", "")
-    return ""
+        if t == "user":
+            # A human prompt or a tool result: either way it is Claude's
+            # move now.
+            return WORKING, False
+        if t != "assistant":
+            continue                       # attachment, cost-state, …
+        msg = rec.get("message") or {}
+        content = msg.get("content", [])
+        if not isinstance(content, list):
+            content = [content]
+        last = content[-1] if content else None
+        if isinstance(last, dict) and last.get("type") == "tool_use":
+            if last.get("name") in ASK_TOOLS:
+                return ATTENTION, True
+            return WORKING, False          # a tool is running
+        if msg.get("stop_reason") == "tool_use":
+            return WORKING, False
+        text = " ".join(str(i.get("text", "")) for i in content
+                        if isinstance(i, dict) and i.get("type") == "text")
+        return (ATTENTION if asks_question(text) else SUCCESS), ended
+    return IDLE, False
 
 
 def _assistant_wants_input(lines: list[str]) -> bool:
-    """An assistant tail only means "your move" if the turn actually ENDED.
-
-    A tail whose last assistant record carries tool_use (or stop_reason
-    "tool_use") is a session waiting on a TOOL — e.g. a long test run — and
-    flagging it flashed autonomous workers as needing the human (seen in
-    practice: 'running the fork suite' shown as attention)."""
-    for ln in reversed(lines):
-        try:
-            rec = json.loads(ln)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(rec, dict) or rec.get("type") != "assistant":
-            continue
-        msg = rec.get("message") or {}
-        content = msg.get("content", [])
-        if isinstance(content, list) and content:
-            last = content[-1]
-            if isinstance(last, dict) and last.get("type") == "tool_use":
-                # Most tool_use tails mean "a tool is running" — but some
-                # tools ARE the question: they block on the human by design.
-                return last.get("name") in ("AskUserQuestion", "ExitPlanMode")
-        if msg.get("stop_reason") == "tool_use":
-            return False
-        return True
-    return True
+    """Kept for callers/tests: does the tail wait on the human?"""
+    return classify(lines)[0] == ATTENTION
 
 
 def _snippet(lines: list[str], limit: int = 300) -> str:
@@ -216,30 +282,31 @@ class ClaudeSessionsSource(Source):
                 if now - mtime > self.stale:
                     continue
                 lines = _tail_lines(fp)
-                last = _last_record_type(lines)
                 exact = self._exact_pane(fp.stem)
                 oneshot = bool(exact) and \
                     exact.split(":", 1)[0] in self.oneshot_sessions
-                state = {"user": WORKING, "assistant": ATTENTION}.get(last, IDLE)
-                if state == ATTENTION and ((now - mtime) < self.dwell
-                                           or not _assistant_wants_input(lines)):
-                    state = WORKING
-                if state == ATTENTION and self._snooze.get(fp.stem, 0) > now:
+                state, final = classify(lines)
+                ended = state in (ATTENTION, SUCCESS)
+                # Dwell: tool results log as "user" records, so mid-turn the
+                # tail flaps. A fresh assistant tail with no end-of-turn
+                # marker is still Claude working.
+                if ended and not final and (now - mtime) < self.dwell:
+                    state, ended = WORKING, False
+                if ended and self._snooze.get(fp.stem, 0) > now:
                     state = IDLE               # snoozed: quiet, still listed
-                askf = (Path.home() / ".tallydeck" / "signals" /
-                        f"ask-{fp.stem[:8]}.json")
+                askf = signals_dir() / f"ask-{fp.stem[:8]}.json"
                 if askf.is_file():
                     try:
                         if mtime > askf.stat().st_mtime + 5:
                             askf.unlink()   # session moved on: stale ask dies
-                        elif state == ATTENTION:
+                        elif ended:
                             state = WORKING  # the hook's key owns this alarm
                     except OSError:
                         pass
-                if state == ATTENTION:
+                if ended:
                     # Inbox-done (space in the popup): quiet until the log
                     # MOVES again — a fresh ask revives the alert on its own.
-                    ackf = Path.home() / ".tallydeck" / "acked" / fp.stem[:8]
+                    ackf = acked_dir() / fp.stem[:8]
                     try:
                         if ackf.stat().st_mtime >= mtime:
                             state = IDLE
@@ -256,6 +323,8 @@ class ClaudeSessionsSource(Source):
                 sub = _age_str(now - mtime)
                 if rate >= 20:
                     sub += f" · {rate * 60 / 1024:.0f}k/m"
+                if state == SUCCESS:
+                    sub = f"done · {_age_str(now - mtime)}"
                 snip = _snippet(lines)
                 if state == ATTENTION and snip:
                     # 96px answers "what do I do?" — the ask beats a rate.
