@@ -944,3 +944,26 @@ def test_raise_update_keeps_label_and_never_routes_to_the_raisers_pane(tmp_path,
     cli.main(["raise", "q", "--tmux", "work:1.1"])
     d = json.loads((tmp_path / "signals" / "q.json").read_text())
     assert d["meta"]["tmux"] == "work:1.1"        # explicit opt-in still works
+
+
+def test_wait_returns_the_answer_and_exits_when_the_flag_vanishes(tmp_path, monkeypatch, capsys):
+    import pytest as _pt, threading, time as _t
+    from tallydeck import cli
+    monkeypatch.setenv("TALLYDECK_STATE", str(tmp_path))
+    (tmp_path / "signals").mkdir(); (tmp_path / "answers").mkdir()
+    (tmp_path / "signals" / "q.json").write_text(json.dumps({"label": "q", "state": "attention"}))
+    def answer_later():
+        _t.sleep(0.3)
+        (tmp_path / "answers" / "q.json").write_text(json.dumps({"id": "q", "answer": "1 — A"}))
+    threading.Thread(target=answer_later).start()
+    cli.main(["wait", "q", "--every", "0.1", "--consume"])
+    assert capsys.readouterr().out.strip() == "1 — A"
+    assert not (tmp_path / "answers" / "q.json").exists()
+    (tmp_path / "signals" / "q.json").unlink()
+    with _pt.raises(SystemExit) as e:
+        cli.main(["wait", "q", "--every", "0.1"])
+    assert e.value.code == 2
+    (tmp_path / "signals" / "q.json").write_text("{}")
+    with _pt.raises(SystemExit) as e:
+        cli.main(["wait", "q", "--every", "0.1", "--timeout", "0.3"])
+    assert e.value.code == 1

@@ -1,0 +1,15 @@
+# systemd --user unit: raised deck questions → the operator's phone over Signal.
+#   cp contrib/tally-notify.service ~/.config/systemd/user/ && systemctl --user enable --now tally-notify
+[Unit]
+Description=tallydeck: push raised questions to Signal
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.openclaw/.env
+ExecStart=%h/projects/tallydeck/contrib/tally-notify --every 2
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

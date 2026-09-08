@@ -25,7 +25,7 @@ from .devices import PROFILES
 from .hub import Hub
 from .signal import Signal, STATES, IDLE, rank
 from .sources import make as make_source
-from .paths import signals_dir
+from .paths import signals_dir, state_dir
 from .view import View
 from .client import LocalLink, PipeLink, run
 
@@ -242,6 +242,37 @@ def cmd_brief(cfg, args):
                        tasks_cmd, ask=args.ask or ""))
 
 
+def cmd_wait(cfg, args):
+    """Block until a raised flag is answered (deck popup, Signal, Mac…).
+
+    The raising agent's side of the round trip: it raised `id`, now it
+    waits here instead of depending on the operator's Telegram session to
+    relay the outcome. Prints the answer; exit 0. Exit 1 on timeout, 2 if
+    the flag vanished without an answer (dismissed / expired)."""
+    adir = state_dir() / "answers"
+    fp = adir / f"{args.id}.json"
+    flag = signals_dir() / f"{args.id}.json"
+    deadline = time.time() + args.timeout if args.timeout else None
+    while True:
+        if fp.is_file():
+            try:
+                d = json.loads(fp.read_text())
+            except json.JSONDecodeError:
+                d = {}
+            if args.json:
+                print(json.dumps(d))
+            else:
+                print(d.get("answer", ""))
+            if args.consume:
+                fp.unlink(missing_ok=True)
+            return
+        if not flag.is_file():
+            sys.exit(2)
+        if deadline and time.time() > deadline:
+            sys.exit(1)
+        time.sleep(args.every)
+
+
 def cmd_clear(cfg, args):
     fp = signals_dir() / f"{args.id}.json"
     if fp.is_file():
@@ -311,6 +342,15 @@ def _parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("clear", help="remove a raised signal")
     sp.add_argument("id")
 
+    sp = sub.add_parser("wait", help="block until a raised flag is answered")
+    sp.add_argument("id")
+    sp.add_argument("--timeout", type=float, default=0,
+                    help="seconds; 0 = forever")
+    sp.add_argument("--every", type=float, default=2.0)
+    sp.add_argument("--json", action="store_true")
+    sp.add_argument("--consume", action="store_true",
+                    help="delete the answer file after printing it")
+
     sp = sub.add_parser("brief", help="print a session's landing brief")
     sp.add_argument("--session", help="claude session uuid")
     sp.add_argument("--project", help="project path")
@@ -327,6 +367,7 @@ def main(argv: list[str] | None = None) -> None:
         "serve": cmd_serve, "ls": cmd_ls, "term": cmd_term,
         "png": cmd_png, "deck": cmd_deck,
         "raise": cmd_raise, "clear": cmd_clear, "brief": cmd_brief,
+        "wait": cmd_wait,
     }[args.cmd](cfg, args)
 
 
