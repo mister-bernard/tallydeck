@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tally-spawn <slug> [-c cwd] [-a A|B|1|2] [--harness claude|codex] [-p task-file|-] [--force] ["task text"]
+# tally-spawn <slug> [-c cwd] [-a A|B|1|2] [--harness claude|codex] [-p task-file|-] [--force] [--share] ["task text"]
 #
 # Start a piece of work as ITS OWN tmux session, so it gets its own key on the
 # deck the moment its log appears (the session source labels keys by tmux
@@ -32,16 +32,21 @@ case "${1:-}" in ""|-h|--help) usage >&2; exit 2 ;; esac
 SLUG="$1"; shift
 case "$SLUG" in *[!A-Za-z0-9._-]*|.*) echo "tally-spawn: bad slug '$SLUG'" >&2; exit 2 ;; esac
 CWD="$HOME"; ACCT=""; HARNESS=""; TASK=""; FORCE="${TALLY_SPAWN_NO_GATE:-0}"
+# Whether -c was given explicitly. An explicit -c is a DECLARATION of the work tree,
+# so it is claimed; the $HOME default is not a declaration and claiming it would let
+# the first default spawn block every later one.
+CWD_EXPLICIT=0; SHARE=0
 while [ $# -gt 0 ]; do
   case "$1" in -c|-a|--account|--harness|-p)
     [ $# -ge 2 ] || { echo "tally-spawn: $1 needs a value" >&2; exit 2; } ;;
   esac
   case "$1" in
-    -c) CWD="$2"; shift 2 ;;
+    -c) CWD="$2"; CWD_EXPLICIT=1; shift 2 ;;
     -a|--account) ACCT="$2"; shift 2 ;;
     --harness) HARNESS="$2"; shift 2 ;;
     -p) if [ "$2" = "-" ]; then TASK="$(cat)"; else TASK="$(cat "$2")" || exit 2; fi; shift 2 ;;
     --force) FORCE=1; shift ;;
+    --share) SHARE=1; shift ;;
     --*) echo "tally-spawn: unknown option $1" >&2; exit 2 ;;
     *)  TASK="$1"; shift ;;
   esac
@@ -118,19 +123,49 @@ mapfile -t FIELDS <<< "$ROUTE"
 HARNESS="${FIELDS[0]}"; ACCT="${FIELDS[1]}"; BIN="${FIELDS[2]}"
 LAUNCH_HOME="${FIELDS[3]}"; LAUNCH_CODEX_HOME="${FIELDS[4]:-}"
 
-# Folder trust is PER-HOME. A claude session launched into a cwd that its
-# account has never seen stops at the "Quick safety check" dialog — whose cursor
-# defaults to "No, exit" — and just sits there, or dies if anything answers it
-# blindly. Account B has its own HOME, so a dir trusted on A is still untrusted
-# for B: on 2026-09-09 three `tally spawn -a B` sessions parked this way at once.
-# Seed the trust entry for the resolved HOME first and the dialog never appears.
-if [ "$HARNESS" != codex ] && [ -x /home/openclaw/scripts/claude-trust.sh ]; then
-  /home/openclaw/scripts/claude-trust.sh trust "$CWD" "$LAUNCH_HOME" >&2 || \
-    echo "tally-spawn: trust pre-provision failed for $CWD ($LAUNCH_HOME) — session may park at the trust dialog" >&2
-fi
-
 NAME="$SLUG"; n=2
 while T has-session -t "=$NAME" 2>/dev/null; do NAME="$SLUG-$n"; n=$((n+1)); done
+
+# ── Ownership claim ─────────────────────────────────────────────────────────
+# The duplicate-writer failure this closes: on 2026-09-09 taobridge-contracts was
+# handed to a batch one-shot and an interactive pane two minutes apart, on the same
+# account. Claiming in ONE launcher would have left that intact, because the two
+# writers came from two launchers — so codex-oneshot (-W) and this must consult the
+# same registry, and they do.
+#
+# Claimed here, before the session is created, so a refusal costs nothing: no tmux
+# session, no agent process, no half-briefed worker to clean up. The claim is taken
+# as tally-spawn's own pid and ADOPTED over to the pane below, because the pane does
+# not exist yet and going free in between is the race we are closing.
+CLAIM=/home/openclaw/scripts/work-claim.py
+CLAIMED=""
+if [ "$CWD_EXPLICIT" = 1 ] && [ "$SHARE" != 1 ] && [ -x "$CLAIM" ]; then
+  if "$CLAIM" acquire "$CWD" --owner "spawn:$NAME" --pid $$ --launcher tally-spawn \
+       --task "$SLUG" >/dev/null 2>&1; then
+    CLAIMED="$CWD"
+  else
+    holder="$("$CLAIM" check "$CWD" 2>&1 | sed 's/^/  /')"
+    cat >&2 <<EOF
+tally-spawn: REFUSED '$SLUG' — another worker already owns $CWD.
+$holder
+  Two writers in one tree is the failure this gate exists for; the second one
+  silently overwrites the first's edits and neither knows.
+
+  If the holder is LIVE:  wait for it, or give this worker its own tree.
+  If it is STALE:         the owner's process is gone but its work may be half
+                          written — look before taking over, then
+                          $CLAIM acquire "$CWD" --owner "spawn:$NAME" --force
+  Read-only alongside it: re-run with --share (records no claim).
+EOF
+    exit 3
+  fi
+fi
+# Release the reservation if we die before the pane can adopt it — otherwise a
+# failed spawn leaves a claim owned by a pid that is already gone, locking the tree.
+spawn_cleanup() { [ -n "$CLAIMED" ] && "$CLAIM" release "$CLAIMED" --owner "spawn:$NAME" --force >/dev/null 2>&1; return 0; }
+trap spawn_cleanup EXIT
+
+
 
 mkdir -p "$STATE/spawned" "$STATE/tasks"; chmod 700 "$STATE" 2>/dev/null
 TASKF="$STATE/tasks/$NAME.md"; umask 077
@@ -152,6 +187,17 @@ Task:
 WORKER_PROTOCOL
   printf '%s\n' "$TASK"
 } > "$TASKF"
+# Folder trust is PER-HOME. A claude session launched into a cwd that its
+# account has never seen stops at the "Quick safety check" dialog — whose cursor
+# defaults to "No, exit" — and just sits there, or dies if anything answers it
+# blindly. Account B has its own HOME, so a dir trusted on A is still untrusted
+# for B: on 2026-09-09 three `tally spawn -a B` sessions parked this way at once.
+# Seed the trust entry for the resolved HOME first and the dialog never appears.
+if [ "$HARNESS" != codex ] && [ -x /home/openclaw/scripts/claude-trust.sh ]; then
+  /home/openclaw/scripts/claude-trust.sh trust "$CWD" "$LAUNCH_HOME" >&2 || \
+    echo "tally-spawn: trust pre-provision failed for $CWD ($LAUNCH_HOME) — session may park at the trust dialog" >&2
+fi
+
 # Keep task text out of tmux's command; the interactive CLI receives it at launch.
 TARGET="$(T new-session -d -P -F '#{session_name}:#{window_index}.#{pane_index}' -s "$NAME" -c "$CWD" \
   -e "TALLY_TASK_FILE=$TASKF" -e "TALLY_AGENT_BIN=$BIN" -e "TALLY_SPAWNED=$NAME" \
@@ -177,6 +223,20 @@ TARGET="$(T new-session -d -P -F '#{session_name}:#{window_index}.#{pane_index}'
    fi;
    echo; echo "[tally-spawn] $TALLY_HARNESS exited; shell remains."; exec bash -i')" \
   || { echo "tally-spawn: tmux new-session failed" >&2; exit 1; }
+
+# Hand the claim to the pane. From here the CLAIM'S LIFETIME IS THE WORKER'S: the
+# registry reads it live while that process exists and stale the moment it does not,
+# which is why ownership is proved by a process and never by a timestamp.
+if [ -n "$CLAIMED" ]; then
+  PANE_PID="$(T display -p -t "$TARGET" '#{pane_pid}' 2>/dev/null)"
+  if [ -n "$PANE_PID" ] && "$CLAIM" adopt "$CLAIMED" --owner "spawn:$NAME" --pid "$PANE_PID" \
+       --task "$SLUG" >/dev/null 2>&1; then
+    CLAIMED=""   # the pane owns it now; our EXIT trap must not take it back
+  else
+    echo "tally-spawn: WARNING could not hand the claim on $CWD to the pane — releasing it." >&2
+    echo "  The session is running but UNCLAIMED: another launcher may be admitted here." >&2
+  fi
+fi
 
 python3 - "$STATE/spawned/$NAME.json" "$NAME" "$CWD" "$ACCT" "$TASKF" "$HARNESS" "$TARGET" <<'PY'
 import json, os, sys, time

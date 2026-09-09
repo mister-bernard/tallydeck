@@ -435,7 +435,22 @@ def reap(rec: dict, grace: int) -> bool:
         time.sleep(0.5)
     # Never force-close a pane after grace expires: a surviving process may
     # still be flushing state. Leave the tmux shell available to the operator.
-    return not any(Path(f"/proc/{p}").exists() for p in rec["pids"])
+    gone = not any(Path(f"/proc/{p}").exists() for p in rec["pids"])
+
+    # Release the ownership claim ONLY on a confirmed reap. A surviving process
+    # may still be writing the tree, and releasing a claim out from under a live
+    # writer is the exact duplicate-writer failure the registry exists to prevent
+    # — so a partial reap keeps the claim, and it stays visible as stale.
+    if gone:
+        claim = Path("/home/openclaw/scripts/work-claim.py")
+        if claim.is_file() and rec.get("cwd"):
+            try:
+                subprocess.run([str(claim), "release", rec["cwd"],
+                                "--owner", f"spawn:{rec['slug']}"],
+                               capture_output=True, timeout=10)
+            except (OSError, subprocess.SubprocessError):
+                pass  # a leaked claim blocks a future spawn; a failed reap loses work
+    return gone
 
 
 def main() -> int:
