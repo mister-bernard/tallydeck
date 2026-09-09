@@ -1,0 +1,9 @@
+[Unit]
+Description=tally reap — park tally-spawned agent sessions idle ≥3h (each resumable by id)
+Documentation=file:///home/openclaw/projects/tallydeck/contrib/tally-reap
+
+[Service]
+Type=oneshot
+ExecStart=/home/openclaw/.local/bin/tally reap --reap --idle-hours 3
+Environment=HOME=/home/openclaw
+Nice=10

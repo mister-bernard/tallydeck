@@ -98,6 +98,19 @@ def telegraph_sessions() -> set[str]:
 
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
+# Codex identity comes from fleet-restore's snapshotter (rollout under
+# $CODEX_HOME/sessions whose session_meta cwd + timestamp match the process).
+# Optional: without it Codex sessions are reported, never reaped — as before.
+FLEET_SNAPSHOT = Path(os.environ.get("FLEET_SNAPSHOT", "/home/openclaw/projects/fleet-restore/bin/fleet-snapshot.py"))
+try:
+    import importlib.util
+    _spec = importlib.util.spec_from_file_location("fleet_snapshot", FLEET_SNAPSHOT)
+    _fs = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_fs)
+except Exception:  # noqa: BLE001 — missing/broken helper must not break the report
+    _fs = None
+CODEX_BUSY_S = 600
+
 
 def tmux(*args: str) -> str:
     try:
@@ -250,10 +263,20 @@ def collect() -> list[dict]:
         # sharing its repo, which would have reported a confident resume id
         # belonging to a different session entirely. Out of scope, and said so.
         if rec["harness"] == "codex" or rec["account"] in ("O", "O2"):
-            rec["uuid"] = ""
-            rec["transcript"] = ""
-            rec["idle_h"] = None
-            rec["state"] = "codex"
+            rec["uuid"], rec["transcript"], rec["idle_h"], rec["state"] = "", "", None, "codex"
+            if _fs is not None and rec["pids"]:
+                a = rec["pids"][0]
+                codex_home = env.get("CODEX_HOME", str(HOME / ".codex"))
+                rid, _conf = _fs.codex_session_id(codex_home, rec["cwd"], _fs.start_epoch(a), set())
+                if rid:
+                    rec["uuid"] = rid
+                    rec["codex_home"] = codex_home
+                    rf = next((r["file"] for r in _fs.codex_rollouts(codex_home) if r["id"] == rid), "")
+                    rec["transcript"] = rf
+                    if rf:
+                        age = now - Path(rf).stat().st_mtime
+                        rec["idle_h"] = round(age / 3600.0, 1)
+                        rec["state"] = WORKING if age < CODEX_BUSY_S else "idle"
             out.append(rec)
             continue
 
@@ -294,7 +317,7 @@ def verdict(rec: dict, idle_hours: float, min_mb: float,
     if not rec["pids"]:
         return False, "no agent process"
     if rec["state"] == "codex":
-        return False, "codex session — rollouts not read here"
+        return False, "codex session — no rollout matched (fleet-snapshot helper missing or ambiguous)"
     if rec["telegraph"] or rec["slug"] in tg:
         return False, "telegraph-routed lane"
     if not rec["spawned"] and not include_unspawned:
@@ -319,6 +342,9 @@ def verdict(rec: dict, idle_hours: float, min_mb: float,
 
 
 def resume_cmd(rec: dict) -> str:
+    if rec.get("harness") == "codex":
+        return (f"cd {rec['cwd']} && CODEX_HOME={rec.get('codex_home', str(HOME / '.codex'))} "
+                f"codex resume {rec['uuid']} --dangerously-bypass-approvals-and-sandbox")
     binary = "claude-b" if rec.get("account") == "B" else "claude"
     return f"cd {rec['cwd']} && {binary} --resume {rec['uuid']}"
 
