@@ -48,6 +48,17 @@ mapfile -t FIELDS <<< "$ROUTE"
 HARNESS="${FIELDS[0]}"; ACCT="${FIELDS[1]}"; BIN="${FIELDS[2]}"
 LAUNCH_HOME="${FIELDS[3]}"; LAUNCH_CODEX_HOME="${FIELDS[4]:-}"
 
+# Folder trust is PER-HOME. A claude session launched into a cwd that its
+# account has never seen stops at the "Quick safety check" dialog — whose cursor
+# defaults to "No, exit" — and just sits there, or dies if anything answers it
+# blindly. Account B has its own HOME, so a dir trusted on A is still untrusted
+# for B: on 2026-09-09 three `tally spawn -a B` sessions parked this way at once.
+# Seed the trust entry for the resolved HOME first and the dialog never appears.
+if [ "$HARNESS" != codex ] && [ -x /home/openclaw/scripts/claude-trust.sh ]; then
+  /home/openclaw/scripts/claude-trust.sh trust "$CWD" "$LAUNCH_HOME" >&2 || \
+    echo "tally-spawn: trust pre-provision failed for $CWD ($LAUNCH_HOME) — session may park at the trust dialog" >&2
+fi
+
 NAME="$SLUG"; n=2
 while T has-session -t "=$NAME" 2>/dev/null; do NAME="$SLUG-$n"; n=$((n+1)); done
 
