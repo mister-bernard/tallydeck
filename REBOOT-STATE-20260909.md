@@ -56,10 +56,8 @@ being written.
   uninterruptible operation belongs to this session.
 - Queue: `taskrunner.py show t2cefd4` verified the task is already archived as
   **done**, with the shipped commit and validation outcome. Do not reopen it.
-- Next concrete step: idle for maintenance. After boot, run `git status --short`
-  and `git log -5 --oneline`, preserving subsequent sessions' work. No build,
-  transaction or notification needs replaying.
-- Checkpoint delivery: a GitHub push was still awaiting completion while this
-  note was written. If reboot interrupts the final checkpoint push, run
-  `git log origin/master..HEAD --oneline`; if local checkpoint commits remain,
-  retry `git push origin master`. Git commits are already durable locally.
+- Maintenance cancelled by G on 2026-09-09: the checkpoint-and-idle hold is
+  lifted. Normal work is authorized. The brief task was completed before the
+  notices; no implementation, transaction or notification needs replaying.
+- Checkpoint delivery completed: `3c6993d` was pushed successfully. Preserve
+  the checkpoint commits; they do not represent unfinished implementation.

@@ -1,6 +1,8 @@
 # Deck briefs — reboot checkpoint
 
 Checkpoint: 2026-09-09, before the planned operator maintenance reboot.
+Update: G cancelled maintenance on 2026-09-09; the checkpoint-and-idle hold
+is lifted. The implementation was already complete before the notices.
 Session: `deck-briefs`.
 
 ## Status
