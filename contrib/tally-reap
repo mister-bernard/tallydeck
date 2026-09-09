@@ -216,6 +216,44 @@ def cwd_transcripts(cwd: str) -> list[tuple[Path, str]]:
     return out
 
 
+def rollout_fds(pids):
+    paths = set()
+    for pid in pids:
+        try:
+            for fd in Path(f"/proc/{pid}/fd").iterdir():
+                try:
+                    target = os.readlink(fd)
+                except OSError:
+                    continue
+                if "/sessions/" in target and "/rollout-" in target and target.endswith(".jsonl"):
+                    paths.add(target)
+        except OSError:
+            continue
+    return paths
+
+
+def codex_complete(fp):
+    # A quiet transcript can still be a long-running tool. Require a completed
+    # turn as the last lifecycle event, not simply an old file mtime.
+    try:
+        with open(fp, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 262144))
+            lines = f.read().splitlines()
+        for line in reversed(lines):
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if rec.get("type") == "event_msg":
+                kind = rec.get("payload", {}).get("type")
+                if kind in ("task_complete", "task_started", "turn_aborted"):
+                    return kind == "task_complete"
+        return False
+    except OSError:
+        return False
+
+
 def collect() -> list[dict]:
     """One record per live tmux session on the socket."""
     fmt = "#{session_name}\t#{session_attached}\t#{pane_pid}"
@@ -263,33 +301,31 @@ def collect() -> list[dict]:
         # sharing its repo, which would have reported a confident resume id
         # belonging to a different session entirely. Out of scope, and said so.
         if rec["harness"] == "codex" or rec["account"] in ("O", "O2"):
+            rec["harness"] = "codex"
             rec["uuid"], rec["transcript"], rec["idle_h"], rec["state"] = "", "", None, "codex"
-            if _fs is not None and rec["pids"]:
-                a = rec["pids"][0]
-                codex_home = env.get("CODEX_HOME", str(HOME / ".codex"))
-                rid, _conf = _fs.codex_session_id(codex_home, rec["cwd"], _fs.start_epoch(a), set())
-                if rid:
-                    rec["uuid"] = rid
-                    rec["codex_home"] = codex_home
-                    rf = next((r["file"] for r in _fs.codex_rollouts(codex_home) if r["id"] == rid), "")
-                    rec["transcript"] = rf
-                    if rf:
-                        age = now - Path(rf).stat().st_mtime
-                        rec["idle_h"] = round(age / 3600.0, 1)
-                        rec["state"] = WORKING if age < CODEX_BUSY_S else "idle"
+            rec["codex_home"] = env.get("CODEX_HOME", str(HOME / ".codex"))
+            paths = rollout_fds(rec["pids"])
+            # Several open threads may include active subagents or /new history.
+            # No cwd/start-time heuristic is strong enough to authorize a kill.
+            if len(paths) == 1:
+                fp = Path(next(iter(paths)))
+                try:
+                    with fp.open() as f:
+                        meta = json.loads(f.readline(65536))
+                    rid = meta.get("payload", {}).get("id", "")
+                    if meta.get("type") == "session_meta" and UUID_RE.fullmatch(rid):
+                        rec["uuid"], rec["transcript"] = rid, str(fp)
+                        age = now - fp.stat().st_mtime
+                        rec["idle_h"] = age / 3600.0
+                        rec["state"] = "idle" if codex_complete(fp) and age >= CODEX_BUSY_S else WORKING
+                except (OSError, ValueError, TypeError):
+                    pass
             out.append(rec)
             continue
 
         uuid = rec.get("uuid", "")
         fp, acct = (transcript_for(uuid) if uuid else (None, ""))
-        if fp is None and rec["cwd"]:
-            # Fallback: the newest unclaimed transcript in this pane's cwd.
-            # Deliberately strict — if it is ambiguous we would rather report
-            # "no resume id" and leave the session alone.
-            cands = [(f, a) for f, a in cwd_transcripts(rec["cwd"]) if f.stem not in claimed]
-            if cands:
-                fp, acct = cands[0]
-                uuid = fp.stem
+        # An unrelated transcript in the same cwd is not proof of ownership.
         rec["uuid"] = uuid
         rec["transcript"] = str(fp) if fp else ""
         if acct and not rec["account"]:
@@ -297,12 +333,21 @@ def collect() -> list[dict]:
 
         if fp:
             mtime = fp.stat().st_mtime
-            rec["idle_h"] = round((now - mtime) / 3600.0, 1)
+            rec["idle_h"] = (now - mtime) / 3600.0
             rec["state"] = classify(_tail_lines(fp))[0]
         else:
             rec["idle_h"] = None
             rec["state"] = "unknown"
         out.append(rec)
+    owners = {}
+    for rec in out:
+        if rec.get("uuid"):
+            owners.setdefault(rec["uuid"], []).append(rec)
+    for records in owners.values():
+        if len(records) > 1:
+            for rec in records:
+                rec["uuid"] = ""
+                rec["state"] = "unknown"
     return out
 
 
@@ -326,6 +371,8 @@ def verdict(rec: dict, idle_hours: float, min_mb: float,
         return False, "working"
     if rec["state"] == ATTENTION:
         return False, "waiting on an answer"
+    if any(pid not in rec["pids"] for root in rec["pids"] for pid in descendants(root)):
+        return False, "non-agent child process present"
     if not rec["uuid"]:
         return False, "no resume id — refusing to reap unrecoverable work"
     if (TB_PINNED / rec["uuid"]).exists():
@@ -352,6 +399,12 @@ def resume_cmd(rec: dict) -> str:
 def reap(rec: dict, grace: int) -> bool:
     """Record first, then kill. If the ledger write fails we do not kill —
     an unrecorded reap is indistinguishable from lost work."""
+    # Recheck live ownership, activity and attachments immediately before action.
+    current = next((r for r in collect() if r["slug"] == rec["slug"]), None)
+    if not current or current.get("uuid") != rec.get("uuid") or set(current["pids"]) != set(rec["pids"]):
+        return False
+    if not verdict(current, rec.get("_idle_hours", 3), rec.get("_min_mb", 50), telegraph_sessions(), rec.get("_include_unspawned", False))[0]:
+        return False
     REAPED.mkdir(parents=True, exist_ok=True)
     entry = {"at": time.time(), "when": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
              "slug": rec["slug"], "uuid": rec["uuid"], "cwd": rec["cwd"],
@@ -361,6 +414,8 @@ def reap(rec: dict, grace: int) -> bool:
     try:
         with open(LEDGER, "a") as f:
             f.write(json.dumps(entry) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
         (REAPED / f"{rec['slug']}.json").write_text(json.dumps(entry, indent=2))
     except OSError as e:
         print(f"  ! ledger write failed for {rec['slug']} ({e}) — NOT reaping", file=sys.stderr)
@@ -378,8 +433,9 @@ def reap(rec: dict, grace: int) -> bool:
         if not any(Path(f"/proc/{p}").exists() for p in rec["pids"]):
             break
         time.sleep(0.5)
-    tmux("kill-session", "-t", f"={rec['slug']}")
-    return True
+    # Never force-close a pane after grace expires: a surviving process may
+    # still be flushing state. Leave the tmux shell available to the operator.
+    return not any(Path(f"/proc/{p}").exists() for p in rec["pids"])
 
 
 def main() -> int:
@@ -431,11 +487,15 @@ def main() -> int:
 
     print()
     freed = 0.0
+    succeeded = 0
     for r in cand:
+        r.update(_idle_hours=args.idle_hours, _min_mb=args.min_mb,
+                 _include_unspawned=args.include_unspawned)
         if reap(r, args.grace):
+            succeeded += 1
             freed += r["mem_mb"]
             print(f"reaped {r['slug']} ({r['mem_mb']:.0f}MB, idle {r['idle_h']}h) — resume: {resume_cmd(r)}")
-    print(f"\nreaped {len(cand)} sessions, ~{freed/1024:.1f} GiB. Ledger: {LEDGER}")
+    print(f"\nreaped {succeeded} sessions, ~{freed/1024:.1f} GiB. Ledger: {LEDGER}")
     return 0
 
 
