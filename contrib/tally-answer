@@ -32,6 +32,13 @@ surface writes and `tally wait` reads), logged, and handed to
 tally-decide --deliver (Telegram note for the raising session, flag cleared
 LAST). A bare digit is mapped onto the option list; a digit with no such
 option is not an answer.
+
+ONE EXCEPTION, and it is the point of it: a pending record marked
+`"kind": "session-ask"` is not a raised decision but a live session parked at
+its own prompt, relayed here by tally-ask-phone because G pressed its key with
+no terminal on the box. Recording that answer would unblock nothing — the
+session only reads its own pane — so it is TYPED INTO THAT PANE, addressed by
+pane id, and the paste succeeding is what "handled" means (see _answer_pane).
 """
 from __future__ import annotations
 
@@ -101,9 +108,27 @@ def _load_pending(sd: Path) -> dict[str, dict]:
         d = _read(fp)
         # only questions that were actually SENT (a failed send is not a
         # question G has) and are still raised
-        if d and d.get("sent_at") and (sd / "signals" / f"{fp.stem}.json").is_file():
+        if not d or not d.get("sent_at"):
+            continue
+        if d.get("kind") == "session-ask":
+            # A pane's own prompt, relayed to the phone because there was no
+            # terminal to put the popup on (tally-ask-phone). Its liveness is
+            # THE PANE, not a signals file: the question is the text on screen
+            # and it stands until the session moves on.
+            if _pane_target(d):
+                out[fp.stem] = d
+            else:
+                fp.unlink(missing_ok=True)
+            continue
+        if (sd / "signals" / f"{fp.stem}.json").is_file():
             out[fp.stem] = d
     return out
+
+
+def _load_session_asks(sd: Path) -> dict[str, dict]:
+    """Only the phone-relayed pane prompts, for the Telegram path."""
+    return {k: v for k, v in _load_pending(sd).items()
+            if v.get("kind") == "session-ask"}
 
 
 def _option(answer: str, options: list[str]) -> str | None:
@@ -204,6 +229,76 @@ def _hush_words(sd: Path, text: str) -> dict | None:
     return None
 
 
+TMUX_SOCKET = os.environ.get("TALLY_TMUX_SOCKET", "/tmp/tmux-1000/cc")
+
+
+def _tmux(*args, timeout=5) -> str:
+    try:
+        r = subprocess.run(["tmux", "-S", TMUX_SOCKET, *args],
+                           capture_output=True, text=True, timeout=timeout)
+        return r.stdout if r.returncode == 0 else ""
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def _pane_target(q: dict) -> str:
+    """Where this lane's waiting pane is NOW, addressed by its stable id.
+
+    `c64:1.1` is a position: close a pane earlier in that window and the name
+    belongs to its neighbour, so a target recorded when the question went out
+    can paste G's answer into a different agent's prompt.
+    """
+    for cand in (str(q.get("pane_id") or ""), str(q.get("pane") or "")):
+        if not cand:
+            continue
+        # `display -t %999` for a pane that is GONE exits 0 and prints empty
+        # fields (":."), which is a target tmux will happily resolve to the
+        # active pane later. The id it echoes back is the proof of life.
+        out = _tmux("display", "-p", "-t", cand, "#{pane_id}|"
+                    "#{session_name}:#{window_index}.#{pane_index}").strip()
+        pid, _, target = out.partition("|")
+        if not pid.startswith("%") or ":" not in target:
+            continue
+        if cand.startswith("%") and pid != cand:
+            continue
+        return target
+    return ""
+
+
+def _typed(answer: str) -> str:
+    """What actually goes into the prompt. A numbered menu wants the NUMBER —
+    `_option` formats "2 — Yes, and don't ask again" for the log and for G's
+    confirmation, and typing all of that at a permission prompt answers
+    nothing."""
+    m = re.match(r"^(\d{1,2}) — ", answer)
+    return m.group(1) if m else answer
+
+
+def _paste_into_pane(target: str, text: str) -> bool:
+    """One line into a waiting pane: buffer + bracketed paste, then Enter.
+
+    The twin of tally-decide's `_paste_into_pane` — that one serves the popup,
+    this one the chat lane. Control characters are stripped: this text came
+    off a phone.
+    """
+    clean = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", " ", text).strip()
+    if not clean:
+        return False
+    buf = f"tally-ans-{os.getpid()}-{int(time.time() * 1000)}"
+    T = ["tmux", "-S", TMUX_SOCKET]
+    try:
+        subprocess.run(T + ["load-buffer", "-b", buf, "-"], input=clean,
+                       text=True, check=True, timeout=5)
+        subprocess.run(T + ["paste-buffer", "-p", "-d", "-b", buf, "-t", target],
+                       check=True, timeout=5)
+        time.sleep(0.15)
+        subprocess.run(T + ["send-keys", "-t", target, "Enter"], check=True,
+                       timeout=5)
+        return True
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return False
+
+
 def _decide_bin() -> str:
     env = os.environ.get("TALLY_DECIDE_BIN")
     if env:
@@ -254,6 +349,10 @@ def resolve(msg: dict) -> dict:
         # optioned question is raised records the answer and clears the
         # key; nothing is swallowed, nothing else is inferred.
         raised = _load_raised(sd)
+        # …plus any pane prompt we relayed to this chat because there was no
+        # terminal to route the press to. Its answer is not a decision to log:
+        # it is typed into the pane, which is the whole point of the lane.
+        raised.update(_load_session_asks(sd))
         if not raised:
             return {"handled": False, "reason": "no-raised"}
         hit = _named(text, quote, raised)
@@ -297,6 +396,8 @@ def _record(sd: Path, sid: str, q: dict, answer: str, via: str, swallow: bool) -
     now = time.time()
     ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     label = str(q.get("label") or sid)
+    if q.get("kind") == "session-ask":
+        return _answer_pane(sd, sid, q, answer, via, swallow, label, ts)
     afile = sd / "answers" / f"{sid}.json"
     rec = {"id": sid, "answer": answer, "at": ts, "label": label, "via": via,
            "confirmed_signal": now if via == "signal" else None}
@@ -326,6 +427,55 @@ def _record(sd: Path, sid: str, q: dict, answer: str, via: str, swallow: bool) -
         (sd / "signals" / f"{sid}.json").unlink(missing_ok=True)
     return {"handled": True, "id": sid, "answer": answer, "swallow": swallow,
             "reply": f"✓ recorded — {label}: {answer}"}
+
+
+def _answer_pane(sd: Path, sid: str, q: dict, answer: str, via: str,
+                 swallow: bool, label: str, ts: str) -> dict:
+    """Answer a session parked at its own prompt: type it into that pane.
+
+    This is the other half of the ask/popup split. A raised flag's answer is
+    a DECISION — logged, delivered as a note, flag cleared. A pane's prompt is
+    not: nothing but the keystrokes in that pane unblocks the session, so an
+    "answer" we merely recorded would leave it sitting there blocked while
+    telling G it was done. So the pane write is the success condition here,
+    and if it fails he is told so instead.
+    """
+    target = _pane_target(q)
+    if not target:
+        (sd / "pending" / f"{sid}.json").unlink(missing_ok=True)
+        return {"handled": False, "reason": "pane-gone",
+                "reply": f"— {label} is no longer waiting (that pane is gone)."}
+    afile = sd / "answers" / f"{sid}.json"
+    rec = {"id": sid, "answer": answer, "at": ts, "label": label, "via": via,
+           "kind": "session-ask", "pane": target,
+           "confirmed_signal": time.time() if via == "signal" else None}
+    if not _write_atomic(afile, rec, exclusive=True):
+        prev = _read(afile) or {}
+        return {"handled": True, "id": sid, "duplicate": True, "swallow": swallow,
+                "reply": f"already answered — {label}: {prev.get('answer', '?')}"}
+    typed = _typed(answer)
+    ok = _paste_into_pane(target, typed)
+    log = Path(os.environ.get("TALLY_DECISION_LOG",
+                              "/home/openclaw/.openclaw/state/tally-decisions.log"))
+    try:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with open(log, "a") as fh:
+            fh.write(f"[{ts}] {sid} :: {answer}  ({via} → pane {target}"
+                     f"{'' if ok else ' FAILED'})\n")
+    except OSError:
+        pass
+    (sd / "pending" / f"{sid}.json").unlink(missing_ok=True)
+    if not ok:
+        afile.unlink(missing_ok=True)     # not answered: let him try again
+        return {"handled": False, "reason": "paste-failed",
+                "reply": f"⚠ could not type into {label} ({target}) — "
+                         f"answer it in the session."}
+    # The key belongs to the session's own hook, which clears it when the
+    # session moves on; retire it now so it stops flashing for a question
+    # that has been answered.
+    (sd / "signals" / f"{sid}.json").unlink(missing_ok=True)
+    return {"handled": True, "id": sid, "answer": answer, "swallow": swallow,
+            "reply": f"✓ sent to {label}: {typed}"}
 
 
 def main() -> int:

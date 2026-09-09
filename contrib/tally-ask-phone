@@ -1,0 +1,280 @@
+#!/usr/bin/python3
+"""tally-ask-phone — deliver a waiting pane's question to the phone, answerably.
+
+    tally-ask-phone <signal-id> <pane target|%id> <session-uuid> <label> [account]
+
+WHY THIS EXISTS. A session parked at its own prompt (a permission prompt, an
+AskUserQuestion) raises `signals/ask-<sid8>.json`, and pressing that key opens
+the router — a tmux popup — on every attached terminal. That is the deliberate
+split (tallydeck 7e69d5d): a popup cannot answer a blocked session, because the
+answer has to be TYPED INTO THAT PANE, so the press takes the operator there
+instead of capturing an answer somewhere the session will never read.
+
+The hole: it assumes a terminal. On 2026-09-08 05:19Z G pressed c64's
+ask-9c89816a from a device with no terminal on the box. `tally-popup-route`
+found no client, logged "no attached client", and exited 1 — no popup, nothing
+on the phone, route-taken empty. The key had flashed, he had pressed it, and
+the fleet's answer was silence; another session relayed the question by hand.
+
+So when there is no terminal to put the popup on, this runs instead. It does
+NOT break the split — it honours it, by carrying both halves over the phone:
+
+  1. WHAT IS BEING ASKED comes from the pane itself, not the signal file. The
+     hook only ever records "Claude is waiting for your input"; the question,
+     and its numbered options, exist solely as text on screen. So we capture
+     the pane and parse the prompt out of it.
+  2. WHERE THE ANSWER GOES is still that pane. The Telegram message is
+     registered with a `tmux` ORIGIN addressed by PANE ID, so Telegraph pastes
+     a reply straight into the waiting session — the same path every agent in a
+     pane already uses to talk to G. A bare unquoted "2" is covered too: the
+     pending record written here is the lane `tally-answer` scores it against,
+     and it delivers into the same pane.
+
+Nothing here answers anything, records a decision, or clears the flag: the
+session is still blocked until G replies, and the key keeps flashing until it
+does. Idempotent under repeated presses — an unchanged prompt re-sent within
+RESEND_AFTER is a no-op.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+SOCKET = os.environ.get("TALLY_TMUX_SOCKET", "/tmp/tmux-1000/cc")
+G_CHAT = os.environ.get("TALLY_DECISION_CHAT", "39172309")
+TG = os.environ.get("TALLY_TG_SEND", "/home/openclaw/scripts/tg-send-logged.sh")
+LOG = Path(os.environ.get("TALLY_POPUP_LOG",
+                          str(Path.home() / ".openclaw/state/tally-popup.log")))
+CAPTURE_LINES = 80          # enough for a permission prompt plus its context
+MAX_QUESTION = 1200         # a phone screen, not a transcript
+RESEND_AFTER = 300.0        # same prompt, same lane: one message per 5 min
+
+
+def state_dir() -> Path:
+    env = os.environ.get("TALLYDECK_STATE")
+    if env:
+        return Path(env).expanduser()
+    try:
+        import pwd
+        return Path(pwd.getpwuid(os.getuid()).pw_dir) / ".tallydeck"
+    except Exception:
+        return Path.home() / ".tallydeck"
+
+
+def log(msg: str) -> None:
+    try:
+        LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(LOG, "a") as fh:
+            fh.write(f"[{time.strftime('%H:%M:%SZ', time.gmtime())}] "
+                     f"ask-phone: {msg}\n")
+    except OSError:
+        pass
+
+
+def _tmux(*args, timeout=5) -> str:
+    try:
+        r = subprocess.run(["tmux", "-S", SOCKET, *args],
+                           capture_output=True, text=True, timeout=timeout)
+        return r.stdout if r.returncode == 0 else ""
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+# ── the pane ────────────────────────────────────────────────────────────────
+
+def resolve_pane(target: str, sid8: str) -> tuple[str, str]:
+    """(target, pane id) for the waiting pane, or ('', '').
+
+    The pane id is what we actually address: `c64:1.1` is a POSITION, and a
+    pane closed earlier in that window hands the name to its neighbour — which
+    would paste G's answer into the wrong agent's prompt.
+    """
+    for cand in (target, _registry_target(sid8)):
+        if not cand:
+            continue
+        # A dead `%id` exits 0 with empty fields (":."), so the id tmux echoes
+        # back — not the exit status — is what says the pane is really there.
+        out = _tmux("display", "-p", "-t", cand, "#{session_name}:"
+                    "#{window_index}.#{pane_index}|#{pane_id}").strip()
+        tgt, _, pid = out.partition("|")
+        if not pid.startswith("%") or ":" not in tgt:
+            continue
+        if cand.startswith("%") and pid != cand:
+            continue
+        return tgt, pid
+    return "", ""
+
+
+def _registry_target(sid8: str) -> str:
+    """What the session's own hook recorded for itself, id first."""
+    if not sid8:
+        return ""
+    try:
+        rec = json.loads((state_dir() / "panes" / f"{sid8}.json").read_text())
+    except (OSError, ValueError):
+        return ""
+    return str(rec.get("pane_id") or rec.get("tmux") or "")
+
+
+_ANSI = re.compile(r"\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\a\x1b]*(?:\a|\x1b\\))")
+_EDGE = " \t│┃┆┊╎╏|╭╮╰╯─━═╌╍"
+_OPTION = re.compile(r"^[❯>▶●•*\s]*(\d{1,2})[.)]\s+(\S.*)$")
+_NOISE = re.compile(r"^(?:\?\s*for shortcuts|esc to |bypass permissions|"
+                    r"⏵⏵|shift\+tab|/help|tokens?:|context left)", re.I)
+
+
+def read_prompt(target: str) -> tuple[str, list[str], str]:
+    """(question, options, raw capture) — the ask as it is on screen.
+
+    The signal file cannot supply this: Claude Code's Notification hook only
+    says "Claude is waiting for your input". The question and its numbered
+    choices only ever existed as pixels in that pane.
+    """
+    raw = _tmux("capture-pane", "-p", "-t", target, "-S", f"-{CAPTURE_LINES}")
+    lines: list[str] = []
+    for ln in raw.splitlines():
+        s = _ANSI.sub("", ln).strip(_EDGE).rstrip()
+        if not s or _NOISE.match(s):
+            continue
+        if set(s) <= set("─━═╌╍-_ "):
+            continue
+        lines.append(s)
+    options: list[str] = []
+    first_opt = len(lines)
+    for i, s in enumerate(lines):
+        m = _OPTION.match(s)
+        if m and int(m.group(1)) == len(options) + 1:
+            if not options:
+                first_opt = i
+            options.append(" ".join(m.group(2).split()))
+        elif options and not m:
+            break                      # the option block ended
+    question = "\n".join(lines[max(0, first_opt - 12):first_opt]) if options \
+        else "\n".join(lines[-15:])
+    return question[-MAX_QUESTION:].strip(), options, raw
+
+
+# ── the message ─────────────────────────────────────────────────────────────
+
+def compose(label: str, pid: str, question: str, options: list[str]) -> str:
+    head = f"🔒 {label} is waiting on you — no terminal here, so it came to you."
+    body = question or "(nothing readable on screen — press again from a terminal)"
+    parts = [head, "", body]
+    if options:
+        parts += [""] + [f"{i} · {o}" for i, o in enumerate(options, 1)]
+        parts += ["", f"Reply with the number — it is typed into {label} for you."]
+    else:
+        parts += ["", f"Reply to this message and it is typed into {label}."]
+    return "\n".join(parts)[:3500]
+
+
+def send(text: str, label: str, target: str, pane_id: str, dry: bool) -> bool:
+    """Send with a tmux ORIGIN, so a reply routes back into the waiting pane.
+
+    Addressed by pane id: Telegraph prefers the id for exactly the reason we
+    do (it is never reused, a target is a position). TG_FORCE_SEND because a
+    blocked session's question must not be swallowed by /use parking — that
+    is how an hour of silence looked like a dead session on 2026-08-29.
+    """
+    origin = json.dumps({"type": "tmux", "target": pane_id or target,
+                         "socket": SOCKET, "pane_id": pane_id,
+                         "label": label})
+    if dry:
+        print(text)
+        print(f"-- origin: {origin}")
+        return True
+    if not os.access(TG, os.X_OK):
+        log(f"no telegram sender at {TG}")
+        return False
+    env = {**os.environ, "TELEGRAPH_ORIGIN_JSON": origin, "TG_FORCE_SEND": "1"}
+    try:
+        r = subprocess.run([TG, G_CHAT, label or "tallydeck", text],
+                           capture_output=True, text=True, timeout=45, env=env)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        log(f"send failed: {e!r}")
+        return False
+    if r.returncode != 0:
+        log(f"send failed rc={r.returncode}: {(r.stderr or '')[-200:]}")
+        return False
+    return True
+
+
+# ── the answer lane ─────────────────────────────────────────────────────────
+
+def lane_id(sigid: str, uuid: str) -> str:
+    """The pending record's name: one lane per SESSION, whichever key was
+    pressed (`sig/ask-9c89816a` and `cc/A-9c89816a` are the same question)."""
+    if uuid:
+        return f"ask-{uuid[:8]}"
+    stem = sigid.split("/", 1)[-1] or "ask"
+    return re.sub(r"[^A-Za-z0-9._-]", "-", stem)[:60] or "ask"
+
+
+def main(argv: list[str]) -> int:
+    dry = "--dry-run" in argv
+    argv = [a for a in argv if a != "--dry-run"]
+    if not argv:
+        print(__doc__.strip().splitlines()[0], file=sys.stderr)
+        return 2
+    sigid = argv[0]
+    target_in = argv[1] if len(argv) > 1 else ""
+    uuid = argv[2] if len(argv) > 2 else ""
+    label = (argv[3] if len(argv) > 3 else "") or "claude"
+
+    target, pane_id = resolve_pane(target_in, uuid[:8])
+    if not target:
+        log(f"{sigid}: no live pane ({target_in or 'none recorded'}) — "
+            f"nothing to relay")
+        return 3
+    question, options, raw = read_prompt(target)
+    lane = lane_id(sigid, uuid)
+    sd = state_dir()
+    pf = sd / "pending" / f"{lane}.json"
+    digest = hashlib.sha256(
+        ("\n".join(x.strip() for x in raw.splitlines()[-40:])).encode()
+    ).hexdigest()[:16]
+    now = time.time()
+    try:
+        prev = json.loads(pf.read_text())
+    except (OSError, ValueError):
+        prev = {}
+    if prev.get("digest") == digest and prev.get("sent_at") \
+            and now - float(prev["sent_at"]) < RESEND_AFTER:
+        log(f"{sigid}: already relayed {lane} — same prompt, holding")
+        return 0                       # a second press is not a second question
+
+    ok = send(compose(label, pane_id, question, options), label, target,
+              pane_id, dry)
+    rec = {"id": lane, "label": label, "kind": "session-ask",
+           "options": options, "question": question[-MAX_QUESTION:],
+           "pane": target, "pane_id": pane_id, "session": uuid,
+           "signal": sigid, "digest": digest, "updated": now,
+           "sent_at": now if ok else None,
+           "fail_at": None if ok else now,
+           "fails": 0 if ok else int(prev.get("fails") or 0) + 1}
+    if not dry:
+        try:
+            (sd / "pending").mkdir(parents=True, exist_ok=True)
+            os.chmod(sd / "pending", 0o700)
+            tmp = pf.with_suffix(f".{os.getpid()}.tmp")
+            tmp.write_text(json.dumps(rec))
+            tmp.replace(pf)
+        except OSError as e:
+            log(f"{sigid}: pending record failed: {e!r}")
+    log(f"{sigid}: relayed {lane} → telegram ({len(options)} options, "
+        f"pane {target} {pane_id})" if ok else f"{sigid}: relay FAILED")
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except Exception as e:                # a fallback that crashes is silence
+        log(f"crash: {e!r}")
+        sys.exit(1)

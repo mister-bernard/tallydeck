@@ -35,6 +35,13 @@ your phone, or a bare option number in chat.
   permission prompt or a turn that ended with a question is announced once
   on Signal (notify-only — the answer belongs in that session). Raised
   questions stay fully answerable from the phone.
+- **Pressing a session key with no terminal on the box** no longer goes
+  nowhere. The popup needs somewhere to open; when nothing is attached, the
+  waiting pane's own prompt — question and numbered options, read off the
+  screen, because that is the only place they exist — is sent to Telegram
+  instead, and a reply (a bare number, or words that name the key) is typed
+  straight into that pane. The split stands: the answer still lands in the
+  session, never in a decisions log it will never read.
 - **`hush` / `hush 2h` / `unhush`** (as words on Signal or Telegram, or
   `tally hush`) pause phone notifications; questions wait on the deck.
 

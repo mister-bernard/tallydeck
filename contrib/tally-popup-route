@@ -46,7 +46,24 @@ while IFS='|' read -r tty sess act; do
 done < <(T list-clients -F '#{client_tty}|#{client_session}|#{client_activity}' 2>/dev/null)
 
 if [ "${#PIDS[@]}" -eq 0 ]; then
-  log "no attached client — cannot route $SIGID"
+  # NO TERMINAL ON THIS BOX. The popup has nowhere to go, and until now that
+  # was the end of it: G pressed c64's key at 05:19Z on 2026-09-08 from a
+  # phone, got no popup and nothing in chat, and another session had to relay
+  # the question by hand. A press that reaches nothing teaches him the key is
+  # a lie. Send the pane's own prompt to his phone instead — answerable, and
+  # answered back INTO that pane (tally-ask-phone).
+  PHONE="${TALLY_ASK_PHONE:-}"
+  if [ -z "$PHONE" ]; then
+    for cand in "$HERE/tally-ask-phone" "$HOME/.local/bin/tally-ask-phone"; do
+      [ -x "$cand" ] && { PHONE="$cand"; break; }
+    done
+  fi
+  if [ -n "$PHONE" ]; then
+    log "no attached client — relaying $SIGID to the phone"
+    "$PHONE" "$SIGID" "$TARGET" "$UUID" "$LABEL" "$ACCT" >>"$LOG" 2>&1
+    exit $?
+  fi
+  log "no attached client and no phone relay — cannot route $SIGID"
   exit 1
 fi
 wait "${PIDS[@]}"
