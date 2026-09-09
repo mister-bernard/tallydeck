@@ -36,7 +36,8 @@ from pathlib import Path
 
 from ..signal import Signal, WORKING, ATTENTION, SUCCESS, IDLE
 from ..paths import signals_dir, acked_dir, contrib_bin
-from ..titles import (TitleSync, claude_ai_title, resolve_label, tmux_for)
+from ..titles import (TitleSync, claude_ai_title, registry_target,
+                      resolve_label, tmux_for)
 from .base import Source
 
 TAIL_BYTES = 65536
@@ -410,31 +411,36 @@ class ClaudeSessionsSource(Source):
         """Sticky exact identity. The env scan can only see a session while
         one of its tool subprocesses is alive, so a session that resolved a
         minute ago would otherwise 'lose' its pane between tool calls.
-        Remember what we learn; forget it when the pane is gone."""
+        Remember what we learn; forget it when the pane is gone.
+
+        Remembered as a pane ID, never as a target: `mainA:1.3` is where a
+        pane sits, and closing any pane before it in that window hands the
+        name to its neighbour. Every recall re-resolves the id to wherever
+        that pane is now.
+        """
         memo = getattr(self, "_exact_memo", None)
         if memo is None:
             memo = self._exact_memo = {}
         found = self._session_panes().get(session)
         if found:
-            memo[session] = found
+            info = self.tmux.info(found)
+            memo[session] = info.pane_id if info and info.pane_id else found
             return found
         remembered = memo.get(session)
-        if remembered and remembered in self._all_pane_targets():
-            return remembered
+        if remembered:
+            live = self.tmux.target_for_id(remembered) if \
+                remembered.startswith("%") else \
+                (remembered if remembered in self._all_pane_targets() else "")
+            if live:
+                return live
         memo.pop(session, None)
-        # Durable identity: the PostToolUse hook records session → pane from
-        # inside the pane (~/.tallydeck/panes/<sid8>.json). Trusted while
-        # that pane is alive.
-        try:
-            import json as _json
-            from ..paths import state_dir
-            rec = _json.loads((state_dir() / "panes" / f"{session[:8]}.json").read_text())
-            tgt = str(rec.get("tmux") or "")
-            if tgt and tgt in self._all_pane_targets():
-                memo[session] = tgt
-                return tgt
-        except (OSError, ValueError):
-            pass
+        # Durable identity: the session's own hook records session → pane
+        # (id included) from inside the pane. Trusted while that pane lives.
+        tgt = registry_target(session[:8], self.tmux)
+        if tgt:
+            info = self.tmux.info(tgt)
+            memo[session] = info.pane_id if info and info.pane_id else tgt
+            return tgt
         return ""
 
     def _all_pane_targets(self) -> set:

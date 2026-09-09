@@ -45,12 +45,15 @@ the offer log and tally-popup-route are keyed on the session name.
 from __future__ import annotations
 
 import glob
+import json
 import os
 import re
 import sqlite3
 import subprocess
 import time
 from pathlib import Path
+
+from .paths import state_dir
 
 # tmux -F fields are split on this. Window names and titles carry anything a
 # human types — spaces, pipes, colons — so the separator has to be something
@@ -181,6 +184,14 @@ def headline(text: str, limit: int = 24) -> str:
     return topic[:1].upper() + topic[1:] if topic else ""
 
 
+# Words that join two halves of a phrase and say nothing on their own. They
+# survive _STOP because they carry meaning IN the middle of a title ("Postgres
+# vs SQLite"), but a title that ENDS on one is a sentence cut off mid-thought:
+# "Self-hosted storage vs" is what the packer produced when the other half did
+# not fit in 24 characters, and it reads as damage rather than as a topic.
+_DANGLING = frozenset("vs versus via per plus using and or but with for to".split())
+
+
 def _pack(words: list[str], limit: int, most: int = 4) -> str:
     """As many of these words, in order, as fit — skipping any that do not."""
     out: list[str] = []
@@ -189,6 +200,8 @@ def _pack(words: list[str], limit: int, most: int = 4) -> str:
             out.append(w)
             if len(out) == most:
                 break
+    while len(out) > 1 and out[-1].lower() in _DANGLING:
+        out.pop()
     return " ".join(out)
 
 
@@ -335,6 +348,87 @@ class CodexState:
         return ""
 
 
+# ── the rename ledger ───────────────────────────────────────────────────────
+
+# Every bulk retitle this system performs writes what it did to
+# ~/.tallydeck/title-renames-<stamp>.json, one record per pane:
+#
+#   {"pane": "%276", "old_title": "Getting everything up and running",
+#    "old_source": "tallydeck", "new_title": "Storage expansion"}
+#
+# That file is the receipt, and it is the ONLY evidence that a title on a
+# pane right now came from us rather than from a human — a retitle done
+# outside `Tmux.set_pane_title` (a one-off script, an agent with a shell)
+# writes @tally_title without the matching @tally_title_auto, and from then
+# on the value looks exactly like something G typed.
+#
+# The consequence, seen on G's 2026-09-08 screenshot: main:1.4 read
+# "Storage expansion" while the session in it had long since moved on to
+# "Getting everything up and running", and nothing could ever correct it —
+# resolve_label returns a manual title unconditionally and TitleSync refuses
+# to overwrite one. A wrong title that cannot self-heal is worse than no
+# title: G reads the deck to know which session is which.
+_LEDGER_TTL = 30.0
+_ledger: dict = {"ts": 0.0, "sig": None, "by_pane": {}}
+
+
+def authored_titles(state: Path | None = None) -> dict[str, frozenset[str]]:
+    """{pane id: titles tallydeck itself put on that pane}.
+
+    Both sides of each record count. `new_title` is what we wrote; an
+    `old_title` whose `old_source` was "tallydeck" was ours too, so a ledger
+    that got replayed or half-applied still cannot leave a value we authored
+    looking human.
+    """
+    root = Path(state) if state is not None else state_dir()
+    files = sorted(glob.glob(str(root / "title-renames-*.json")))
+    try:
+        sig = tuple((f, os.stat(f).st_mtime_ns) for f in files)
+    except OSError:
+        sig = tuple(files)
+    now = time.time()
+    if _ledger["sig"] == sig and now - _ledger["ts"] < _LEDGER_TTL:
+        return _ledger["by_pane"]
+    by_pane: dict[str, set[str]] = {}
+    for fp in files:
+        try:
+            recs = json.loads(Path(fp).read_text())
+        except (OSError, ValueError):
+            continue                   # a torn receipt is not a human's title
+        if not isinstance(recs, list):
+            continue
+        for r in recs:
+            if not isinstance(r, dict):
+                continue
+            pane = str(r.get("pane") or "")
+            if not pane:
+                continue
+            seen = by_pane.setdefault(pane, set())
+            new = str(r.get("new_title") or "").strip()
+            if new:
+                seen.add(new)
+            old = str(r.get("old_title") or "").strip()
+            if old and str(r.get("old_source") or "") == SRC_AUTO:
+                seen.add(old)
+    frozen = {k: frozenset(v) for k, v in by_pane.items()}
+    _ledger.update(ts=now, sig=sig, by_pane=frozen)
+    return frozen
+
+
+def record_renames(records: list[dict], state: Path | None = None) -> str:
+    """Append a receipt for a batch of retitles. Returns the file written.
+
+    Anything that sets @tally_title outside `Tmux.set_pane_title` must call
+    this, or the value it wrote becomes permanently sticky.
+    """
+    root = Path(state) if state is not None else state_dir()
+    root.mkdir(parents=True, exist_ok=True)
+    fp = root / f"title-renames-{time.strftime('%Y%m%d-%H%M%S')}.json"
+    fp.write_text(json.dumps(list(records), ensure_ascii=False, indent=2))
+    _ledger["sig"] = None              # next read rebuilds
+    return str(fp)
+
+
 # ── tmux ────────────────────────────────────────────────────────────────────
 
 class PaneInfo:
@@ -346,13 +440,20 @@ class PaneInfo:
     — is by definition not ours, and is never overwritten. A flag saying
     "tallydeck wrote this" could not tell the difference: the flag would still
     be sitting there from OUR last write when a human overwrote the value.
+
+    `authored` is the escape hatch for the one case that breaks: a title THIS
+    SYSTEM wrote without the handshake, which the rename ledger names (see
+    `authored_titles`). Ours is ours however it got there, and ours is always
+    correctable.
     """
 
     __slots__ = ("target", "pane_id", "session", "window", "window_index",
-                 "window_panes", "title", "title_auto", "window_auto")
+                 "window_panes", "title", "title_auto", "window_auto",
+                 "authored")
 
     def __init__(self, target, pane_id, session, window, window_index,
-                 window_panes, title, title_auto, window_auto=""):
+                 window_panes, title, title_auto, window_auto="",
+                 authored=frozenset()):
         self.target = target
         self.pane_id = pane_id
         self.session = session
@@ -362,12 +463,16 @@ class PaneInfo:
         self.title = title             # @tally_title
         self.title_auto = title_auto   # @tally_title_auto — our last write
         self.window_auto = window_auto  # @tally_window_auto — our last rename
+        self.authored = authored       # titles the ledger says we wrote here
 
     @property
     def manual_title(self) -> str:
         """A title we did not write is a human's and outranks everything."""
-        return self.title if self.title and self.title != self.title_auto \
-            else ""
+        if not self.title or self.title == self.title_auto:
+            return ""
+        if self.title in self.authored:
+            return ""                  # ours, just written without the flag
+        return self.title
 
     @property
     def manual_window(self) -> str:
@@ -389,6 +494,7 @@ class Tmux:
     def __init__(self, socket: str = "/tmp/tmux-1000/cc"):
         self.socket = socket
         self._panes: dict[str, PaneInfo] = {}
+        self._by_id: dict[str, PaneInfo] = {}
         self._ts = 0.0
 
     def _run(self, *args, timeout=3) -> str:
@@ -409,6 +515,7 @@ class Tmux:
             "#{@tally_title_auto}", "#{@tally_window_auto}", "#{@tally_title}",
             "#{window_name}"))
         out: dict[str, PaneInfo] = {}
+        authored = authored_titles()
         for ln in self._run("list-panes", "-a", "-F", fmt).splitlines():
             f = ln.split(_SEP)
             if len(f) < 9:
@@ -419,13 +526,36 @@ class Tmux:
                 npanes = 1
             # window_name last: it is the only field a human types into.
             out[f[0]] = PaneInfo(f[0], f[1], f[2], _SEP.join(f[8:]), f[3],
-                                 npanes, f[7], f[5], f[6])
+                                 npanes, f[7], f[5], f[6],
+                                 authored.get(f[1], frozenset()))
         if out:
             self._panes, self._ts = out, now
+            self._by_id = {p.pane_id: p for p in out.values() if p.pane_id}
         return self._panes
 
     def info(self, target: str) -> PaneInfo | None:
         return self.panes().get(target)
+
+    def by_id(self, pane_id: str) -> PaneInfo | None:
+        """A pane by its STABLE id (%276), whatever position it now holds."""
+        if not pane_id:
+            return None
+        self.panes()
+        return self._by_id.get(pane_id)
+
+    def target_for_id(self, pane_id: str) -> str:
+        """Where `%276` lives right now, or ''.
+
+        `session:window.pane_index` is a POSITION, not an identity: close one
+        pane and every pane after it in that window renumbers, so a target
+        remembered five minutes ago can name its neighbour. That is the
+        off-by-one behind the 08:57 bulk retitle, which moved "Storage box
+        expansion to 5 TB" from %277 onto %276 — a whole window of sessions
+        wearing each other's names. Anything that persists a pane must
+        persist the id and re-resolve the target through this.
+        """
+        p = self.by_id(pane_id)
+        return p.target if p else ""
 
     def set_pane_title(self, target: str, title: str) -> None:
         self._run("set-option", "-p", "-t", target, "@tally_title", title)
@@ -448,6 +578,35 @@ def tmux_for(socket: str) -> Tmux:
     if t is None:
         t = _TMUX[socket] = Tmux(socket)
     return t
+
+
+def registry_target(sid8: str, tmux: Tmux, state: Path | None = None) -> str:
+    """The pane a session recorded for itself (~/.tallydeck/panes/<sid8>.json),
+    re-resolved through the pane id it recorded with it.
+
+    The record is written from INSIDE the pane by the session's own hook, so
+    it is the one durable session→pane identity we have. What it stores is a
+    target, and a target is a position: a pane closed anywhere earlier in that
+    window shifts it onto a neighbour, and then the deck labels, routes and
+    answers into the wrong agent. The id pins it; the recorded target is only
+    the fallback for records written before ids were kept.
+    """
+    root = Path(state) if state is not None else state_dir()
+    try:
+        rec = json.loads((root / "panes" / f"{sid8}.json").read_text())
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(rec, dict):
+        return ""
+    pane_id = str(rec.get("pane_id") or "")
+    if pane_id:
+        # The id is the answer, either way: if that pane is gone, whatever
+        # holds its old target now is a DIFFERENT session, and routing a
+        # press — or pasting an answer — into it is the failure this exists
+        # to prevent. No pane is the honest result.
+        return tmux.target_for_id(pane_id)
+    target = str(rec.get("tmux") or "")
+    return target if target and target in tmux.panes() else ""
 
 
 # ── the resolver ────────────────────────────────────────────────────────────

@@ -16,7 +16,12 @@ startup — the launcher does not know it yet. But a hook does: Claude hands it 
 session_id on stdin, and the hook runs inside the pane, so $TMUX_PANE is right there.
 That is the missing link, and it costs one small file per session start.
 
-Writes: ~/.tallydeck/panes/<session_id>  containing  session:window.pane
+Writes: ~/.tallydeck/panes/<session_id[:8]>.json — the record every reader on the
+        deck side actually opens: {"session", "tmux", "pane_id", "t", "socket"}.
+        The pane ID matters as much as the target: `main:1.4` is a POSITION, and
+        closing any pane before it in that window hands that name to the next
+        pane along, which is how a whole window of sessions ended up wearing
+        each other's titles on 2026-09-08.
 Reads:  {"session_id": "..."} on stdin (Claude Code hook payload)
 
 Never fails, never blocks: a hook that can error is a hook that can wedge every
@@ -63,22 +68,25 @@ def main() -> int:
     try:
         out = subprocess.run(
             ["tmux", "-S", socket, "display-message", "-p", "-t", pane,
-             "#{session_name}:#{window_index}.#{pane_index}"],
+             "#{session_name}:#{window_index}.#{pane_index}|#{pane_id}"],
             capture_output=True, text=True, timeout=5)
-        target = out.stdout.strip()
+        target, _, pane_id = out.stdout.strip().partition("|")
     except Exception:
         return 0
     if not target or ":" not in target:
         return 0
 
     try:
+        import time
         d = state_dir() / "panes"
         d.mkdir(parents=True, exist_ok=True)
         # Written whole then renamed: a half-written mapping would point the deck at
         # a pane that does not exist.
-        tmp = d / f".{sid}.tmp"
-        tmp.write_text(target)
-        tmp.replace(d / sid)
+        tmp = d / f".{sid[:8]}.json.tmp"
+        tmp.write_text(json.dumps({"session": sid, "tmux": target,
+                                   "pane_id": pane_id or pane, "t": time.time(),
+                                   "socket": socket}))
+        tmp.replace(d / f"{sid[:8]}.json")
     except Exception:
         return 0
     return 0

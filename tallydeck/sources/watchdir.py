@@ -62,6 +62,8 @@ class WatchDirSource(Source):
     def __init__(self, **opts):
         super().__init__(**opts)
         self.path = Path(opts.get("path") or signals_dir()).expanduser()
+        # Sessions live on a named socket; the default one holds nothing.
+        self.socket = str(opts.get("socket", "/tmp/tmux-1000/cc"))
 
     def poll(self) -> list[Signal]:
         signals: list[Signal] = []
@@ -121,21 +123,21 @@ class WatchDirSource(Source):
                 # pane), hub-side like everything else. Without this the key
                 # was dead once the Mac script stopped routing (G pressed a
                 # red "Claude needs you" key and got nothing back).
-                from ..paths import contrib_bin, state_dir
+                from ..paths import contrib_bin
+                from ..titles import registry_target, tmux_for
                 route = contrib_bin("tally-popup-route")
                 m = sig.meta
                 # The pane a press lands in comes from the SESSION REGISTRY
                 # (written by the session's own hook, ~/.tallydeck/panes/),
                 # not from the drop: a hostile file could otherwise steer the
-                # operator into a pane of its choosing.
+                # operator into a pane of its choosing. Resolved through the
+                # recorded pane id, so a pane closed elsewhere in that window
+                # cannot silently shift the answer onto a neighbour.
                 sid8 = str(m.get("session") or "")[:8]
                 if sid8:
-                    try:
-                        reg = json.loads((state_dir() / "panes" / f"{sid8}.json").read_text())
-                        if reg.get("tmux"):
-                            m["tmux"] = str(reg["tmux"])
-                    except (OSError, ValueError):
-                        pass
+                    reg = registry_target(sid8, tmux_for(self.socket))
+                    if reg:
+                        m["tmux"] = reg
                 if route:
                     sig.action = {"type": "cmd", "argv": [
                         route, str(m.get("tmux") or ""), str(m.get("session") or ""),

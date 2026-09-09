@@ -45,14 +45,21 @@ try:
             if not fresh:
                 import subprocess
                 out = subprocess.run(["tmux", "display", "-p", "-t", os.environ["TMUX_PANE"],
-                                      "#S:#I.#P|#S|#{session_windows}|#W"],
+                                      "#S:#I.#P|#{pane_id}|#S|#{session_windows}|#W"],
                                      capture_output=True, text=True, timeout=2).stdout.strip()
-                target, _, rest = out.partition("|")
+                parts = out.split("|")
+                target = parts[0] if parts else ""
+                # The PANE ID (%276) as well as the target, because the target
+                # is a position: closing a pane earlier in that window renames
+                # every pane after it, and a stale record then points the deck
+                # — and any answer it delivers — at the neighbouring agent.
+                pane_id = parts[1] if len(parts) > 1 else ""
                 if target:
                     os.makedirs(pdir, exist_ok=True)
                     tmp = pf + f".{os.getpid()}"
                     with open(tmp, "w") as fh:
-                        json.dump({"session": full, "tmux": target, "t": time.time(),
+                        json.dump({"session": full, "tmux": target,
+                                   "pane_id": pane_id, "t": time.time(),
                                    "socket": (os.environ.get("TMUX") or "").split(",")[0]}, fh)
                     os.replace(tmp, pf)
 except Exception:

@@ -14,19 +14,24 @@ first:
   * a title that has not changed writes nothing to tmux (churn is visible)
   * pid → thread comes from Codex's own log stamp, not from timing
 """
+import json
+import os
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 
-from tallydeck.titles import (CodexState, PaneInfo, TitleSync,
-                              claude_ai_title, headline, resolve_label)
+from tallydeck import titles as titles_mod
+from tallydeck.titles import (CodexState, PaneInfo, TitleSync, Tmux, _SEP,
+                              authored_titles, claude_ai_title, headline,
+                              record_renames, registry_target, resolve_label)
 
 
 def pane(target="main-O:1.1", session="main-O", window="1", index="1",
-         npanes=1, title="", title_auto="", window_auto=""):
-    return PaneInfo(target, "%1", session, window, index, npanes, title,
-                    title_auto, window_auto)
+         npanes=1, title="", title_auto="", window_auto="", authored=(),
+         pane_id="%1"):
+    return PaneInfo(target, pane_id, session, window, index, npanes, title,
+                    title_auto, window_auto, frozenset(authored))
 
 
 class Headline(unittest.TestCase):
@@ -68,6 +73,16 @@ class Headline(unittest.TestCase):
             self.assertLessEqual(len(out), 24, out)
             self.assertGreaterEqual(len(out), 4, out)
             self.assertLessEqual(len(out.split()), 4, out)
+
+    def test_a_title_does_not_end_mid_thought(self):
+        # What the packer produced when the other half of the phrase did not
+        # fit: "Self-hosted storage vs" reads as damage, not as a topic. The
+        # same word in the MIDDLE is the whole point of the title.
+        self.assertEqual(
+            headline("Self-hosted storage vs cloud backup options", 24),
+            "Self-hosted storage")
+        self.assertEqual(headline("Postgres vs SQLite for the ledger", 24),
+                         "Postgres vs SQLite")
 
     def test_code_span_is_not_a_title(self):
         self.assertEqual(headline("`rm -rf /` run this?", 24), "Run this")
@@ -131,6 +146,185 @@ class Precedence(unittest.TestCase):
     def test_untitled_session_keeps_its_session_name(self):
         self.assertEqual(resolve_label(harness_title="", session_name="mainB",
                                        cwd="/home/openclaw"), "mainB")
+
+
+class OurOwnTitlesAreCorrectable(unittest.TestCase):
+    """G's screenshot, 2026-09-08: main:1.4 read "Storage expansion" while the
+    session in it had moved on to "Getting everything up and running", and
+    nothing could ever fix it — a bulk retitle set @tally_title without the
+    matching @tally_title_auto, so the value looked exactly like a name G had
+    typed, and both resolve_label and TitleSync treat those as sacred.
+
+    The rename ledger is the receipt that says otherwise."""
+
+    LEDGER = [
+        {"pane": "%276", "old_title": "Getting everything up and running",
+         "old_source": "tallydeck", "new_title": "Storage expansion"},
+        {"pane": "%277", "old_title": "Storage box expansion to 5 TB",
+         "old_source": "tallydeck", "new_title": "Codex integration"},
+        {"pane": "%385", "old_title": "chosen by hand", "old_source": "",
+         "new_title": "Businesses easily vibe"},
+    ]
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.state = Path(self.tmp.name)
+        (self.state / "title-renames-20260908-085759.json").write_text(
+            json.dumps(self.LEDGER))
+        titles_mod._ledger["sig"] = None          # not another test's ledger
+
+    def tearDown(self):
+        titles_mod._ledger["sig"] = None
+        self.tmp.cleanup()
+
+    def authored(self):
+        return authored_titles(self.state)
+
+    def test_both_sides_of_a_record_are_ours(self):
+        a = self.authored()
+        self.assertIn("Storage expansion", a["%276"])       # what we wrote
+        self.assertIn("Getting everything up and running", a["%276"])
+        self.assertNotIn("chosen by hand", a["%385"],
+                         "old_source was not us: that title is a human's")
+
+    def test_a_title_we_wrote_no_longer_outranks_the_session(self):
+        p = pane(target="main:1.4", session="main", window="claude", npanes=6,
+                 pane_id="%276", title="Storage expansion",
+                 authored=self.authored()["%276"])
+        self.assertEqual(p.manual_title, "")
+        # The label follows the SESSION now, not the title we left on the pane.
+        ai = "Getting everything up and running"
+        self.assertEqual(resolve_label(harness_title=ai, pane=p,
+                                       session_name="main"), headline(ai, 24))
+        self.assertNotEqual(resolve_label(harness_title=ai, pane=p,
+                                          session_name="main"),
+                            "Storage expansion")
+
+    def test_a_human_title_on_a_ledgered_pane_still_wins(self):
+        # The ledger names TITLES, not panes: a pane we once retitled is not
+        # a pane G may never rename.
+        p = pane(pane_id="%276", title="pearl payout",
+                 authored=self.authored()["%276"])
+        self.assertEqual(p.manual_title, "pearl payout")
+        self.assertEqual(resolve_label(harness_title="something else",
+                                       pane=p), "pearl payout")
+
+    def test_sync_overwrites_a_title_we_wrote(self):
+        p = pane(target="main:1.4", session="main", window="claude", npanes=6,
+                 pane_id="%276", title="Storage expansion",
+                 authored=self.authored()["%276"])
+        t = FakeTmux({"main:1.4": p})
+        TitleSync(t, every=0).push([("main:1.4", "Getting everything running")],
+                                   force=True)
+        self.assertEqual(t.titles,
+                         [("main:1.4", "Getting everything running")])
+
+    def test_a_torn_or_absent_ledger_is_not_a_human_title(self):
+        (self.state / "title-renames-broken.json").write_text("{oh no")
+        titles_mod._ledger["sig"] = None
+        self.assertIn("Storage expansion", authored_titles(self.state)["%276"])
+        self.assertEqual(authored_titles(Path(self.tmp.name) / "gone"), {})
+
+    def test_a_recorded_batch_reads_back(self):
+        other = Path(self.tmp.name) / "fresh"
+        record_renames([{"pane": "%9", "old_title": "", "old_source": "",
+                         "new_title": "Deck alerts"}], other)
+        self.assertEqual(authored_titles(other)["%9"], frozenset({"Deck alerts"}))
+
+
+class FakeListPanes(Tmux):
+    """A pane table without a tmux server. Rows are (target, pane_id)."""
+
+    def __init__(self, rows):
+        super().__init__(socket="/nonexistent")
+        self.rows = rows
+
+    def _run(self, *args, timeout=3):
+        if args[:1] != ("list-panes",):
+            return ""
+        return "".join(
+            _SEP.join((target, pane_id, target.split(":", 1)[0], "1", "6",
+                       "", "", "", "claude")) + "\n"
+            for target, pane_id in self.rows)
+
+
+class PaneIdIsTheIdentity(unittest.TestCase):
+    """The 08:57 retitle moved "Storage box expansion to 5 TB" off %277 and
+    onto %276 — a whole window of sessions wearing each other's names. That is
+    what remembering a pane as `main:1.4` buys you: the target is a POSITION,
+    and closing any pane before it in that window shifts every name after it
+    onto the wrong session."""
+
+    ROWS = [("main:1.1", "%274"), ("main:1.2", "%7"), ("main:1.3", "%275"),
+            ("main:1.4", "%276"), ("main:1.5", "%277")]
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.state = Path(self.tmp.name)
+        (self.state / "panes").mkdir()
+        titles_mod._ledger["sig"] = None
+
+    def tearDown(self):
+        titles_mod._ledger["sig"] = None
+        self.tmp.cleanup()
+
+    def record(self, sid8, **rec):
+        (self.state / "panes" / f"{sid8}.json").write_text(json.dumps(rec))
+
+    def test_an_id_resolves_to_wherever_that_pane_is_now(self):
+        t = FakeListPanes(self.ROWS)
+        self.assertEqual(t.target_for_id("%276"), "main:1.4")
+        # %7 closed: every pane after it slides up one.
+        t.rows = [("main:1.1", "%274"), ("main:1.2", "%275"),
+                  ("main:1.3", "%276"), ("main:1.4", "%277")]
+        t._ts = 0.0
+        self.assertEqual(t.target_for_id("%276"), "main:1.3")
+        self.assertEqual(t.target_for_id("%999"), "")
+
+    def test_a_stale_recorded_target_is_corrected_by_the_id(self):
+        self.record("d007fded", session="d007fded-…", tmux="main:1.4",
+                    pane_id="%276")
+        t = FakeListPanes([("main:1.1", "%274"), ("main:1.2", "%275"),
+                           ("main:1.3", "%276")])
+        self.assertEqual(registry_target("d007fded", t, self.state),
+                         "main:1.3")
+
+    def test_a_record_without_an_id_falls_back_to_its_target(self):
+        # Records written before ids were kept. Best effort, and only while
+        # that target still exists at all.
+        self.record("aaaaaaaa", tmux="main:1.4")
+        t = FakeListPanes(self.ROWS)
+        self.assertEqual(registry_target("aaaaaaaa", t, self.state),
+                         "main:1.4")
+        t.rows = [("main:1.1", "%274")]
+        t._ts = 0.0
+        self.assertEqual(registry_target("aaaaaaaa", t, self.state), "")
+
+    def test_a_dead_pane_resolves_to_nothing(self):
+        self.record("bbbbbbbb", tmux="main:1.4", pane_id="%999")
+        self.assertEqual(
+            registry_target("bbbbbbbb", FakeListPanes(self.ROWS), self.state),
+            "")
+
+    def test_missing_registry_is_quiet(self):
+        self.assertEqual(
+            registry_target("nothere", FakeListPanes(self.ROWS), self.state),
+            "")
+
+    def test_the_ledger_travels_with_the_pane_id(self):
+        (self.state / "title-renames-1.json").write_text(json.dumps(
+            [{"pane": "%276", "old_title": "", "old_source": "",
+              "new_title": "Storage expansion"}]))
+        titles_mod._ledger["sig"] = None
+        env = dict(os.environ)
+        os.environ["TALLYDECK_STATE"] = str(self.state)
+        try:
+            t = FakeListPanes([("main:1.4", "%276")])
+            info = t.info("main:1.4")
+            self.assertIn("Storage expansion", info.authored)
+        finally:
+            os.environ.clear()
+            os.environ.update(env)
 
 
 class ClaudeTitle(unittest.TestCase):
