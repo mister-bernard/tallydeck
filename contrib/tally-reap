@@ -1,0 +1,417 @@
+#!/usr/bin/env python3
+"""tally-reap — report (and, on request, reap) idle spawned agent sessions.
+
+`tally spawn` sessions are cheap to start and nobody closes them. Measured on
+this box 2026-09-09: 68 tmux sessions, 89 resident agent processes, 8.1 GiB
+RSS + 10.2 GiB swap — and hours earlier the swap ran out and the kernel OOM
+killer took nine processes across seven services with it.
+
+Nothing was reclaiming them. tb-reaper, the general idle-session reaper, skips
+every process whose TMUX socket is `/tmp/tmux-1000/cc` — an exemption added in
+May to stop it killing Telegraph/cc-bridge lanes mid-turn. `tally spawn` puts
+its sessions on exactly that socket, so the entire spawned fleet inherited a
+blanket immunity nobody intended. Its log reads `scanned=21 acted=0`.
+
+This tool owns the lane tb-reaper deliberately will not touch, and only that
+lane: a session must be in `~/.tallydeck/spawned/` or carry TALLY_SPAWNED to
+be a candidate at all. It defers to tb-reaper's own sentinels (pinned/, tasks/)
+so the two can never fight over the same session.
+
+Reaping is recoverable, and that is the whole argument for doing it: a Claude
+session resumes by id (`claude --resume <uuid>`) with its full history. So the
+resume id is not a nicety — it is the precondition. A session whose id cannot
+be established is REPORTED and never reaped, because killing it would be the
+one thing this tool promises isn't happening: losing work.
+
+  tally reap                    # report — the default, changes nothing
+  tally reap --reap             # reap what the report lists
+  tally reap --idle-hours 4     # tighter threshold
+  tally reap --json             # machine-readable
+
+Reaped sessions are recorded in ~/.tallydeck/reaped/ledger.jsonl, one object
+per line, each with the exact command that brings the work back.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import pwd
+import re
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+HOME = Path(pwd.getpwuid(os.getuid()).pw_dir)
+REPO = Path(__file__).resolve().parent.parent
+if not (REPO / "tallydeck").is_dir():
+    REPO = Path(os.environ.get("TALLYDECK_HOME", str(HOME / "projects/tallydeck")))
+sys.path.insert(0, str(REPO))
+
+from tallydeck.sources.claude_sessions import classify, _tail_lines  # noqa: E402
+from tallydeck.signal import WORKING, ATTENTION  # noqa: E402
+
+SOCKET = os.environ.get("TALLY_TMUX_SOCKET", "/tmp/tmux-1000/cc")
+STATE = Path(os.environ.get("TALLYDECK_STATE", str(HOME / ".tallydeck")))
+SPAWNED = STATE / "spawned"
+REAPED = STATE / "reaped"
+LEDGER = REAPED / "ledger.jsonl"
+
+# tb-reaper's sentinels. `pinned/<sid>` is an explicit operator exemption;
+# `tasks/<sid>` is written by the PreToolUse hook and removed by PostToolUse,
+# so its presence means a tool is running RIGHT NOW. Honouring both is what
+# keeps the two reapers from disagreeing about the same session.
+TB_PINNED = HOME / ".claude" / "reaper" / "pinned"
+TB_TASKS = HOME / ".claude" / "reaper" / "tasks"
+
+# Transcript roots, one per account — same list the deck reads.
+ROOTS = [("A", HOME / ".claude" / "projects"),
+         ("B", HOME / ".openclaw" / ".claude-b" / ".claude" / "projects")]
+
+# Never reaped, whatever their idle time: the hand-driven sessions and the
+# shared one-shot runner window. main* are where a human actually works.
+PROTECTED = {"main", "mainA", "mainB", "mainO", "main-O", "oneshot"}
+TELEGRAPH_JSON = HOME / "projects" / "telegraph" / "telegraph.json"
+
+
+def telegraph_sessions() -> set[str]:
+    """Session names bound to a Telegram/Signal room. Killing one of these
+    silently stops answering a chat, and the damage is invisible until someone
+    notices nobody replied — so they are protected by NAME, not only by the
+    TELEGRAPH_PANE_SESSION_ID env var, which a manually-resumed pane loses.
+    Bindings are `session-g`, `session-elina`…; the tmux session is the part
+    after the prefix."""
+    names: set[str] = set()
+    try:
+        data = json.loads(TELEGRAPH_JSON.read_text())
+    except (OSError, ValueError):
+        return names
+    for b in data.get("bindings") or []:
+        s = (b or {}).get("session") or ""
+        if s:
+            names.add(s)
+            if s.startswith("session-"):
+                names.add(s[len("session-"):])
+    return names
+
+UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def tmux(*args: str) -> str:
+    try:
+        return subprocess.run(["tmux", "-S", SOCKET, *args], capture_output=True,
+                              text=True, timeout=15).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def proc_env(pid: int) -> dict[str, str]:
+    try:
+        raw = (Path("/proc") / str(pid) / "environ").read_bytes()
+    except OSError:
+        return {}
+    out = {}
+    for chunk in raw.split(b"\0"):
+        if b"=" in chunk:
+            k, v = chunk.split(b"=", 1)
+            out[k.decode("utf8", "replace")] = v.decode("utf8", "replace")
+    return out
+
+
+def proc_mem_mb(pid: int) -> float:
+    """RSS + swap. Swap counts: a swapped-out session is still holding the
+    pages that ran the box out of swap in the first place."""
+    total = 0.0
+    try:
+        for line in open(f"/proc/{pid}/status"):
+            if line.startswith(("VmRSS:", "VmSwap:")):
+                total += float(line.split()[1]) / 1024.0
+    except OSError:
+        pass
+    return total
+
+
+def descendants(pid: int) -> list[int]:
+    out, stack = [], [pid]
+    while stack:
+        p = stack.pop()
+        try:
+            kids = open(f"/proc/{p}/task/{p}/children").read().split()
+        except OSError:
+            continue
+        for k in kids:
+            k = int(k)
+            out.append(k)
+            stack.append(k)
+    return out
+
+
+def is_agent(pid: int) -> bool:
+    try:
+        cmd = open(f"/proc/{pid}/cmdline", "rb").read().replace(b"\0", b" ").decode("utf8", "replace")
+    except OSError:
+        return False
+    return "/claude" in cmd or "/codex" in cmd
+
+
+def fd_uuid(pid: int) -> str:
+    """Claude keeps an fd open under /tmp/claude-<uid>/<project>/<session-uuid>/.
+    That is a direct, unambiguous process→session link — no guessing which of
+    several transcripts in a shared project directory belongs to this pane."""
+    d = Path(f"/proc/{pid}/fd")
+    try:
+        entries = list(d.iterdir())
+    except OSError:
+        return ""
+    for e in entries:
+        try:
+            target = os.readlink(e)
+        except OSError:
+            continue
+        if "/tmp/claude-" in target:
+            m = UUID_RE.search(target)
+            if m:
+                return m.group(0)
+    return ""
+
+
+def transcript_for(uuid: str) -> tuple[Path | None, str]:
+    for acct, root in ROOTS:
+        if not root.is_dir():
+            continue
+        for proj in root.iterdir():
+            fp = proj / f"{uuid}.jsonl"
+            if fp.is_file():
+                return fp, acct
+    return None, ""
+
+
+def munge(cwd: str) -> str:
+    return cwd.replace("/", "-")
+
+
+def cwd_transcripts(cwd: str) -> list[tuple[Path, str]]:
+    """Every transcript recorded for a working directory, newest first."""
+    out = []
+    for acct, root in ROOTS:
+        p = root / munge(cwd)
+        if p.is_dir():
+            out += [(f, acct) for f in p.glob("*.jsonl")]
+    out.sort(key=lambda t: t[0].stat().st_mtime, reverse=True)
+    return out
+
+
+def collect() -> list[dict]:
+    """One record per live tmux session on the socket."""
+    fmt = "#{session_name}\t#{session_attached}\t#{pane_pid}"
+    rows = [l.split("\t") for l in tmux("list-panes", "-a", "-F", fmt).splitlines() if "\t" in l]
+    by_session: dict[str, dict] = {}
+    for name, attached, pane_pid in rows:
+        rec = by_session.setdefault(name, {
+            "slug": name, "attached": int(attached or 0), "pids": [],
+        })
+        try:
+            shell = int(pane_pid)
+        except ValueError:
+            continue
+        for pid in [shell, *descendants(shell)]:
+            if is_agent(pid):
+                rec["pids"].append(pid)
+
+    # A uuid claimed by one session's open fd cannot belong to another. Claim
+    # them all first, so the newest-transcript fallback below can never hand a
+    # busy session's id to an idle neighbour sharing the same repo.
+    claimed: set[str] = set()
+    for rec in by_session.values():
+        for pid in rec["pids"]:
+            u = fd_uuid(pid)
+            if u:
+                rec["uuid"] = u
+                claimed.add(u)
+                break
+
+    now = time.time()
+    out = []
+    for rec in by_session.values():
+        rec["mem_mb"] = round(sum(proc_mem_mb(p) for p in rec["pids"]), 1)
+        env = proc_env(rec["pids"][0]) if rec["pids"] else {}
+        rec["spawned"] = bool(env.get("TALLY_SPAWNED")) or (SPAWNED / f"{rec['slug']}.json").is_file()
+        rec["account"] = env.get("TALLY_ACCOUNT", "")
+        rec["harness"] = env.get("TALLY_HARNESS", "claude")
+        rec["telegraph"] = bool(env.get("TELEGRAPH_PANE_SESSION_ID"))
+        rec["cwd"] = os.readlink(f"/proc/{rec['pids'][0]}/cwd") if rec["pids"] else ""
+
+        # Codex keeps its rollouts under ~/.codex/sessions, not
+        # ~/.claude/projects, so none of the machinery below applies to it.
+        # Letting it fall through is not merely useless, it is WRONG: the cwd
+        # fallback happily matched a Codex pane to a stale Claude transcript
+        # sharing its repo, which would have reported a confident resume id
+        # belonging to a different session entirely. Out of scope, and said so.
+        if rec["harness"] == "codex" or rec["account"] in ("O", "O2"):
+            rec["uuid"] = ""
+            rec["transcript"] = ""
+            rec["idle_h"] = None
+            rec["state"] = "codex"
+            out.append(rec)
+            continue
+
+        uuid = rec.get("uuid", "")
+        fp, acct = (transcript_for(uuid) if uuid else (None, ""))
+        if fp is None and rec["cwd"]:
+            # Fallback: the newest unclaimed transcript in this pane's cwd.
+            # Deliberately strict — if it is ambiguous we would rather report
+            # "no resume id" and leave the session alone.
+            cands = [(f, a) for f, a in cwd_transcripts(rec["cwd"]) if f.stem not in claimed]
+            if cands:
+                fp, acct = cands[0]
+                uuid = fp.stem
+        rec["uuid"] = uuid
+        rec["transcript"] = str(fp) if fp else ""
+        if acct and not rec["account"]:
+            rec["account"] = acct
+
+        if fp:
+            mtime = fp.stat().st_mtime
+            rec["idle_h"] = round((now - mtime) / 3600.0, 1)
+            rec["state"] = classify(_tail_lines(fp))[0]
+        else:
+            rec["idle_h"] = None
+            rec["state"] = "unknown"
+        out.append(rec)
+    return out
+
+
+def verdict(rec: dict, idle_hours: float, min_mb: float,
+            tg: set[str], include_unspawned: bool) -> tuple[bool, str]:
+    """(reapable, why). The `why` is printed either way — a report that only
+    says "no" is not a report."""
+    if rec["slug"] in PROTECTED:
+        return False, "protected session"
+    if rec["attached"]:
+        return False, "attached (someone is looking at it)"
+    if not rec["pids"]:
+        return False, "no agent process"
+    if rec["state"] == "codex":
+        return False, "codex session — rollouts not read here"
+    if rec["telegraph"] or rec["slug"] in tg:
+        return False, "telegraph-routed lane"
+    if not rec["spawned"] and not include_unspawned:
+        return False, "not tally-spawned (--include-unspawned to consider)"
+    if rec["state"] == WORKING:
+        return False, "working"
+    if rec["state"] == ATTENTION:
+        return False, "waiting on an answer"
+    if not rec["uuid"]:
+        return False, "no resume id — refusing to reap unrecoverable work"
+    if (TB_PINNED / rec["uuid"]).exists():
+        return False, "pinned (tb-reaper)"
+    if (TB_TASKS / rec["uuid"]).exists():
+        return False, "tool running (tb-reaper task sentinel)"
+    if rec["idle_h"] is None:
+        return False, "no transcript"
+    if rec["idle_h"] < idle_hours:
+        return False, f"idle {rec['idle_h']}h < {idle_hours}h"
+    if rec["mem_mb"] < min_mb:
+        return False, f"only {rec['mem_mb']}MB"
+    return True, f"idle {rec['idle_h']}h, {rec['mem_mb']}MB"
+
+
+def resume_cmd(rec: dict) -> str:
+    binary = "claude-b" if rec.get("account") == "B" else "claude"
+    return f"cd {rec['cwd']} && {binary} --resume {rec['uuid']}"
+
+
+def reap(rec: dict, grace: int) -> bool:
+    """Record first, then kill. If the ledger write fails we do not kill —
+    an unrecorded reap is indistinguishable from lost work."""
+    REAPED.mkdir(parents=True, exist_ok=True)
+    entry = {"at": time.time(), "when": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+             "slug": rec["slug"], "uuid": rec["uuid"], "cwd": rec["cwd"],
+             "account": rec["account"], "harness": rec["harness"],
+             "idle_h": rec["idle_h"], "mem_mb": rec["mem_mb"],
+             "transcript": rec["transcript"], "resume": resume_cmd(rec)}
+    try:
+        with open(LEDGER, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+        (REAPED / f"{rec['slug']}.json").write_text(json.dumps(entry, indent=2))
+    except OSError as e:
+        print(f"  ! ledger write failed for {rec['slug']} ({e}) — NOT reaping", file=sys.stderr)
+        return False
+
+    for pid in rec["pids"]:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    # Let the agent flush its transcript before the pane goes away; the resume
+    # id is only worth having if the history behind it landed on disk.
+    deadline = time.time() + grace
+    while time.time() < deadline:
+        if not any(Path(f"/proc/{p}").exists() for p in rec["pids"]):
+            break
+        time.sleep(0.5)
+    tmux("kill-session", "-t", f"={rec['slug']}")
+    return True
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(prog="tally reap", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--reap", action="store_true", help="actually reap (default: report only)")
+    ap.add_argument("--idle-hours", type=float,
+                    default=float(os.environ.get("TALLY_REAP_IDLE_HOURS", "6")))
+    ap.add_argument("--min-mb", type=float,
+                    default=float(os.environ.get("TALLY_REAP_MIN_MB", "50")))
+    ap.add_argument("--grace", type=int, default=20, help="seconds to wait after SIGTERM")
+    ap.add_argument("--slug", action="append", default=[], help="restrict to these sessions")
+    ap.add_argument("--include-unspawned", action="store_true",
+                    help="also consider sessions tally did not spawn (Telegraph "
+                         "lanes and pinned sessions stay protected either way)")
+    ap.add_argument("--json", action="store_true")
+    args = ap.parse_args()
+
+    tg = telegraph_sessions()
+    recs = collect()
+    if args.slug:
+        recs = [r for r in recs if r["slug"] in set(args.slug)]
+    for r in recs:
+        r["reapable"], r["why"] = verdict(r, args.idle_hours, args.min_mb,
+                                          tg, args.include_unspawned)
+    recs.sort(key=lambda r: (not r["reapable"], -(r["mem_mb"] or 0)))
+
+    if args.json:
+        print(json.dumps(recs, indent=2, default=str))
+        return 0
+
+    cand = [r for r in recs if r["reapable"]]
+    print(f"{len(recs)} sessions · {sum(r['mem_mb'] for r in recs)/1024:.1f} GiB committed · "
+          f"{len(cand)} reapable ({sum(r['mem_mb'] for r in cand)/1024:.1f} GiB)")
+    print(f"{'SESSION':<24} {'A':<2} {'STATE':<10} {'IDLE':>6} {'MB':>7}  WHY")
+    for r in recs:
+        idle = f"{r['idle_h']}h" if r["idle_h"] is not None else "-"
+        mark = "REAP" if r["reapable"] else "keep"
+        print(f"{r['slug']:<24} {r['account'] or '-':<2} {r['state']:<10} {idle:>6} "
+              f"{r['mem_mb']:>7.0f}  [{mark}] {r['why']}")
+
+    if not args.reap:
+        if cand:
+            print(f"\nreport only. `tally reap --reap` would free ~"
+                  f"{sum(r['mem_mb'] for r in cand)/1024:.1f} GiB across {len(cand)} sessions.")
+            print("each is resumable; resume commands are written to "
+                  f"{LEDGER}")
+        return 0
+
+    print()
+    freed = 0.0
+    for r in cand:
+        if reap(r, args.grace):
+            freed += r["mem_mb"]
+            print(f"reaped {r['slug']} ({r['mem_mb']:.0f}MB, idle {r['idle_h']}h) — resume: {resume_cmd(r)}")
+    print(f"\nreaped {len(cand)} sessions, ~{freed/1024:.1f} GiB. Ledger: {LEDGER}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

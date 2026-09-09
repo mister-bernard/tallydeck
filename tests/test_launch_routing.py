@@ -136,7 +136,13 @@ def isolated(tmp_path):
     env.update(TALLYDECK_STATE=str(tmp_path), TALLY_TMUX_SOCKET=sock,
                TALLY_ACCOUNTS_FILE=str(tmp_path / 'missing.json'),
                CLAUDE_BIN=str(fake), CLAUDE_BIN_B=str(fake), CODEX_BIN=str(fake),
-               TALLY_BIN=str(ROOT / 'contrib/tally'), TALLY_SPAWN_BIN=str(ROOT / 'contrib/tally-spawn'))
+               TALLY_BIN=str(ROOT / 'contrib/tally'), TALLY_SPAWN_BIN=str(ROOT / 'contrib/tally-spawn'),
+               # These tests are about ROUTING, not admission. The memory gate
+               # is a property of the machine, and on a box under the pressure
+               # the gate exists for it refuses every spawn — which would make
+               # this whole file fail for a reason it is not testing. The gate
+               # has its own tests below.
+               TALLY_SPAWN_NO_GATE='1')
     tmux = ['tmux', '-S', sock]
     subprocess.run(tmux + ['-f', '/dev/null', 'new-session', '-d', '-s', 'bootstrap'], env=env, check=True)
     yield tmp_path, env, tmux, capture
@@ -233,3 +239,80 @@ def test_offer_reports_a_failed_spawn_so_the_caller_can_run_it_inline(isolated, 
                         lambda argv, **kw: subprocess.CompletedProcess(argv, 1, '', 'tmux new-session failed'))
     assert mod.main(['job', 'A task', '-c', str(state), 'brief text']) == 1
     assert 'run it here instead' in capsys.readouterr().err
+
+
+# ── Admission control ────────────────────────────────────────────────────────
+# `tally spawn` was unconditional, and a fan-out of unconditional spawns is how
+# this box ran out of swap on 2026-09-09 and had nine processes OOM-killed
+# across seven services. A spawn the machine cannot afford must be refused, in
+# numbers, before it becomes someone else's incident.
+
+def _gate_env(env, **over):
+    """Run tally-spawn against a machine whose memory we describe."""
+    e = dict(env)
+    e.pop('TALLY_SPAWN_NO_GATE', None)
+    e.update(over)
+    return e
+
+
+def _spawn(env, *args, meminfo=None, tmp_path=None):
+    e = dict(env)
+    if meminfo is not None:
+        fake = tmp_path / 'meminfo'
+        fake.write_text(meminfo)
+        # tally-spawn reads /proc/meminfo directly; point a copy of the script
+        # at the fake by way of a wrapper that shadows the path.
+        e['TALLY_MEMINFO'] = str(fake)
+    return subprocess.run([str(ROOT / 'contrib/tally-spawn'), *args],
+                          capture_output=True, text=True, env=e, timeout=30)
+
+
+def _meminfo(avail_mb, swap_free_mb, swap_total_mb=16000):
+    return (f"MemTotal:       16000000 kB\n"
+            f"MemAvailable:   {avail_mb * 1024} kB\n"
+            f"SwapTotal:      {swap_total_mb * 1024} kB\n"
+            f"SwapFree:       {swap_free_mb * 1024} kB\n")
+
+
+def test_spawn_is_refused_when_ram_is_gone(isolated, tmp_path):
+    state, env, _, _ = isolated
+    r = _spawn(_gate_env(env), 'tight', '-c', str(state), 'task',
+               meminfo=_meminfo(avail_mb=200, swap_free_mb=8000), tmp_path=tmp_path)
+    assert r.returncode == 3, r.stderr
+    assert 'REFUSED' in r.stderr
+    assert '200MB' in r.stderr          # names the number it refused on
+    assert '--force' in r.stderr        # and how to override
+
+
+def test_spawn_is_refused_when_swap_is_gone(isolated, tmp_path):
+    """Swap exhaustion, not RAM exhaustion, is what invoked the OOM killer."""
+    state, env, _, _ = isolated
+    r = _spawn(_gate_env(env), 'tight', '-c', str(state), 'task',
+               meminfo=_meminfo(avail_mb=8000, swap_free_mb=10), tmp_path=tmp_path)
+    assert r.returncode == 3, r.stderr
+    assert 'free swap' in r.stderr
+
+
+def test_a_healthy_box_still_spawns(isolated, tmp_path):
+    state, env, tmux, _ = isolated
+    r = _spawn(_gate_env(env), 'roomy', '-c', str(state), 'task',
+               meminfo=_meminfo(avail_mb=8000, swap_free_mb=8000), tmp_path=tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == 'roomy'
+
+
+def test_force_overrides_the_gate(isolated, tmp_path):
+    state, env, _, _ = isolated
+    r = _spawn(_gate_env(env), 'urgent', '-c', str(state), 'task', '--force',
+               meminfo=_meminfo(avail_mb=10, swap_free_mb=0), tmp_path=tmp_path)
+    assert r.returncode == 0, r.stderr
+
+
+def test_no_swap_configured_is_not_an_empty_swap(isolated, tmp_path):
+    """A box with swap turned off has SwapTotal=0; that is not a reason to
+    refuse every spawn on it forever."""
+    state, env, _, _ = isolated
+    r = _spawn(_gate_env(env), 'swapless', '-c', str(state), 'task',
+               meminfo=_meminfo(avail_mb=8000, swap_free_mb=0, swap_total_mb=0),
+               tmp_path=tmp_path)
+    assert r.returncode == 0, r.stderr

@@ -1457,7 +1457,11 @@ def test_spawn_makes_its_own_tmux_session_with_the_task_as_first_prompt(tmp_path
     sock, T = _scratch_tmux()
     fake = tmp_path / "fakeclaude"; fake.write_text("#!/bin/sh\necho \"PROMPT:$2\"; sleep 20\n"); fake.chmod(0o755)
     spawn = Path(__file__).resolve().parent.parent / "contrib" / "tally-spawn"
-    env = dict(os.environ, TALLYDECK_STATE=str(tmp_path), TALLY_TMUX_SOCKET=sock, CLAUDE_BIN=str(fake))
+    # NO_GATE: this asserts spawn's routing/naming, not the memory admission
+    # gate (tested in test_launch_routing.py). Without it the test fails on any
+    # box actually under the pressure the gate was written for.
+    env = dict(os.environ, TALLYDECK_STATE=str(tmp_path), TALLY_TMUX_SOCKET=sock, CLAUDE_BIN=str(fake),
+               TALLY_SPAWN_NO_GATE="1")
     try:
         r = subprocess.run([str(spawn), "demo-task", "-a", "A", "-c", "/tmp", "Build it, test it, push."],
                            capture_output=True, text=True, env=env, timeout=20)
@@ -1483,7 +1487,8 @@ def test_offer_spawns_immediately_and_asks_nobody(tmp_path):
     contrib = Path(__file__).resolve().parent.parent / "contrib"
     fake = tmp_path / "fakeclaude"; fake.write_text("#!/bin/sh\necho \"PROMPT:$2\"; sleep 20\n"); fake.chmod(0o755)
     env = dict(os.environ, TALLYDECK_STATE=str(tmp_path), TALLY_TMUX_SOCKET=sock, CLAUDE_BIN=str(fake),
-               TALLY_BIN=str(contrib / "tally"), TALLY_SPAWN_BIN=str(contrib / "tally-spawn"))
+               TALLY_BIN=str(contrib / "tally"), TALLY_SPAWN_BIN=str(contrib / "tally-spawn"),
+               TALLY_SPAWN_NO_GATE="1")   # offer's contract, not the memory gate's
     env.pop("TMUX", None)
     try:
         r = subprocess.run([sys.executable, str(contrib / "tally-offer"), "big-job", "Rebuild the datum", "-a", "A", "-c", "/tmp",

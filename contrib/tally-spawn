@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tally-spawn <slug> [-c cwd] [-a A|B|1|2] [--harness claude|codex] [-p task-file|-] ["task text"]
+# tally-spawn <slug> [-c cwd] [-a A|B|1|2] [--harness claude|codex] [-p task-file|-] [--force] ["task text"]
 #
 # Start a piece of work as ITS OWN tmux session, so it gets its own key on the
 # deck the moment its log appears (the session source labels keys by tmux
@@ -12,6 +12,11 @@
 # The session is recorded in
 # ~/.tallydeck/spawned/<slug>.json (target, cwd, account, when, who spawned it).
 # Slugs are unique per socket: a second "wires-nhd" becomes "wires-nhd-2".
+#
+# Spawning is ADMISSION-CONTROLLED (see the gate below): a spawn that would
+# start on a box with no memory left is refused, with the numbers, rather than
+# quietly becoming the swap exhaustion that kills something else. `--force`
+# (or TALLY_SPAWN_NO_GATE=1) overrides.
 set -uo pipefail
 SOCKET="${TALLY_TMUX_SOCKET:-/tmp/tmux-1000/cc}"
 STATE="${TALLYDECK_STATE:-$(getent passwd "$(id -u)" | cut -d: -f6)/.tallydeck}"
@@ -26,7 +31,7 @@ usage() { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; }
 case "${1:-}" in ""|-h|--help) usage >&2; exit 2 ;; esac
 SLUG="$1"; shift
 case "$SLUG" in *[!A-Za-z0-9._-]*|.*) echo "tally-spawn: bad slug '$SLUG'" >&2; exit 2 ;; esac
-CWD="$HOME"; ACCT=""; HARNESS=""; TASK=""
+CWD="$HOME"; ACCT=""; HARNESS=""; TASK=""; FORCE="${TALLY_SPAWN_NO_GATE:-0}"
 while [ $# -gt 0 ]; do
   case "$1" in -c|-a|--account|--harness|-p)
     [ $# -ge 2 ] || { echo "tally-spawn: $1 needs a value" >&2; exit 2; } ;;
@@ -36,12 +41,77 @@ while [ $# -gt 0 ]; do
     -a|--account) ACCT="$2"; shift 2 ;;
     --harness) HARNESS="$2"; shift 2 ;;
     -p) if [ "$2" = "-" ]; then TASK="$(cat)"; else TASK="$(cat "$2")" || exit 2; fi; shift 2 ;;
+    --force) FORCE=1; shift ;;
     --*) echo "tally-spawn: unknown option $1" >&2; exit 2 ;;
     *)  TASK="$1"; shift ;;
   esac
 done
 [ -n "$TASK" ] || { echo "tally-spawn: no task given" >&2; exit 2; }
 [ -d "$CWD" ] || { echo "tally-spawn: no such dir $CWD" >&2; exit 2; }
+
+# ── Admission control ────────────────────────────────────────────────────────
+# A session is not free. Measured on this box 2026-09-09: 89 resident agent
+# processes holding 8.1 GiB RSS + 10.2 GiB swap = 210 MB of COMMITTED memory
+# each. Spawning was unconditional, so a fan-out could — and on 2026-09-09
+# 02:32:35 did — walk the box into swap exhaustion, at which point the kernel
+# OOM killer took out nine processes across seven services.
+#
+# So: refuse a spawn the box cannot afford, and say why in numbers. The floors
+# are deliberately a few sessions' worth of headroom, not one — the gate has to
+# trip BEFORE the fleet overshoots, and nothing re-checks between two spawns
+# issued back to back.
+#
+#   MIN_AVAIL_MB   1024 ≈ 5 sessions of real RAM. Below this the next fan-out
+#                  is paid for out of swap.
+#   MIN_SWAP_FREE  512 MB. Swap exhaustion, NOT RAM exhaustion, is what invokes
+#                  the OOM killer here — the incident ran 15/15 GiB of swap.
+#                  Skipped when the box has no swap configured.
+#
+# Override per-call with --force, globally with TALLY_SPAWN_NO_GATE=1, or tune
+# with TALLY_SPAWN_MIN_AVAIL_MB / TALLY_SPAWN_MIN_SWAP_FREE_MB.
+MIN_AVAIL_MB="${TALLY_SPAWN_MIN_AVAIL_MB:-1024}"
+MIN_SWAP_FREE_MB="${TALLY_SPAWN_MIN_SWAP_FREE_MB:-512}"
+
+# TALLY_MEMINFO exists so the gate can be tested against a described machine
+# rather than against whatever this box happens to be doing; in production it
+# is always /proc/meminfo.
+MEMINFO="${TALLY_MEMINFO:-/proc/meminfo}"
+mem_kb() { awk -v k="$1" '$1==k":"{print $2; found=1} END{if(!found) print 0}' "$MEMINFO"; }
+
+if [ "$FORCE" != 1 ]; then
+  # Sample twice and keep the WORSE reading. Under the pressure this gate
+  # exists for, MemAvailable and SwapFree oscillate hard — measured here
+  # swinging 0 ↔ 350MB of free swap within seconds as reclaim churns. A single
+  # sample lands in a lucky window often enough to matter: the first live test
+  # of this gate was admitted on a spike while the box was, in fact, out of
+  # swap. The floor has to hold, not merely have held once.
+  avail=$(( $(mem_kb MemAvailable) / 1024 ))
+  swap_total=$(( $(mem_kb SwapTotal) / 1024 ))
+  swap_free=$(( $(mem_kb SwapFree) / 1024 ))
+  sleep 0.3
+  a2=$(( $(mem_kb MemAvailable) / 1024 )); [ "$a2" -lt "$avail" ] && avail=$a2
+  s2=$(( $(mem_kb SwapFree) / 1024 ));     [ "$s2" -lt "$swap_free" ] && swap_free=$s2
+  reason=""
+  if [ "$avail" -lt "$MIN_AVAIL_MB" ]; then
+    reason="available RAM ${avail}MB < ${MIN_AVAIL_MB}MB"
+  elif [ "$swap_total" -gt 0 ] && [ "$swap_free" -lt "$MIN_SWAP_FREE_MB" ]; then
+    reason="free swap ${swap_free}MB of ${swap_total}MB < ${MIN_SWAP_FREE_MB}MB"
+  fi
+  if [ -n "$reason" ]; then
+    nsess=$(T list-sessions 2>/dev/null | wc -l)
+    cat >&2 <<EOF
+tally-spawn: REFUSED '$SLUG' — not enough memory to start another session.
+  $reason
+  now: ${avail}MB available RAM, ${swap_free}MB/${swap_total}MB free swap, ${nsess} tmux sessions
+  a session costs ~210MB committed, so this spawn would come out of swap.
+
+  Free some first:   tally reap            (report idle sessions)
+                     tally reap --reap     (reap them; each is resumable)
+  Or override:       tally spawn $SLUG --force ...
+EOF
+    exit 3
+  fi
+fi
 
 ROUTE="$(python3 -m tallydeck.launch "$ACCT" "$HARNESS")" || exit 2
 mapfile -t FIELDS <<< "$ROUTE"
@@ -69,8 +139,16 @@ TARGET="$(T new-session -d -P -F '#{session_name}:#{window_index}.#{pane_index}'
   -e "TALLY_TASK_FILE=$TASKF" -e "TALLY_AGENT_BIN=$BIN" -e "TALLY_SPAWNED=$NAME" \
   -e "TALLY_HARNESS=$HARNESS" -e "TALLY_ACCOUNT=$ACCT" \
   -e "TALLY_LAUNCH_HOME=$LAUNCH_HOME" -e "TALLY_CODEX_HOME=$LAUNCH_CODEX_HOME" \
+  -e "TALLY_OOM_ADJ=${TALLY_OOM_ADJ:-800}" \
   'unset CODEX_THREAD_ID CLAUDE_SESSION_ID CLAUDE_CODE_SESSION_ID CLAUDECODE CLAUDE_CONFIG_DIR CODEX_HOME SESSION_ID TELEGRAPH_PANE_SESSION_ID TELEGRAPH_ORIGIN_JSON;
    export HOME="$TALLY_LAUNCH_HOME";
+   # Volunteer as the OOM killer'"'"'s first choice. An agent session is
+   # RESUMABLE (claude --resume <uuid>); pearl-vault-relay losing its state
+   # mid-flight is not. Raising oom_score_adj needs no privilege — only
+   # LOWERING it does — so this works from an unprivileged tmux pane, and the
+   # child agent inherits it. Together with the -1000/-900 pins on the money
+   # and messaging units, a fan-out that overcommits now kills the fan-out.
+   echo "$TALLY_OOM_ADJ" > /proc/self/oom_score_adj 2>/dev/null || true;
    printf "\n=== tally spawn :: %s :: %s / %s ===\n\n" "$TALLY_SPAWNED" "$TALLY_HARNESS" "$TALLY_ACCOUNT";
    if [ "$TALLY_HARNESS" = codex ]; then
      unset OPENAI_API_KEY ANTHROPIC_API_KEY;

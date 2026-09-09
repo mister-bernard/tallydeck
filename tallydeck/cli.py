@@ -464,7 +464,9 @@ def _parser() -> argparse.ArgumentParser:
             ("spawn", "start a task as its own tmux session (own deck key)",
              "tally spawn <slug> [-c cwd] [-a A|B|O] [--harness claude|codex] [-p file|-] [\"task text\"]"),
             ("offer", "compatibility name for spawn — starts it, asks nothing",
-             "tally offer <slug> \"<one-line summary>\" [-c cwd] [-a A|B|O] [--harness claude|codex] [-p file|-] [\"task text\"]")):
+             "tally offer <slug> \"<one-line summary>\" [-c cwd] [-a A|B|O] [--harness claude|codex] [-p file|-] [\"task text\"]"),
+            ("reap", "report (and on request reap) idle spawned sessions",
+             "tally reap [--reap] [--idle-hours N] [--include-unspawned] [--json]")):
         # add_help=False: --help reaches the helper, which prints its real usage
         sp = sub.add_parser(name, help=help_, usage=usage, add_help=False)
         sp.add_argument("rest", nargs=argparse.REMAINDER)
@@ -496,7 +498,7 @@ def main(argv: list[str] | None = None) -> None:
     argv = list(sys.argv[1:] if argv is None else argv)
     # spawn/offer are thin passthroughs: hand EVERYTHING (including --help)
     # to the helper before argparse can claim the flags for itself.
-    if argv and argv[0] in ("spawn", "offer"):
+    if argv and argv[0] in ("spawn", "offer", "reap"):
         from .paths import contrib_bin
         bin_ = contrib_bin(f"tally-{argv[0]}")
         if not bin_:
@@ -510,6 +512,7 @@ def main(argv: list[str] | None = None) -> None:
         "raise": cmd_raise, "clear": cmd_clear, "brief": cmd_brief,
         "wait": cmd_wait, "hush": cmd_hush, "unhush": cmd_unhush,
         "spawn": cmd_passthrough("tally-spawn"), "offer": cmd_passthrough("tally-offer"),
+        "reap": cmd_passthrough("tally-reap"),
     }[args.cmd](cfg, args)
 
 
