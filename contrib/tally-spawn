@@ -107,7 +107,7 @@ tally-spawn: REFUSED '$SLUG' — not enough memory to start another session.
 
   Free some first:   tally reap            (report idle sessions)
                      tally reap --reap     (reap them; each is resumable)
-  Or override:       tally spawn $SLUG --force ...
+  Continue this task inline. Do not retry or bypass the gate without a new explicit G instruction.
 EOF
     exit 3
   fi
@@ -133,7 +133,25 @@ NAME="$SLUG"; n=2
 while T has-session -t "=$NAME" 2>/dev/null; do NAME="$SLUG-$n"; n=$((n+1)); done
 
 mkdir -p "$STATE/spawned" "$STATE/tasks"; chmod 700 "$STATE" 2>/dev/null
-TASKF="$STATE/tasks/$NAME.md"; umask 077; printf '%s\n' "$TASK" > "$TASKF"
+TASKF="$STATE/tasks/$NAME.md"; umask 077
+{
+  cat <<'WORKER_PROTOCOL'
+You are already the dedicated worker for this task. Complete it in this session.
+Do not spawn another session, subagent, or one-shot worker unless G explicitly
+ authorizes further delegation for this task. Task duration alone is not
+ authorization. Work inline with the tools available here. Independent audits
+ explicitly required by the applicable build lifecycle remain authorized.
+If a spawn is refused for memory pressure, continue that task inline: do not
+retry, rename it, or bypass the memory gate on a transient improvement.
+Before finishing, deliver the outcome and save artifact locations, pending
+ decisions, and exact resume information. Then release this completed worker
+ through the existing safe parking/reaping mechanism; never kill an active or
+ ambiguously identified worker. Do not remain resident waiting for more work.
+
+Task:
+WORKER_PROTOCOL
+  printf '%s\n' "$TASK"
+} > "$TASKF"
 # Keep task text out of tmux's command; the interactive CLI receives it at launch.
 TARGET="$(T new-session -d -P -F '#{session_name}:#{window_index}.#{pane_index}' -s "$NAME" -c "$CWD" \
   -e "TALLY_TASK_FILE=$TASKF" -e "TALLY_AGENT_BIN=$BIN" -e "TALLY_SPAWNED=$NAME" \

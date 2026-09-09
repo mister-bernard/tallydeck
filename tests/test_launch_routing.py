@@ -174,7 +174,14 @@ def test_real_tmux_launch(isolated, markers, options, harness, account):
     got = wait_json(capture)
     rec = wait_json(state / 'spawned/demo.json')
     assert (rec['harness'], rec['account']) == (harness, account)
-    assert got['argv'] == [('--dangerously-bypass-approvals-and-sandbox' if harness == 'codex' else '--dangerously-skip-permissions'), task]
+    assert got['argv'][0] == ('--dangerously-bypass-approvals-and-sandbox' if harness == 'codex' else '--dangerously-skip-permissions')
+    assert len(got['argv']) == 2
+    prompt = got['argv'][1]
+    assert prompt.startswith('You are already the dedicated worker for this task.')
+    assert 'Do not spawn another session, subagent, or one-shot worker' in prompt
+    assert 'do not\nretry, rename it, or bypass the memory gate' in prompt
+    assert prompt.endswith('Task:\n' + task)
+    assert Path(rec['task_file']).read_text() == prompt + '\n'
     assert got['cwd'] == str(state)
     assert got['env']['HOME'] == str(launch.operator_home())
     assert got['env']['TALLY_HARNESS'] == harness
@@ -194,7 +201,8 @@ def test_offer_spawns_the_caller_route_without_a_question(isolated):
     assert r.returncode == 0, r.stderr
     got = wait_json(capture)
     assert got['env']['TALLY_HARNESS'] == 'codex'
-    assert got['argv'][-1] == 'Full brief'
+    assert got['argv'][-1].startswith('You are already the dedicated worker for this task.')
+    assert got['argv'][-1].endswith('Task:\nFull brief')
     rec = wait_json(state / 'spawned/offered.json')
     assert (rec['account'], rec['harness'], rec['origin_session']) == ('O', 'codex', 'parent-cx')
     assert 'codex' in r.stdout and 'account O' in r.stdout        # the route is reported, not negotiated
@@ -281,7 +289,8 @@ def test_spawn_is_refused_when_ram_is_gone(isolated, tmp_path):
     assert r.returncode == 3, r.stderr
     assert 'REFUSED' in r.stderr
     assert '200MB' in r.stderr          # names the number it refused on
-    assert '--force' in r.stderr        # and how to override
+    assert 'Continue this task inline. Do not retry or bypass' in r.stderr
+    assert 'Or override:' not in r.stderr
 
 
 def test_spawn_is_refused_when_swap_is_gone(isolated, tmp_path):
