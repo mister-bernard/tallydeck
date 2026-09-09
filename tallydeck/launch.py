@@ -39,6 +39,23 @@ def caller_harness(env: dict) -> str:
     return ancestor_harness() or env.get("TALLY_HARNESS", "") or "claude"
 
 
+def _codex_alias(account: str, accounts: dict) -> str:
+    """Map a spoken Codex account name to its tokenburn id: "1" → O, "2" → O2.
+
+    G refers to the Codex accounts as 1 and 2 (Claude's are A and B), so
+    `tally spawn -a 2` has to mean something. Exact ids always win, and an
+    account that declares `aliases` in ~/.tokenburn.json is matched on those,
+    so this never invents a mapping the config disagrees with.
+    """
+    want = str(account or "").strip().lower()
+    if not want or want in {str(k).lower() for k in accounts}:
+        return ""
+    for aid, a in accounts.items():
+        if any(str(x).strip().lower() == want for x in (a.get("aliases") or [])):
+            return aid
+    return ""
+
+
 def resolve_launch(account: str = "", harness: str = "", *, env: dict | None = None) -> dict:
     env = dict(os.environ) if env is None else env
     home = operator_home()
@@ -49,7 +66,10 @@ def resolve_launch(account: str = "", harness: str = "", *, env: dict | None = N
         accounts = {}
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
         raise ValueError(f"cannot read account configuration: {config}") from e
-    defaults = {"A": "claude", "B": "claude", "O": "codex"}
+    # Fallbacks for when ~/.tokenburn.json can't be read; the file is the real
+    # source. O and O2 are the two Codex accounts (G calls them 1 and 2).
+    defaults = {"A": "claude", "B": "claude", "O": "codex", "O2": "codex"}
+    account = _codex_alias(account, accounts) or account
     if harness not in ("", "claude", "codex"):
         raise ValueError("harness must be claude or codex")
     if account:
@@ -67,7 +87,12 @@ def resolve_launch(account: str = "", harness: str = "", *, env: dict | None = N
         if provider in ({"claude", "anthropic"} if harness == "claude" else {"codex"}):
             account = inherited
         elif harness == "codex":
-            account = "O"
+            # First ENABLED codex account, so parking account 1 moves the
+            # default rather than spawning into a disabled lane. Falls back to
+            # O when the config is unreadable.
+            account = next((aid for aid, a in accounts.items()
+                            if a.get("provider") == "codex"
+                            and a.get("enabled", True)), "O")
         elif harness == "claude":
             account = "B" if any(".claude-b" in env.get(k, "") for k in ("HOME", "CLAUDE_CONFIG_DIR")) else "A"
         else:

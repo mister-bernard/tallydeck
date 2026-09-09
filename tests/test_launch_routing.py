@@ -37,6 +37,60 @@ def test_inherit(route_env, markers, want):
     assert (r['harness'], r['account']) == want
 
 
+def _two_codex_accounts(tmp_path, route_env, fake_bin):
+    """A tokenburn config with both Codex accounts, as the live one has."""
+    cfg = tmp_path / 'tokenburn.json'
+    cfg.write_text(json.dumps({'accounts': [
+        {'id': 'A', 'provider': 'anthropic', 'claude_bin': fake_bin},
+        {'id': 'O', 'provider': 'codex', 'enabled': True, 'aliases': ['1', 'codex1'],
+         'codex_bin': fake_bin, 'codex_home': '/home/openclaw/.codex'},
+        {'id': 'O2', 'provider': 'codex', 'enabled': True, 'aliases': ['2', 'codex2'],
+         'codex_bin': fake_bin, 'codex_home': '/home/openclaw/.codex-2'},
+    ]}))
+    return route_env | {'TALLY_ACCOUNTS_FILE': str(cfg)}
+
+
+@pytest.mark.parametrize('account,want_id,want_home', [
+    ('2', 'O2', '/home/openclaw/.codex-2'),
+    ('O2', 'O2', '/home/openclaw/.codex-2'),
+    ('codex2', 'O2', '/home/openclaw/.codex-2'),
+    ('1', 'O', '/home/openclaw/.codex'),
+    ('O', 'O', '/home/openclaw/.codex'),
+])
+def test_codex_account_aliases_route_to_their_own_home(
+        tmp_path, route_env, account, want_id, want_home):
+    """G calls the Codex accounts 1 and 2, so `tally spawn -a 2` has to land on
+    O2 — and on ITS CODEX_HOME, or the session would run on account 1's login
+    while every label said 2."""
+    env = _two_codex_accounts(tmp_path, route_env, route_env['CODEX_BIN'])
+    r = launch.resolve_launch(account, env=env)
+    assert (r['harness'], r['account'], r['codex_home']) == ('codex', want_id, want_home)
+
+
+def test_codex_default_skips_a_parked_account(tmp_path, route_env):
+    """With account 1 parked (account-mode.sh codex single would do the
+    reverse), a bare codex spawn must not land on a disabled lane."""
+    env = _two_codex_accounts(tmp_path, route_env, route_env['CODEX_BIN'])
+    cfg = Path(env['TALLY_ACCOUNTS_FILE'])
+    data = json.loads(cfg.read_text())
+    data['accounts'][1]['enabled'] = False        # park account 1
+    cfg.write_text(json.dumps(data))
+    assert launch.resolve_launch('', 'codex', env=env)['account'] == 'O2'
+
+
+def test_codex_alias_never_overrides_a_real_id(tmp_path, route_env):
+    """An account whose id IS "2" wins over anything aliasing to it."""
+    cfg = tmp_path / 'tokenburn.json'
+    cfg.write_text(json.dumps({'accounts': [
+        {'id': '2', 'provider': 'codex', 'enabled': True,
+         'codex_bin': route_env['CODEX_BIN'], 'codex_home': '/tmp/two'},
+        {'id': 'O2', 'provider': 'codex', 'enabled': True, 'aliases': ['2'],
+         'codex_bin': route_env['CODEX_BIN'], 'codex_home': '/tmp/o2'},
+    ]}))
+    r = launch.resolve_launch('2', env=route_env | {'TALLY_ACCOUNTS_FILE': str(cfg)})
+    assert (r['account'], r['codex_home']) == ('2', '/tmp/two')
+
+
 @pytest.mark.parametrize('account,harness,want', [
     ('A', '', ('claude', 'A')), ('B', '', ('claude', 'B')),
     ('O', '', ('codex', 'O')), ('', 'claude', ('claude', 'A')),

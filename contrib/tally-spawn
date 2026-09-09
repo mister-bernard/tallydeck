@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tally-spawn <slug> [-c cwd] [-a A|B|O] [--harness claude|codex] [-p task-file|-] ["task text"]
+# tally-spawn <slug> [-c cwd] [-a A|B|1|2] [--harness claude|codex] [-p task-file|-] ["task text"]
 #
 # Start a piece of work as ITS OWN tmux session, so it gets its own key on the
 # deck the moment its log appears (the session source labels keys by tmux

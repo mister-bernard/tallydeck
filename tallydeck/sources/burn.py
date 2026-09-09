@@ -49,9 +49,11 @@ class TokenBurnSource(Source):
         # the lane whose countdown gets the underline.
         self.hot_window = float(opts.get("hot_window", 300))
         self._pct_hist: dict[str, list[tuple[float, float]]] = {}
-        # Codex is Account O in tokenburn (provider "codex") and the lane runs
-        # on server truth. `codex_dummy = true` survives only as a way to see
-        # the layout with something on it when no such account is configured.
+        # Codex accounts are O and O2 in tokenburn (provider "codex"), spoken
+        # of as 1 and 2, and both lanes run on server truth. They share the
+        # bottom bar of the strip the way A and B share the top one.
+        # `codex_dummy = true` survives only as a way to see the layout with
+        # something on it when no such account is configured.
         self.codex_dummy = bool(opts.get("codex_dummy", False))
         self.codex_providers = tuple(opts.get("codex_providers", ("openai", "codex")))
         # Account O's numbers come from a cron snapshot (10-min refresh). Older
@@ -125,7 +127,7 @@ class TokenBurnSource(Source):
                 "target_m": tgt_pct / 100.0 * limit / 1e6,
                 "clock": self._fmt_remaining(remaining),
             })
-        codex = self._codex_lane(payload, targets, now)
+        codex = self._codex_lanes(payload, targets, now)
         if not parts or target <= 0:
             return []
         frac = burned / target
@@ -159,10 +161,17 @@ class TokenBurnSource(Source):
             },
         )]
 
-    def _codex_lane(self, payload: dict, targets: dict, now: float) -> dict | None:
-        """The Codex lane from the first enabled OpenAI/Codex account that
-        reports a window %, shaped like an anthropic lane; a labelled dummy
-        when none exists and codex_dummy is on."""
+    def _codex_lanes(self, payload: dict, targets: dict, now: float) -> list[dict]:
+        """Every enabled OpenAI/Codex account that reports a window %, shaped
+        like an anthropic lane, in config order (account 1 then account 2); a
+        single labelled dummy when none exists and codex_dummy is on.
+
+        Two lanes rather than one because the two Codex accounts have separate
+        weekly quotas: a merged figure would say "Codex is at 32%" when the
+        truth is one plan at 64% and one untouched, which is the difference
+        between "stop routing there" and "route everything there".
+        """
+        out: list[dict] = []
         for acct in payload.get("accounts", []):
             if acct.get("provider") not in self.codex_providers or not acct.get("enabled"):
                 continue
@@ -198,7 +207,12 @@ class TokenBurnSource(Source):
             age = cx.get("age_mins")
             stale = bool(cx.get("stale")) or (
                 age is not None and float(age) > self.codex_stale_mins)
-            return {"id": "X", "provider": acct.get("provider"), "pct": float(pct),
+            # `id` is what the deck engraves. G names these accounts 1 and 2,
+            # so the badge is the digit; `account` keeps the tokenburn id for
+            # anything that has to match config (colours, presses, logs).
+            aid = str(acct.get("id") or "")
+            out.append({"id": self._codex_badge(aid, len(out)),
+                    "account": aid, "provider": acct.get("provider"), "pct": float(pct),
                     "frac": float(pct) / 100.0, "target": tgt_pct / 100.0,
                     "burned_m": float(pct) / 100.0 * limit / 1e6 if limit else None,
                     "target_m": tgt_pct / 100.0 * limit / 1e6 if limit else None,
@@ -207,12 +221,24 @@ class TokenBurnSource(Source):
                     # weekly quota and no 5h one, so an unlabelled "0%" next to
                     # A/B's 5h percentages invites reading it as a 5h figure.
                     "window": "5h" if has_session else "weekly",
-                    "age_mins": age, "stale": stale}
+                    "age_mins": age, "stale": stale})
+        if out:
+            return out[:2]        # the bottom bar holds two, like the top one
         if self.codex_dummy:
-            return {"id": "X", "provider": "codex", "pct": 37.0, "frac": 0.37, "target": 0.6,
-                    "burned_m": 3.3, "target_m": 5.4,
-                    "remaining_s": 7800.0, "clock": "2:10", "dummy": True}
-        return None
+            return [{"id": "1", "account": "O", "provider": "codex", "pct": 37.0,
+                     "frac": 0.37, "target": 0.6, "burned_m": 3.3, "target_m": 5.4,
+                     "remaining_s": 7800.0, "clock": "2:10", "dummy": True}]
+        return []
+
+    @staticmethod
+    def _codex_badge(acct_id: str, index: int) -> str:
+        """"O" → "1", "O2" → "2"; anything else falls back to its position, so
+        a third account or a renamed id still gets a legible one-character
+        badge instead of an empty cap."""
+        digits = "".join(c for c in acct_id if c.isdigit())
+        if digits:
+            return digits[:1]
+        return "1" if acct_id.upper() == "O" else str(index + 1)
 
     def _pct_rate(self, acct: str, now: float, pct: float) -> float:
         """Window-% growth per second over the hot window (≥ 0)."""

@@ -129,20 +129,32 @@ def draw_key(sig: Signal | None, px: int, lit: bool = False,
         track = theme.TRACK
         fill = color
 
-    # tally bar — across the top, or down the left edge for a Codex session.
+    # tally bar — across the top, or down an edge for a Codex session.
     # The vertical bar is the harness tell; everything else about the key is
     # unchanged, including where the first line of text sits, so a mixed deck
     # still reads as rows rather than as two different products.
+    #
+    # WHICH edge is the Codex account tell (G, 2026-09-09): account 1 keeps the
+    # left edge, account 2 takes the right. Two Codex accounts now share the
+    # deck, and the bottom-right badge alone ("O" vs "O2") is two characters of
+    # difference on a 96px key — the side of the bar reads at a glance, across
+    # the room, which is what the deck is for.
     bar_h = round(s * 0.085)
     codex = is_codex(sig)
-    if codex:
+    acct = str((sig.meta or {}).get("account", ""))
+    codex_right = codex and acct.strip().upper() in ("O2", "2")
+    if codex_right:
+        d.rectangle([s - bar_h, 0, s, s], fill=bar)
+    elif codex:
         d.rectangle([0, 0, bar_h, s], fill=bar)
     else:
         d.rectangle([0, 0, s, bar_h], fill=bar)
 
     pad = round(s * 0.10)
-    lx = bar_h + round(s * 0.06) if codex else pad   # left text margin
-    avail = s - lx - pad                             # usable text width
+    lx = bar_h + round(s * 0.06) if (codex and not codex_right) else pad
+    # A right-edge bar eats from the text's right margin, not its left, or the
+    # label would run underneath it.
+    avail = s - lx - pad - (bar_h if codex_right else 0)
     f_label = theme.font("display", round(s * 0.195))
     f_sub = theme.font("regular", round(s * 0.135))
 
@@ -164,13 +176,13 @@ def draw_key(sig: Signal | None, px: int, lit: bool = False,
     # draining is invisible otherwise — you can watch it work with no idea
     # whose ceiling it is walking toward. Drawn before the sublabel so the
     # sublabel can be truncated around it rather than run underneath.
-    acct = str((sig.meta or {}).get("account", ""))
     badge_w = 0
     if acct:
         f_acct = theme.font("semibold", round(s * 0.135))
         aw = d.textlength(acct, font=f_acct)
         bw, bh = aw + round(s * 0.09), round(s * 0.16)
-        bx1, by1 = s - pad, s - round(s * 0.035)
+        # Clear of a right-edge Codex bar, so the badge never sits on it.
+        bx1, by1 = s - pad - (bar_h if codex_right else 0), s - round(s * 0.035)
         bx0, by0 = bx1 - bw, by1 - bh
         d.rounded_rectangle([bx0, by0, bx1, by1], radius=round(s * 0.04),
                             fill=track)

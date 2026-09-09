@@ -259,7 +259,12 @@ def draw_meter(size: tuple[int, int], frac: float, left: str = "",
 LANE_COLORS = {          # letter, fill ramp, notch — one hue per account
     "A": ("#00E5FF", ("#063C48", "#0FA7C4", "#00E5FF")),
     "B": ("#FF3DF2", ("#3E0B3C", "#B32AA9", "#FF3DF2")),
-    "X": ("#8CFF5A", ("#173A12", "#4FB33A", "#8CFF5A")),   # Codex
+    "X": ("#8CFF5A", ("#173A12", "#4FB33A", "#8CFF5A")),   # Codex (legacy id)
+    # The two Codex accounts, which G calls 1 and 2. They share the bottom bar
+    # the way A and B share the top one, so they need two hues that are also
+    # distinct from cyan and magenta above them.
+    "1": ("#8CFF5A", ("#173A12", "#4FB33A", "#8CFF5A")),   # Codex 1 — green
+    "2": ("#FFC53D", ("#3F2E08", "#B08A16", "#FFC53D")),   # Codex 2 — amber
 }
 LANE_FALLBACK = ("#FFB224", ("#3F2C08", "#B07A16", "#FFB224"))
 
@@ -349,38 +354,34 @@ def _mtok(lane: dict) -> str:
     return f"{b:.1f}M/{tg:.1f}M"
 
 
-def draw_meter2(size: tuple[int, int], lanes: list[dict], codex: dict | None,
-                hot: str = "", t: float = 0.0) -> Image.Image:
-    """Two equal bars as the BACKDROP; big colour-coded numerals as the
-    display. Top: the shared A/B bar (A its colour on the top half, B on the
-    bottom) with the two percentages side by side on the left, the two
-    countdowns side by side on the right, the token figures small between
-    them — everything in its account's colour, so large overlapping
-    elements stay readable (G, 2026-09-08). Bottom: Codex, same treatment."""
-    w, h = size[0] * SS, size[1] * SS
-    img = Image.new("RGB", (w, h), BG)
+def _whisper(lane: dict) -> tuple[str, str]:
+    """The small qualifier riding a Codex lane, in priority order: stand-in
+    data, a snapshot that stopped refreshing, or which window the percentage
+    describes (Pro reports weekly while A/B report 5h — unlabelled, the two
+    invite being read as the same kind of number). ("", "") for A/B lanes."""
+    if lane.get("dummy"):
+        return "dummy", "#3C4458"
+    if lane.get("stale"):
+        return "stale", "#7A6430"
+    return str(lane.get("window") or ""), "#3C4458"
+
+
+def _bar(img, box, lanes: list[dict], hot: str, t: float, frame) -> None:
+    """One bar of the strip: its lanes as stacked half-bars sharing a single
+    outline, percentages on the left, countdowns on the right, small figures
+    between them — every element in its lane's colour.
+
+    ONE renderer for both bars, so "same format" is a property of the code
+    rather than of two blocks kept in step by hand: the A/B bar and the
+    Codex 1/2 bar are the same call with different lanes.
+    """
+    if not lanes:
+        return
     d = ImageDraw.Draw(img)
-    for y in range(h):
-        d.line([(0, y), (w, y)], fill=theme.mix("#070910", "#0B0E18", y / max(1, h - 1)))
-    for y in range(0, h, 3 * SS):
-        d.line([(0, y), (w, y)], fill=GRID, width=1)
-
-    lanes = [l for l in lanes if isinstance(l, dict)][:2]
-    ins_y, ins_x, gap = round(h * 0.05), round(w * 0.016), round(h * 0.09)
-    bar_h = (h - 2 * ins_y - gap) // 2
-    ab = (ins_x, ins_y, w - ins_x, ins_y + bar_h)
-    cx = (ins_x, h - ins_y - bar_h, w - ins_x, h - ins_y)
-
-    def frame(box, radius):
-        x0, y0, x1, y1 = box
-        d.rounded_rectangle([x0 - SS, y0 - SS, x1 + SS, y1 + SS], radius=radius + SS,
-                            fill="#0A0D15", outline="#222739", width=SS)
-
-    # ── backdrop: the shared A/B bar ─────────────────────────────────────────
-    x0, y0, x1, y1 = ab
+    x0, y0, x1, y1 = box
     n = max(1, len(lanes))
     span = (y1 - y0) / n
-    frame(ab, round(span))
+    frame(box, round(span))
     for i, lane in enumerate(lanes):
         ly0, ly1 = round(y0 + i * span), round(y0 + (i + 1) * span)
         accent, ramp = lane_color(lane.get("id", ""))
@@ -390,14 +391,14 @@ def draw_meter2(size: tuple[int, int], lanes: list[dict], codex: dict | None,
                   round_top=(i == 0), round_bottom=(i == n - 1))
     d = ImageDraw.Draw(img)
 
-    # ── overlay: big numerals across the whole bar ───────────────────────────
     bh = y1 - y0
     f_big = theme.font("display", max(10, round(bh * 0.74)))
     f_tag = theme.font("semibold", max(7, round(bh * 0.34)))
     f_small = theme.font("semibold", max(7, round(bh * 0.27)))
     cy = (y0 + y1) / 2
     pad = round(bh * 0.30)
-    # left cluster: A% B%
+
+    # left cluster: badge + percentage per lane
     x = x0 + pad
     for lane in lanes:
         accent, _ = lane_color(lane.get("id", ""))
@@ -408,7 +409,8 @@ def draw_meter2(size: tuple[int, int], lanes: list[dict], codex: dict | None,
         _engrave(d, (x, cy - f_big.size * 0.58), pct, f_big, accent)
         x += d.textlength(pct, font=f_big) + pad
     left_end = x
-    # right cluster: countdowns, right-aligned, A then B; hot one underlined
+
+    # right cluster: countdowns, right-aligned; the hot lane underlined
     clocks = [(l, str(l.get("clock") or "")) for l in lanes if l.get("clock")]
     xr = x1 - pad
     for lane, clock in reversed(clocks):
@@ -416,76 +418,85 @@ def draw_meter2(size: tuple[int, int], lanes: list[dict], codex: dict | None,
         cw = d.textlength(clock, font=f_big)
         xr -= cw
         _engrave(d, (xr, cy - f_big.size * 0.58), clock, f_big, accent)
-        if hot and lane.get("id") == hot:
+        if hot and hot in (lane.get("id"), lane.get("account")):
             uy = cy + f_big.size * 0.50
             d.line([(xr, uy), (xr + cw, uy)], fill=theme.hex_rgb(accent), width=SS * 2)
         xr -= pad
     right_start = xr + pad
-    # middle: token figures, small, colour-coded, STACKED (A over B) so both
-    # fit between the two big clusters
-    figs = [(lane_color(l.get("id", ""))[0], _mtok(l)) for l in lanes if _mtok(l)]
-    if figs:
-        widest = max(d.textlength(f, font=f_small) for _, f in figs)
-        room = right_start - left_end + pad          # the cluster pads are slack
-        if widest > room:                             # no room for both: the hot one
-            figs = [f for f in figs if hot and f[0] == lane_color(hot)[0]][:1] or figs[:1]
-            widest = max(d.textlength(f, font=f_small) for _, f in figs)
-        if widest <= room:
-            fx = left_end - pad / 2 + (room - widest) / 2
-            rows = len(figs)
-            for k, (col, f) in enumerate(figs):
-                fy = cy - (rows * f_small.size) / 2 + k * f_small.size * 1.05 - SS
-                _engrave(d, (fx, fy), f, f_small, col)
 
-    # ── Codex: same treatment on its own bar ────────────────────────────────
-    if codex:
-        x0, y0, x1, y1 = cx
-        ch = y1 - y0
-        accent, ramp = lane_color("X")
-        frame(cx, ch // 2)
-        tgt = codex.get("target")
-        _half_bar(img, d, x0, x1, y0, y1, float(codex.get("frac", 0.0)),
-                  float(tgt) if tgt else None, ramp, accent, t, True, True)
-        d = ImageDraw.Draw(img)
-        cy = (y0 + y1) / 2
-        x = x0 + pad
-        _engrave(d, (x, cy - f_tag.size * 0.55 - f_big.size * 0.28), "CODEX", f_tag, accent)
-        x += d.textlength("CODEX", font=f_tag) + SS * 3
-        pct = f"{round(float(codex.get('pct', 0)))}%"
-        _engrave(d, (x, cy - f_big.size * 0.58), pct, f_big, accent)
-        x += d.textlength(pct, font=f_big) + pad
-        clock = str(codex.get("clock") or "")
-        xr = x1 - pad
-        if clock:
-            cw = d.textlength(clock, font=f_big)
-            xr -= cw
-            _engrave(d, (xr, cy - f_big.size * 0.58), clock, f_big, accent)
-            if hot == "X":
-                uy = cy + f_big.size * 0.50
-                d.line([(xr, uy), (xr + cw, uy)], fill=theme.hex_rgb(accent), width=SS * 2)
-        mid = _mtok(codex)
-        # Whisper slot, in priority order: stand-in data, a snapshot that has
-        # stopped refreshing, or which window the percentage describes (the
-        # Pro plan reports weekly, the A/B lanes report 5h — unlabelled, the
-        # two invite being read as the same kind of number).
-        if codex.get("dummy"):
-            tag, tag_col = "dummy", "#3C4458"
-        elif codex.get("stale"):
-            tag, tag_col = "stale", "#7A6430"
+    # middle: token figures where they exist, else the lane's whisper —
+    # STACKED so two lanes both fit between the big clusters.
+    figs: list[tuple[str, str, bool]] = []
+    for l in lanes:
+        accent, _ = lane_color(l.get("id", ""))
+        mtok = _mtok(l)
+        if mtok:
+            figs.append((accent, mtok, False))
+            continue
+        wtxt, wcol = _whisper(l)
+        if wtxt:
+            figs.append((wcol, wtxt, True))
+    # Both Codex lanes report the same window, and "weekly" stacked twice is
+    # noise that reads as a rendering fault. Collapse identical whispers to one
+    # line; distinct ones (one lane stale, the other fresh) still both show.
+    if len({f[1] for f in figs if f[2]}) == 1 and all(f[2] for f in figs):
+        figs = figs[:1]
+    if not figs:
+        return
+    widest = max(d.textlength(f, font=f_small) for _, f, _ in figs)
+    room = right_start - left_end + pad          # the cluster pads are slack
+    if widest > room:                             # no room for both: the hot one
+        hot_col = lane_color(hot)[0] if hot else ""
+        figs = [f for f in figs if hot_col and f[0] == hot_col][:1] or figs[:1]
+        widest = max(d.textlength(f, font=f_small) for _, f, _ in figs)
+    if widest > room:
+        return
+    fx = left_end - pad / 2 + (room - widest) / 2
+    rows = len(figs)
+    for k, (col, f, quiet) in enumerate(figs):
+        fy = cy - (rows * f_small.size) / 2 + k * f_small.size * 1.05 - SS
+        if quiet:                                 # a whisper never shouts
+            d.text((fx, fy), f, font=f_small, fill=col)
         else:
-            tag, tag_col = str(codex.get("window") or ""), "#3C4458"
-        mw = d.textlength(mid, font=f_small) if mid else 0
-        tw = d.textlength(tag, font=f_small) if tag else 0
-        room = (xr - pad) - x
-        total = mw + (SS * 8 + tw if tag else 0)
-        if total <= room:
-            # Centred when there are token figures to centre; with only the
-            # window whisper, hug the percentage it qualifies — dead-centre put
-            # "weekly" right under the target notch, which struck through it.
-            fx = x + (room - total) / 2 if mid else x
-            if mid:
-                _engrave(d, (fx, cy - f_small.size * 0.55), mid, f_small, accent)
-                fx += mw + SS * 8
-            if tag:                                      # never shouts
-                d.text((fx, cy - f_small.size * 0.55), tag, font=f_small, fill=tag_col)
+            _engrave(d, (fx, fy), f, f_small, col)
+
+
+def draw_meter2(size: tuple[int, int], lanes: list[dict], codex=None,
+                hot: str = "", t: float = 0.0) -> Image.Image:
+    """Two equal bars as the BACKDROP; big colour-coded numerals as the
+    display. Top: the shared A/B bar (A its colour on the top half, B on the
+    bottom) with the two percentages side by side on the left, the two
+    countdowns side by side on the right, the token figures small between
+    them — everything in its account's colour, so large overlapping
+    elements stay readable (G, 2026-09-08).
+
+    Bottom: the Codex accounts, SAME treatment (G, 2026-09-09: "the 1 and 2
+    accounts should use the same format, taking up the bottom half of that
+    display bar"). `codex` takes a list of lanes — one per Codex account, split
+    into half-bars exactly like A/B — or a single dict, still accepted so a
+    caller from before the second account keeps working."""
+    w, h = size[0] * SS, size[1] * SS
+    img = Image.new("RGB", (w, h), BG)
+    d = ImageDraw.Draw(img)
+    for y in range(h):
+        d.line([(0, y), (w, y)], fill=theme.mix("#070910", "#0B0E18", y / max(1, h - 1)))
+    for y in range(0, h, 3 * SS):
+        d.line([(0, y), (w, y)], fill=GRID, width=1)
+
+    lanes = [l for l in lanes if isinstance(l, dict)][:2]
+    # `codex` was a single lane before the second Codex account; accept both.
+    cxl = ([c for c in codex if isinstance(c, dict)][:2] if isinstance(codex, list)
+           else ([codex] if isinstance(codex, dict) else []))
+    ins_y, ins_x, gap = round(h * 0.05), round(w * 0.016), round(h * 0.09)
+    bar_h = (h - 2 * ins_y - gap) // 2
+    ab = (ins_x, ins_y, w - ins_x, ins_y + bar_h)
+    cx = (ins_x, h - ins_y - bar_h, w - ins_x, h - ins_y)
+
+    def frame(box, radius):
+        x0, y0, x1, y1 = box
+        d.rounded_rectangle([x0 - SS, y0 - SS, x1 + SS, y1 + SS], radius=radius + SS,
+                            fill="#0A0D15", outline="#222739", width=SS)
+
+    _bar(img, ab, lanes, hot, t, frame)
+    _bar(img, cx, cxl, hot, t, frame)
     return img.resize(size, Image.LANCZOS)

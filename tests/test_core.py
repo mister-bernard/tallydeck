@@ -1562,14 +1562,43 @@ def test_burn_codex_lane_real_and_dummy():
     payload, targets = _burn_fixture()
     src = TokenBurnSource(codex_dummy=True)
     m = src.signals_from(payload, targets, now=0)[0].meta
-    assert m["codex"]["dummy"] is True and m["codex"]["id"] == "X"
+    # `codex` is a LIST of lanes — one per Codex account — since the second
+    # account arrived; the dummy stands in as a single lane.
+    assert m["codex"][0]["dummy"] is True and m["codex"][0]["id"] == "1"
     assert m["lanes"][0]["burned_m"] > 0 and m["lanes"][0]["target_m"] > 0   # for the overlay figures
     payload["accounts"].append({"id": "codex", "provider": "openai", "enabled": True,
                                 "session_pct": 41, "session_reset": "2026-09-07T08:00:00+00:00"})
     m = src.signals_from(payload, targets, now=0)[0].meta
-    assert m["codex"]["pct"] == 41 and not m["codex"].get("dummy")
+    assert m["codex"][0]["pct"] == 41 and not m["codex"][0].get("dummy")
     assert [l["id"] for l in m["lanes"]] == ["A", "B"]            # codex never a lane
-    assert TokenBurnSource().signals_from(_burn_fixture()[0], targets, now=0)[0].meta["codex"] is None
+    assert TokenBurnSource().signals_from(_burn_fixture()[0], targets, now=0)[0].meta["codex"] == []
+
+
+def test_burn_emits_one_lane_per_codex_account():
+    """Two Codex accounts, two lanes on the bottom bar, badged 1 and 2.
+
+    A single merged Codex figure would average a spent plan with an untouched
+    one — the difference between "stop routing there" and "route it all there".
+    """
+    from tallydeck.sources.burn import TokenBurnSource
+    payload, targets = _burn_fixture()
+    payload["accounts"] += [
+        {"id": "O", "provider": "codex", "enabled": True, "session_pct": 0,
+         "session_reset_mins": None, "weekly_pct": 64.0, "weekly_reset_mins": 9000.0,
+         "codex": {"target_pct": 70, "age_mins": 2.0, "stale": False}},
+        {"id": "O2", "provider": "codex", "enabled": True, "session_pct": 0,
+         "session_reset_mins": None, "weekly_pct": 0.0, "weekly_reset_mins": 10070.0,
+         "codex": {"target_pct": 70, "age_mins": 2.0, "stale": False}},
+    ]
+    cx = TokenBurnSource().signals_from(payload, targets, now=0)[0].meta["codex"]
+    assert [l["id"] for l in cx] == ["1", "2"]            # the badge G reads
+    assert [l["account"] for l in cx] == ["O", "O2"]      # the id config uses
+    assert [l["pct"] for l in cx] == [64.0, 0.0]
+    # A parked account leaves the deck entirely, so account-mode.sh single
+    # shows one lane rather than a lane that cannot be used.
+    payload["accounts"][-1]["enabled"] = False
+    cx = TokenBurnSource().signals_from(payload, targets, now=0)[0].meta["codex"]
+    assert [l["account"] for l in cx] == ["O"]
 
 
 def test_meter2_renders_the_split_bar_with_and_without_codex():
@@ -1620,6 +1649,52 @@ def test_codex_key_wears_its_tally_bar_on_the_left_edge():
     lit = draw_key(Signal(id="cx/x", label="pv", state=ATTENTION,
                           meta={"harness": "codex"}), px, lit=True)
     assert lit.getpixel((1, px // 2)) != lit.getpixel((px // 2, px // 2))
+
+
+def test_codex_account_2_wears_its_tally_bar_on_the_right_edge():
+    """Two Codex accounts share the deck now. Account 1 keeps the left edge,
+    account 2 takes the right — the side of the bar is the account tell, and
+    it reads across the room where the two-character bottom-right badge
+    ("O" vs "O2") does not (G, 2026-09-09)."""
+    from tallydeck.render.keycard import draw_key
+    px = 96
+    one = draw_key(Signal(id="cx/1", label="pv", state=WORKING,
+                          meta={"harness": "codex", "account": "O"}), px)
+    two = draw_key(Signal(id="cx/2", label="pv", state=WORKING,
+                          meta={"harness": "codex", "account": "O2"}), px)
+    blue = theme.hex_rgb(theme.STATE_COLOR[WORKING])
+
+    def near(px_rgb, ref, tol=26):
+        return all(abs(a - b) <= tol for a, b in zip(px_rgb[:3], ref))
+
+    # Account 1: left edge painted, right edge clear.
+    assert near(one.getpixel((1, px // 2)), blue)
+    assert not near(one.getpixel((px - 2, px // 2)), blue)
+    # Account 2: the mirror image — and still not a Claude key (no top bar).
+    assert near(two.getpixel((px - 2, px // 2)), blue)
+    assert near(two.getpixel((px - 2, px - 3)), blue)
+    assert not near(two.getpixel((1, px // 2)), blue)
+    assert not near(two.getpixel((px // 2, 2)), blue)
+
+
+def test_meter2_splits_the_bottom_bar_across_two_codex_accounts():
+    """Same format as A/B: two half-bars, two badges, two countdowns."""
+    from tallydeck.render.meter import draw_meter2
+    lanes = [{"id": "A", "pct": 26, "frac": 0.26, "target": 0.4, "clock": "1:48"},
+             {"id": "B", "pct": 58, "frac": 0.58, "target": 0.7, "clock": "3:05"}]
+    two = [{"id": "1", "account": "O", "pct": 64, "frac": 0.64, "target": 0.7,
+            "clock": "6d6h", "window": "weekly"},
+           {"id": "2", "account": "O2", "pct": 0, "frac": 0.0, "target": 0.7,
+            "clock": "6d23h", "window": "weekly"}]
+    one = draw_meter2((248, 58), lanes, two[:1], hot="A")
+    both = draw_meter2((248, 58), lanes, two, hot="A")
+    assert one.size == both.size == (248, 58)
+    # A second lane changes the bottom bar; if it did not, account 2 would be
+    # invisible on the deck while quietly holding half the Codex capacity.
+    assert list(one.getdata()) != list(both.getdata())
+    # A single dict still works — callers written before the second account.
+    assert draw_meter2((248, 58), lanes, two[0], hot="A").size == (248, 58)
+    assert draw_meter2((248, 58), lanes, [], hot="A").size == (248, 58)
 
 
 def test_codex_key_text_clears_the_left_bar():
@@ -1681,17 +1756,18 @@ def test_codex_lane_uses_account_o_weekly_window_and_flags_a_stale_snapshot():
          "codex": {"target_pct": 70, "age_mins": 1.8, "stale": False}}
     payload["accounts"].append(o)
     src = TokenBurnSource()
-    cx = src.signals_from(payload, targets, now=0)[0].meta["codex"]
+    cx = src.signals_from(payload, targets, now=0)[0].meta["codex"][0]
     assert cx["pct"] == 12.0 and cx["window"] == "weekly"
     assert cx["target"] == 0.7 and cx["stale"] is False
     assert cx["clock"] == "6d22h"           # days, not a 166-hour clock
+    assert cx["id"] == "1" and cx["account"] == "O"
     assert [l["id"] for l in src.signals_from(payload, targets, now=0)[0].meta["lanes"]] \
         == ["A", "B"]                       # codex is its own bar, never a lane
     o["codex"]["age_mins"] = 140            # cron stopped ~2h ago
-    assert src.signals_from(payload, targets, now=0)[0].meta["codex"]["stale"] is True
+    assert src.signals_from(payload, targets, now=0)[0].meta["codex"][0]["stale"] is True
     o["codex"]["age_mins"] = 1.8
     o["codex"]["stale"] = True              # tokenburn's own verdict is honoured
-    assert src.signals_from(payload, targets, now=0)[0].meta["codex"]["stale"] is True
+    assert src.signals_from(payload, targets, now=0)[0].meta["codex"][0]["stale"] is True
 
 
 def test_meter2_whispers_the_codex_window_and_staleness():

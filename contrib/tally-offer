@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""tally-offer <slug> "<one-line summary>" [-c cwd] [-a A|B|O] [--harness claude|codex] [-p task-file|-] [task text]
+"""tally-offer <slug> "<one-line summary>" [-c cwd] [-a A|B|1|2] [--harness claude|codex] [-p task-file|-] [task text]
 
 Kept as the compatibility name for `tally spawn`. It no longer asks anything.
 
