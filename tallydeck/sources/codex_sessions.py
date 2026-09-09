@@ -215,8 +215,10 @@ class CodexSessionsSource(Source):
             # key in a five-pane window said "openclaw" — the directory they
             # all started in (G, 2026-09-08).
             info = self.tmux.info(pane) if pane else None
-            harness_title = "" if is_exec else self.state.title(uuid)
-            label = resolve_label(harness_title=harness_title, pane=info,
+            # PROSE, not a title: Codex files the operator's first message
+            # under threads.title. Claude Code generates a real one.
+            prose = "" if is_exec else self.state.title(uuid)
+            label = resolve_label(harness_prose=prose, pane=info,
                                   cwd=cwd) or "codex"
             if pane and not is_exec:
                 titled.append((pane, label))   # same topic on every surface

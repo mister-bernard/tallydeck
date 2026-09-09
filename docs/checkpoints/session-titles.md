@@ -52,6 +52,21 @@ concise and nice."
 - **`asks_question` is shared with the Codex source.** It lives in
   `claude_sessions.py` but `codex_sessions.py` imports it, so classifier
   changes move Codex keys too.
+- **A title and a message are shortened differently.** Claude Code generates
+  a real title; Codex files the operator's first message under
+  `threads.title`. Reducing a title to its content words is destruction —
+  "Getting everything up and running" is nine characters too long for the
+  pass-through, and reducing it produced the key `Running`. `trim()` for
+  titles, `headline()` for prose, and `resolve_label` takes them as separate
+  arguments so a caller cannot confuse them.
+- **Do not "improve" the Codex title to the most RECENT message.** It is the
+  obvious next idea and it is wrong; measured 2026-09-09 across 14 live
+  Codex threads. Sessions receive broadcasts (operator notices, relay
+  pastes), so recency collapses the fleet onto whatever was announced last:
+  nine of fourteen keys would have read `REBOOT CANCELLED planned`. The
+  frozen first message is at least distinct per session. If the staleness
+  ever has to be fixed, it needs a real summary of the thread, not a newer
+  slice of it.
 
 ## After the reboot
 

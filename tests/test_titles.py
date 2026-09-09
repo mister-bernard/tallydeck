@@ -24,7 +24,8 @@ from pathlib import Path
 from tallydeck import titles as titles_mod
 from tallydeck.titles import (CodexState, PaneInfo, TitleSync, Tmux, _SEP,
                               authored_titles, claude_ai_title, headline,
-                              record_renames, registry_target, resolve_label)
+                              record_renames, registry_target, resolve_label,
+                              trim)
 
 
 def pane(target="main-O:1.1", session="main-O", window="1", index="1",
@@ -32,6 +33,102 @@ def pane(target="main-O:1.1", session="main-O", window="1", index="1",
          pane_id="%1"):
     return PaneInfo(target, pane_id, session, window, index, npanes, title,
                     title_auto, window_auto, frozenset(authored))
+
+
+class TitleVersusProse(unittest.TestCase):
+    """Two kinds of input, two ways to shorten, and they are not swappable.
+
+    Claude Code generates a real title. Codex files the operator's first
+    message under `threads.title`. Reducing a title to its content words is
+    destruction: "Getting everything up and running" missed the pass-through
+    by nine characters, lost every word that was a stopword, and G's key read
+    `Running`.
+    """
+
+    def test_a_long_title_is_trimmed_not_reduced(self):
+        self.assertEqual(trim("Getting everything up and running", 24),
+                         "Getting everything up")
+        self.assertEqual(
+            resolve_label(harness_title="Getting everything up and running",
+                          session_name="main"), "Getting everything up")
+
+    def test_prose_is_still_reduced(self):
+        self.assertEqual(
+            resolve_label(harness_prose="So are you the best at 3D work, "
+                                        "or what?", session_name="main-O"),
+            "3D work")
+
+    def test_a_trim_never_ends_on_a_dangling_connective(self):
+        self.assertEqual(trim("Self-hosted storage vs rsync.net", 24),
+                         "Self-hosted storage")
+
+    def test_a_name_a_human_typed_is_never_reduced(self):
+        # G types a title to be found again; shredding it loses the words he
+        # chose to find it by.
+        long_name = "Storage box expansion to 5 TB"
+        self.assertEqual(
+            resolve_label(pane=pane(title=long_name), session_name="main"),
+            "Storage box expansion")
+
+
+class ColdStartCost(unittest.TestCase):
+    """Reading Codex's log must not cost seconds per run.
+
+    The cron pass is a fresh process every minute. Codex's log reached 74 MB
+    after one busy day, and the backward scan that finds each pid's thread
+    cost ~2s of it every time — so what that scan learns is kept on disk and
+    each run reads only the rows appended since.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name) / "codex"
+        self.home.mkdir()
+        self.state_dir = Path(self.tmp.name) / "state"
+        con = sqlite3.connect(self.home / "logs_2.sqlite")
+        con.execute("create table logs (id integer primary key, "
+                    "thread_id text, process_uuid text)")
+        con.executemany("insert into logs values (?,?,?)",
+                        [(i, f"thread-{i}", f"pid:{i}:x") for i in range(1, 51)])
+        con.commit()
+        con.close()
+        os.environ["TALLYDECK_STATE"] = str(self.state_dir)
+
+    def tearDown(self):
+        os.environ.pop("TALLYDECK_STATE", None)
+        self.tmp.cleanup()
+
+    def test_a_foreign_codex_home_never_writes_the_shared_cache(self):
+        # A test pointing at its own directory must not put that directory's
+        # row ids in the file the live hub reads.
+        CodexState(self.home).pid_threads()
+        self.assertFalse((self.state_dir / "codex-pid-threads.json").exists())
+
+    def test_the_cache_carries_across_processes(self):
+        st = CodexState()                      # real home, caching enabled
+        st.home = self.home                    # …pointed at the fixture
+        st._cache = True
+        st._pid_threads, st._last_log_id = {}, -1
+        self.assertEqual(len(st.pid_threads()), 50)
+        cache = self.state_dir / "codex-pid-threads.json"
+        self.assertTrue(cache.exists())
+        self.assertEqual(json.loads(cache.read_text())["last_id"], 50)
+
+    def test_a_cache_from_another_database_is_ignored(self):
+        cache = self.state_dir / "codex-pid-threads.json"
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps({"db": "/some/other/logs_9.sqlite",
+                                     "last_id": 9999, "pids": {"1": []}}))
+        st = CodexState()
+        self.assertEqual(st._last_log_id, -1,
+                         "row ids from another database are not ours")
+        self.assertEqual(st._pid_threads, {})
+
+    def test_a_corrupt_cache_is_not_fatal(self):
+        cache = self.state_dir / "codex-pid-threads.json"
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text("{not json")
+        self.assertEqual(CodexState()._last_log_id, -1)
 
 
 class Headline(unittest.TestCase):
@@ -193,9 +290,13 @@ class OurOwnTitlesAreCorrectable(unittest.TestCase):
                  authored=self.authored()["%276"])
         self.assertEqual(p.manual_title, "")
         # The label follows the SESSION now, not the title we left on the pane.
+        # Asserted as the string G reads, not as `headline(ai)`: a harness
+        # title is trimmed, never reduced, and pinning the mechanism here hid
+        # the fact that reducing it produced the key `Running`.
         ai = "Getting everything up and running"
         self.assertEqual(resolve_label(harness_title=ai, pane=p,
-                                       session_name="main"), headline(ai, 24))
+                                       session_name="main"),
+                         "Getting everything up")
         self.assertNotEqual(resolve_label(harness_title=ai, pane=p,
                                           session_name="main"),
                             "Storage expansion")

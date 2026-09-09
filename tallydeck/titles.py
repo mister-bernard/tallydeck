@@ -189,7 +189,31 @@ def headline(text: str, limit: int = 24) -> str:
 # vs SQLite"), but a title that ENDS on one is a sentence cut off mid-thought:
 # "Self-hosted storage vs" is what the packer produced when the other half did
 # not fit in 24 characters, and it reads as damage rather than as a topic.
-_DANGLING = frozenset("vs versus via per plus using and or but with for to".split())
+_DANGLING = frozenset(
+    "vs versus via per plus using and or but with for to"
+    # Prepositions and articles cannot dangle out of the REDUCER — they are
+    # stopwords, so they never survive into a packed topic. They can dangle
+    # out of `trim`, which does not filter anything: a Claude ai-title cut at
+    # 24 characters gave the key "Truncated responses from".
+    " from of in on at by into over under after before without about"
+    " than that the a an".split())
+
+
+def trim(text: str, limit: int = KEY_LIMIT) -> str:
+    """Shorten something that is ALREADY a title. Never reduce it.
+
+    Reduction throws away every word that carries no topic, which is the
+    right move on a sentence and destruction on a title: Claude Code's
+    "Getting everything up and running" is 33 characters, so it missed the
+    pass-through by nine, got shredded to its one non-stopword, and G's deck
+    key read `Running`. A title is short because someone already did the
+    choosing; all it can need is a word-boundary cut, and no trailing
+    connective left dangling by that cut.
+    """
+    words = _fit(_clean(text), limit).split()
+    while len(words) > 1 and words[-1].lower() in _DANGLING:
+        words.pop()
+    return " ".join(words)
 
 
 def _pack(words: list[str], limit: int, most: int = 4) -> str:
@@ -259,14 +283,58 @@ class CodexState:
     """
 
     TTL = 15.0
-    COLD_ROWS = 50000
+    # Rows to look back through on a cold start. Every live session logs
+    # steadily (an analytics POST every few minutes), so a few thousand rows
+    # covers the whole fleet; a session quiet for longer than that falls back
+    # to the cwd match, which is what the fallback is for.
+    COLD_ROWS = 4000
 
-    def __init__(self, home=None):
+    def __init__(self, home=None, cache: bool = True):
         self.home = home
         self._titles: dict[str, tuple[str, str]] = {}   # id → (title, cwd)
         self._titles_ts = 0.0
         self._pid_threads: dict[int, list[tuple[int, str]]] = {}
         self._last_log_id = -1
+        # Only the real Codex home shares a cache. A test (or anything else)
+        # pointing at its own directory must not write that directory's row
+        # ids into the file the live hub reads.
+        self._cache = cache and home is None
+        self._load_cache()
+
+    # The cron pass is a fresh process every minute, and the backward scan it
+    # would otherwise start from cost two seconds against a 74 MB log. What it
+    # learns is durable — a pid's thread does not change — so it is kept on
+    # disk and each run reads only the rows Codex appended since.
+    def _cache_path(self) -> Path:
+        return state_dir() / "codex-pid-threads.json"
+
+    def _load_cache(self) -> None:
+        if not self._cache:
+            return
+        try:
+            rec = json.loads(self._cache_path().read_text())
+            if rec.get("db") != _codex_db("logs", self.home):
+                return                 # Codex migrated: the ids are not ours
+            self._pid_threads = {int(p): [tuple(x) for x in seq]
+                                 for p, seq in rec.get("pids", {}).items()}
+            self._last_log_id = int(rec.get("last_id", -1))
+        except (OSError, ValueError, TypeError, AttributeError):
+            self._pid_threads, self._last_log_id = {}, -1
+
+    def _save_cache(self) -> None:
+        if not self._cache or self._last_log_id < 0:
+            return
+        # Only pids that still exist: the map would otherwise grow forever
+        # with every Codex process the machine has ever run.
+        live = {str(p): seq for p, seq in self._pid_threads.items()
+                if Path(f"/proc/{p}").exists()}
+        try:
+            from .paths import write_json_atomic
+            write_json_atomic(self._cache_path(),
+                              {"db": _codex_db("logs", self.home),
+                               "last_id": self._last_log_id, "pids": live})
+        except OSError:
+            pass                       # a cache we cannot write is not an error
 
     # threads --------------------------------------------------------------
 
@@ -307,17 +375,23 @@ class CodexState:
             with _ro(db) as con:
                 since = self._last_log_id
                 if since < 0:
-                    # Cold start (cron runs this in a fresh process every
-                    # minute): read back a bounded window instead of Codex's
-                    # whole log history, which only ever grows. A session too
-                    # quiet to appear in it falls back to the cwd match.
-                    top = con.execute("select max(id) from logs").fetchone()
-                    since = max(0, int(top[0] or 0) - self.COLD_ROWS)
-                rows = con.execute(
-                    "select id, process_uuid, thread_id from logs "
-                    "where id > ? and thread_id is not null order by id",
-                    (since,)).fetchall()
-                self._last_log_id = max(self._last_log_id, since)
+                    # Cold start — the cron pass is a fresh process every
+                    # minute. Walk BACKWARDS from the newest row and stop:
+                    # only a thread that logged recently can be running in a
+                    # pane now, and Codex's log is 74 MB after one busy day,
+                    # so "the last N ids" (which still reads every row in
+                    # that id range, body column and all) cost seconds per
+                    # run and grew with the file.
+                    rows = con.execute(
+                        "select id, process_uuid, thread_id from logs "
+                        "where thread_id is not null order by id desc limit ?",
+                        (self.COLD_ROWS,)).fetchall()
+                    rows.reverse()
+                else:
+                    rows = con.execute(
+                        "select id, process_uuid, thread_id from logs "
+                        "where id > ? and thread_id is not null order by id",
+                        (since,)).fetchall()
         except (sqlite3.Error, TypeError, ValueError):
             return self._pid_threads
         for rid, puid, tid in rows:
@@ -332,6 +406,8 @@ class CodexState:
             if not seq or seq[-1][1] != str(tid):
                 seq.append((int(rid), str(tid)))
                 del seq[:-8]           # only the recent few can be current
+        if rows:
+            self._save_cache()
         return self._pid_threads
 
     def thread_for_pid(self, pid: int, allowed: set[str]) -> str:
@@ -611,27 +687,37 @@ def registry_target(sid8: str, tmux: Tmux, state: Path | None = None) -> str:
 
 # ── the resolver ────────────────────────────────────────────────────────────
 
-def resolve_label(*, harness_title: str = "", pane: PaneInfo | None = None,
-                  session_name: str = "", cwd: str = "",
-                  limit: int = KEY_LIMIT) -> str:
-    """The one precedence order, applied identically on both harnesses."""
+def resolve_label(*, harness_title: str = "", harness_prose: str = "",
+                  pane: PaneInfo | None = None, session_name: str = "",
+                  cwd: str = "", limit: int = KEY_LIMIT) -> str:
+    """The one precedence order, applied identically on both harnesses.
+
+    `harness_title` is a title the harness generated (Claude Code's
+    ai-title); `harness_prose` is a raw message the harness happens to file
+    under "title" (Codex's threads.title is the first thing the operator
+    typed). They are shortened differently and must not be confused: prose
+    has to be reduced to the words that carry the topic, a title only ever
+    needs trimming. Everything else here — a name G typed, a window, a spawn
+    slug, a directory — is a title by definition.
+    """
     if pane is not None:
         manual = pane.manual_title
         if manual:
-            return headline(manual, limit)
+            return trim(manual, limit)
         # A window name only names a session when there is one session in it.
         if pane.window_panes == 1 and pane.manual_window:
-            return headline(pane.manual_window, limit)
+            return trim(pane.manual_window, limit)
         session_name = session_name or pane.session
     if session_name and not _AUTO_SESSION.match(session_name):
-        return headline(session_name, limit)
-    if harness_title:
-        h = headline(harness_title, limit)
-        if h:
-            return h
+        return trim(session_name, limit)
+    for text, shorten in ((harness_title, trim), (harness_prose, headline)):
+        if text:
+            out = shorten(text, limit)
+            if out:
+                return out
     if session_name:
-        return headline(session_name, limit)
-    return headline(os.path.basename(cwd.rstrip("/")) or cwd, limit)
+        return trim(session_name, limit)
+    return trim(os.path.basename(cwd.rstrip("/")) or cwd, limit)
 
 
 class TitleSync:
