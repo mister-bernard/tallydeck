@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tally-spawn <slug> [-c cwd] [-a A|B|1|2] [--harness claude|codex] [-p task-file|-] [--force] [--share] ["task text"]
+# tally-spawn <slug> [-c cwd] [-a A|B|1|2|X] [--harness claude|codex|grok] [-p task-file|-] [--force] [--share] ["task text"]
 #
 # Start a piece of work as ITS OWN tmux session, so it gets its own key on the
 # deck the moment its log appears (the session source labels keys by tmux
@@ -193,7 +193,7 @@ WORKER_PROTOCOL
 # blindly. Account B has its own HOME, so a dir trusted on A is still untrusted
 # for B: on 2026-09-09 three `tally spawn -a B` sessions parked this way at once.
 # Seed the trust entry for the resolved HOME first and the dialog never appears.
-if [ "$HARNESS" != codex ] && [ -x /home/openclaw/scripts/claude-trust.sh ]; then
+if [ "$HARNESS" != codex ] && [ "$HARNESS" != grok ] && [ -x /home/openclaw/scripts/claude-trust.sh ]; then
   /home/openclaw/scripts/claude-trust.sh trust "$CWD" "$LAUNCH_HOME" >&2 || \
     echo "tally-spawn: trust pre-provision failed for $CWD ($LAUNCH_HOME) — session may park at the trust dialog" >&2
 fi
@@ -218,6 +218,14 @@ TARGET="$(T new-session -d -P -F '#{session_name}:#{window_index}.#{pane_index}'
      unset OPENAI_API_KEY ANTHROPIC_API_KEY;
      export CODEX_HOME="$TALLY_CODEX_HOME";
      "$TALLY_AGENT_BIN" --dangerously-bypass-approvals-and-sandbox "$(cat "$TALLY_TASK_FILE")";
+   elif [ "$TALLY_HARNESS" = grok ]; then
+     # --always-approve is grok'"'"'s equivalent of the codex/claude bypass flags.
+     # ANTHROPIC/OPENAI keys are unset for the same reason codex unsets them: a
+     # stray key in the environment silently reroutes the agent to a metered API.
+     # This lane runs on the SuperGrok subscription via ~/.grok/auth.json, which
+     # is why HOME must stay the operator home and not an account config dir.
+     unset OPENAI_API_KEY ANTHROPIC_API_KEY XAI_API_KEY;
+     "$TALLY_AGENT_BIN" --always-approve "$(cat "$TALLY_TASK_FILE")";
    else
      "$TALLY_AGENT_BIN" --dangerously-skip-permissions "$(cat "$TALLY_TASK_FILE")";
    fi;

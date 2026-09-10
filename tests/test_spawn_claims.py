@@ -55,6 +55,17 @@ def spawn(slug, *args):
                           capture_output=True, text=True, timeout=90)
 
 
+def preempted(r):
+    """True when the MEMORY gate refused before the claim gate was ever reached.
+
+    Both gates exit 3, so `rc == 3` alone cannot tell them apart — asserting on it
+    reports a pass while proving nothing, and the message assertions then 'fail'
+    for a reason that has nothing to do with claims. Skip honestly instead: a test
+    that fails for an unrelated environmental reason is one people learn to ignore.
+    """
+    return "not enough memory" in (r.stderr or "")
+
+
 def main():
     if not CLAIM.is_file():
         print("work-claim.py absent — claims not installed; skipping")
@@ -66,6 +77,10 @@ def main():
         h = holder(d)
         try:
             r = spawn("claimtest-x", "-c", d)
+            if preempted(r):
+                print("  SKIP  memory gate refused before the claim gate — "
+                      "claim behaviour not exercised (free some swap and re-run)")
+                return 0
             check("a codex-oneshot claim refuses tally-spawn", r.returncode == 3,
                   f"(rc={r.returncode})")
             check("the refusal names the live holder",

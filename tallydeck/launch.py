@@ -17,8 +17,8 @@ def ancestor_harness() -> str:
     for _ in range(32):
         try:
             name = Path(f"/proc/{pid}/comm").read_text().strip()
-            if name in ("codex", "claude", "claude-b"):
-                return "codex" if name == "codex" else "claude"
+            if name in ("codex", "claude", "claude-b", "grok"):
+                return {"codex": "codex", "grok": "grok"}.get(name, "claude")
             stat = Path(f"/proc/{pid}/stat").read_text()
             pid = int(stat[stat.rfind(")") + 2:].split()[1])
             if pid <= 1:
@@ -29,6 +29,11 @@ def ancestor_harness() -> str:
 
 
 def caller_harness(env: dict) -> str:
+    # Grok has no equivalent of CODEX_THREAD_ID/CLAUDE_SESSION_ID to detect, so a
+    # grok caller is recognised by the marker tally-spawn exports for it, or by
+    # the nearest ancestor being the grok binary.
+    if env.get("TALLY_HARNESS") == "grok":
+        return "grok"
     codex = bool(env.get("CODEX_THREAD_ID"))
     claude = any(env.get(k) for k in
                  ("CLAUDECODE", "CLAUDE_SESSION_ID", "CLAUDE_CODE_SESSION_ID"))
@@ -39,13 +44,14 @@ def caller_harness(env: dict) -> str:
     return ancestor_harness() or env.get("TALLY_HARNESS", "") or "claude"
 
 
-def _codex_alias(account: str, accounts: dict) -> str:
-    """Map a spoken Codex account name to its tokenburn id: "1" → O, "2" → O2.
+def _account_alias(account: str, accounts: dict) -> str:
+    """Map a spoken account name to its tokenburn id: "1" → O, "2" → O2, "grok" → X.
 
     G refers to the Codex accounts as 1 and 2 (Claude's are A and B), so
     `tally spawn -a 2` has to mean something. Exact ids always win, and an
     account that declares `aliases` in ~/.tokenburn.json is matched on those,
-    so this never invents a mapping the config disagrees with.
+    so this never invents a mapping the config disagrees with. Named for Codex
+    originally; it is provider-agnostic and now also resolves the grok account.
     """
     want = str(account or "").strip().lower()
     if not want or want in {str(k).lower() for k in accounts}:
@@ -68,13 +74,14 @@ def resolve_launch(account: str = "", harness: str = "", *, env: dict | None = N
         raise ValueError(f"cannot read account configuration: {config}") from e
     # Fallbacks for when ~/.tokenburn.json can't be read; the file is the real
     # source. O and O2 are the two Codex accounts (G calls them 1 and 2).
-    defaults = {"A": "claude", "B": "claude", "O": "codex", "O2": "codex"}
-    account = _codex_alias(account, accounts) or account
-    if harness not in ("", "claude", "codex"):
-        raise ValueError("harness must be claude or codex")
+    defaults = {"A": "claude", "B": "claude", "O": "codex", "O2": "codex", "X": "grok"}
+    account = _account_alias(account, accounts) or account
+    if harness not in ("", "claude", "codex", "grok"):
+        raise ValueError("harness must be claude, codex or grok")
     if account:
         provider = accounts.get(account, {}).get("provider", defaults.get(account))
-        selected = {"anthropic": "claude", "claude": "claude", "codex": "codex"}.get(provider)
+        selected = {"anthropic": "claude", "claude": "claude",
+                    "codex": "codex", "grok": "grok"}.get(provider)
         if not selected:
             raise ValueError(f"unsupported account: {account}")
         if harness and harness != selected:
@@ -93,6 +100,12 @@ def resolve_launch(account: str = "", harness: str = "", *, env: dict | None = N
             account = next((aid for aid, a in accounts.items()
                             if a.get("provider") == "codex"
                             and a.get("enabled", True)), "O")
+        elif harness == "grok":
+            # Same rule as codex: first ENABLED grok account, so parking one moves
+            # the default instead of spawning into a dead lane.
+            account = next((aid for aid, a in accounts.items()
+                            if a.get("provider") == "grok"
+                            and a.get("enabled", True)), "X")
         elif harness == "claude":
             account = "B" if any(".claude-b" in env.get(k, "") for k in ("HOME", "CLAUDE_CONFIG_DIR")) else "A"
         else:
@@ -101,6 +114,14 @@ def resolve_launch(account: str = "", harness: str = "", *, env: dict | None = N
     if harness == "codex":
         binary = env.get("CODEX_BIN") or settings.get("codex_bin") or shutil.which("codex")
         codex_home = settings.get("codex_home") or str(home / ".codex")
+    elif harness == "grok":
+        # Resolve to the operator home explicitly. A session whose HOME points at
+        # an account config dir (claude-b) has no ~/.local/bin/grok and, worse, no
+        # ~/.grok/auth.json — the CLI then reports "You are not authenticated" on a
+        # perfectly logged-in box. Same trap scripts/grok.sh exists to avoid.
+        binary = (env.get("GROK_BIN") or settings.get("grok_bin")
+                  or str(home / ".local/bin/grok"))
+        codex_home = ""
     else:
         override = "CLAUDE_BIN_B" if account == "B" else "CLAUDE_BIN"
         binary = env.get(override) or settings.get("claude_bin") or str(home / ".local/bin" / ("claude-b" if account == "B" else "claude"))
