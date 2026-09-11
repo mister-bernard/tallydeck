@@ -20,6 +20,13 @@ CORNER = 22
 
 
 def _screen_face(profile: DeviceProfile, layout: Layout, t: float):
+    if layout.zones is not None:
+        # Captions of the focused pane win the strip: they are the thing the
+        # dials will steer, and the meter has its own zone inside them.
+        from .zones import draw_zones, is_stale
+        z = layout.zones
+        return draw_zones(profile.screen_px, z.meta.get("zones") or [], t,
+                          stale=is_stale(z))
     if layout.meter is not None:
         m = layout.meter.meta
         lanes = [l for l in (m.get("lanes") or []) if isinstance(l, dict)]
@@ -53,8 +60,15 @@ def render_png(profile: DeviceProfile, layout: Layout,
     if profile.screen_px:
         screen_h = profile.screen_px[1] * scale + gap
 
-    W = field_w + 2 * bez
+    # The strip may be WIDER than the key field (Plus: 800px over 4x120 keys).
+    # Size the face to the wider of the two and centre the keys, or the strip
+    # gets pasted at a negative x and the "pixel-true render" shows a clipping
+    # bug the hardware does not have.
+    strip_w = profile.screen_px[0] * scale if profile.screen_px else 0
+    inner_w = max(field_w, strip_w)
+    W = inner_w + 2 * bez
     H = field_h + 2 * bez + screen_h
+    kx0 = bez + (inner_w - field_w) // 2
     img = Image.new("RGB", (W, H), "#000000")
     d = ImageDraw.Draw(img)
     d.rounded_rectangle([0, 0, W - 1, H - 1], radius=CORNER * scale,
@@ -66,7 +80,7 @@ def render_png(profile: DeviceProfile, layout: Layout,
         faces = mural.tiles(profile, t)
     for i, sig in enumerate(layout.keys):
         r, c = divmod(i, profile.cols)
-        x = bez + c * (kp + gap)
+        x = kx0 + c * (kp + gap)
         y = bez + r * (kp + gap)
         if faces is not None:
             face = faces[i].resize((kp, kp))

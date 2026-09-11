@@ -147,7 +147,8 @@ def cmd_deck(cfg, args):
     from .render.deckdev import DeckSurface   # imports `streamdeck` lazily
     view = _view(cfg, args)
     surface = DeckSurface(preferred=view.profile.name,
-                          brightness=args.brightness)
+                          brightness=args.brightness,
+                          serial=cfg["view"].get("serial"))
     view.profile = surface.profile            # trust the hardware's geometry
     run(_link(cfg, args), surface, view,
         poll_every=float(cfg.get("client", {}).get("poll_every", 2.0)),
