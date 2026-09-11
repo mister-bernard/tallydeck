@@ -9,9 +9,11 @@ without adding dependencies or another service.
 These examples use synthetic content and the same renderers as the device
 and terminal popup. They are render checks, not a claim of hardware testing.
 
-![Normal and flood key frames](review/operator-keys.png)
-
 ![Session summary and numbered choices](review/operator-popup.svg)
+
+The generator also writes normal and flood key frames to
+`docs/review/operator-keys.png`. Raster previews remain local generated
+artifacts under the repository's existing ignore rules.
 
 ## Resulting behavior
 
