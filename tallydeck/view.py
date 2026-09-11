@@ -23,6 +23,7 @@ class Layout:
     pages: int
     summary: str
     meter: Signal | None = None      # meta.meter signal → info bar, not a key
+    zones: Signal | None = None      # meta.zones signal → strip captions, not a key
     offpage_urgent: bool = False     # something NOT visible needs the human
     mural: bool = False              # nothing live: keys become the Mr. B mural
 
@@ -41,7 +42,9 @@ class View:
 
     def layout(self, signals: list[Signal]) -> Layout:
         meters = [s for s in signals if s.meta.get("meter")]
-        signals = [s for s in signals if not s.meta.get("meter")]
+        zoness = [s for s in signals if s.meta.get("zones")]
+        signals = [s for s in signals
+                   if not s.meta.get("meter") and not s.meta.get("zones")]
         if self.hide_idle:
             signals = [s for s in signals if s.state not in ("idle", "offline")]
 
@@ -105,6 +108,7 @@ class View:
         return Layout(keys=keys, page=self.page, pages=pages,
                       summary=summarize(signals),
                       meter=meters[0] if meters else None,
+                      zones=zoness[0] if zoness else None,
                       offpage_urgent=offpage, mural=quiet)
 
     def peek(self, seconds: float = 20.0) -> None:

@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import threading
 import time
 
@@ -311,8 +312,21 @@ def run(link, surface, view: View, poll_every: float = 2.0,
                     view.jump_to(sig.id)
         wake.set()
 
+    # Dials (Stream Deck +): a turn previews a candidate in its zone; nothing
+    # is sent. State is plain data (dials.py) so the behaviour has tests.
+    from .dials import step as dial_step, overlay as dial_overlay, expire as dial_expire
+    zones_now: list = [[]]
+    pending_dial: dict = {}
+    DIAL_HINT = "preview · push: not wired yet"
+
+    def on_dial(dial: int, delta: int) -> None:
+        new = dial_step(zones_now[0], pending_dial, dial, delta)
+        pending_dial.clear()
+        pending_dial.update(new)
+        wake.set()
+
     if hasattr(surface, "set_callbacks"):
-        surface.set_callbacks(on_key=on_key, on_touch=on_touch)
+        surface.set_callbacks(on_key=on_key, on_touch=on_touch, on_dial=on_dial)
 
     last_poll = 0.0
     prev_frame = None
@@ -333,6 +347,22 @@ def run(link, surface, view: View, poll_every: float = 2.0,
             key_map = layout.keys
             pages_now[0] = layout.pages
             mural_now[0] = layout.mural
+            if layout.zones is not None:
+                zones_now[0] = layout.zones.meta.get("zones") or []
+                if pending_dial:
+                    live = dial_expire(pending_dial)
+                    pending_dial.clear()
+                    pending_dial.update(live)
+                if pending_dial:
+                    # Overlay onto a COPY: the hub's signal object is shared.
+                    from dataclasses import replace as _replace
+                    layout.zones = _replace(
+                        layout.zones,
+                        meta={**layout.zones.meta,
+                              "zones": dial_overlay(zones_now[0], pending_dial,
+                                                    hint=DIAL_HINT)})
+            else:
+                zones_now[0] = []
             mono = time.monotonic()
             for k in [k for k, t0 in fx_at.items() if mono - t0 > fx.LENGTH]:
                 fx_at.pop(k, None)
@@ -346,7 +376,15 @@ def run(link, surface, view: View, poll_every: float = 2.0,
 
             m = layout.meter
             pressed = frozenset(held)
-            frame = ([(s.id, s.state, s.label, s.sublabel, s.progress,
+            if layout.zones is None:
+                zkey = None
+            else:
+                from .render.zones import is_stale as _zstale
+                zkey = (json.dumps(layout.zones.meta.get("zones"),
+                                   sort_keys=True, default=str),
+                        _zstale(layout.zones, wall))
+            frame = (zkey,
+                     [(s.id, s.state, s.label, s.sublabel, s.progress,
                        round(float(s.meta.get('heat', 0) or 0), 2))
                       if s else None for s in layout.keys],
                      tuple(sorted(lit.items())), pressed, layout.summary,
