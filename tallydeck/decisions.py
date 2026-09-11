@@ -63,3 +63,47 @@ def decision_support(text: str, ask: str) -> str:
         elif re.search(r"\b(?:I recommend|my recommendation|recommended option)\b", p, re.I):
             found.append(p)
     return "\n\n".join(dict.fromkeys(found))
+
+
+def next_steps(text: str, *, explicit: bool = False) -> dict[str, str]:
+    """One unambiguous, top-level numbered choice list, quoted verbatim.
+
+    Transcript lists need a next-steps heading; completed-work lists are not
+    commands. An explicit ask may itself be the list. Code, nested lists and
+    separate numbered lists never become surprise shortcuts.
+    """
+    result = {}
+    active = explicit and bool(re.match(r"\s*1[.)]\s", text))
+    fence = ""
+    current = ""
+    finished = False
+    for line in text.splitlines():
+        mark = re.match(r"\s*(`{3,}|~{3,})", line)
+        if mark:
+            if not fence:
+                fence = mark[1]
+            elif mark[1][0] == fence[0] and len(mark[1]) >= len(fence):
+                fence = ""
+            current = ""
+            continue
+        if fence:
+            continue
+        heading = line.strip().strip("#* ").rstrip(":").strip()
+        if re.fullmatch(r"(?:next steps|options|choices)(?:\s*[·—–].*)?", heading, re.I):
+            if result:
+                return {}  # two menus need the session's own UI
+            active = True
+            continue
+        match = re.match(r"^([1-9])[.)]\s+(.+)$", line)
+        if active and match:
+            n, value = match.groups()
+            if finished or n != str(len(result) + 1):
+                return {}
+            result[n] = value.strip()
+            current = n
+        elif active and current and line.startswith(("  ", "\t")):
+            result[current] += "\n" + line.strip()
+        elif line.strip() and result:
+            current = ""
+            finished = True
+    return result

@@ -68,18 +68,22 @@ def _wrap2(draw: ImageDraw.ImageDraw, text: str, font, max_w: int) -> list[str]:
 
 
 def _wrap_n(draw, text, font, max_w, max_lines):
-    words, lines, line = text.split(), [], ""
-    for w in words:
-        cand = f"{line} {w}".strip()
-        if draw.textlength(cand, font=font) > max_w and line:
-            lines.append(line)
-            line = w
-            if len(lines) == max_lines:
-                break
-        else:
-            line = cand
-    if line and len(lines) < max_lines:
-        lines.append(line)
+    # Paths and long single tokens must fit too. Keep a visible ellipsis if
+    # the bounded preview ends; the full text belongs in the press popup.
+    remaining, lines = " ".join(text.split()), []
+    while remaining and len(lines) < max_lines:
+        if len(lines) == max_lines - 1:
+            lines.append(_truncate(draw, remaining, font, max_w))
+            break
+        cut = len(remaining)
+        while cut > 1 and draw.textlength(remaining[:cut], font=font) > max_w:
+            cut -= 1
+        if cut < len(remaining):
+            word = remaining.rfind(" ", 0, cut + 1)
+            if word > 0:
+                cut = word
+        lines.append(remaining[:cut].rstrip())
+        remaining = remaining[cut:].lstrip()
     return lines
 
 
@@ -166,7 +170,7 @@ def draw_key(sig: Signal | None, px: int, lit: bool = False,
     # Wrap instead of amputate: a name that overflows drops to a slightly
     # smaller face and takes two lines, which lets the break land on a
     # hyphen/space instead of mid-word. Ellipsis only past two full lines.
-    y = pad if grok else bar_h + round(s * 0.10)
+    y = round(s * 0.065) + (0 if grok or codex else bar_h)
     if d.textlength(sig.label, font=f_label) <= avail:
         d.text((lx, y), sig.label, font=f_label, fill=fg)
     else:
@@ -175,13 +179,15 @@ def draw_key(sig: Signal | None, px: int, lit: bool = False,
         d.text((lx, y), lines[0], font=f_label, fill=fg)
         if len(lines) > 1:
             d.text((lx, y + round(s * 0.165)), lines[1], font=f_label, fill=fg)
-            y += round(s * 0.13)
+            y += round(s * 0.165)
+    label_bottom = y + f_label.getbbox("Ag")[3]
 
     # Account badge, bottom-right. Which of the two quotas a session is
     # draining is invisible otherwise — you can watch it work with no idea
     # whose ceiling it is walking toward. Drawn before the sublabel so the
     # sublabel can be truncated around it rather than run underneath.
     badge_w = 0
+    footer_top = s - round(s * 0.09) - (bar_h if grok else 0)
     if acct:
         f_acct = theme.font("semibold", round(s * 0.135))
         aw = d.textlength(acct, font=f_acct)
@@ -195,24 +201,41 @@ def draw_key(sig: Signal | None, px: int, lit: bool = False,
         d.text((bx0 + (bw - aw) / 2, by0 + round(s * 0.012)), acct,
                font=f_acct, fill=sub)
         badge_w = bw + pad
+        footer_top = min(footer_top, by0 - round(s * 0.02))
+
+    progress_y = s - round(s * 0.145) - (bar_h if grok else 0)
+    if sig.progress is not None:
+        footer_top = min(footer_top, progress_y - round(s * 0.02))
 
     if sig.sublabel:
-        y2 = y + round(s * 0.24)
+        y2 = label_bottom + round(s * 0.025)
+        line_h = round(s * 0.145)
+        glyph_bottom = f_sub.getbbox("Ag")[3]
+        per = max(1, min(3, int((footer_top - y2 - glyph_bottom) // line_h) + 1))
+        if per == 1:
+            # Two-line titles on a bottom-bar key still deserve two lines of
+            # context. Tighten only these cards, rather than shrinking all text.
+            f_sub = theme.font("regular", round(s * 0.12))
+            line_h = round(s * 0.125)
+            y2 = label_bottom + round(s * 0.01)
+            glyph_bottom = f_sub.getbbox("Ag")[3]
+            per = max(1, min(3, int((footer_top - y2 - glyph_bottom) // line_h) + 1))
         if sig.state in ("attention", "blocked") and len(sig.sublabel) > 30:
-            # The ask gets the key's whole empty middle: 3 wrapped lines
-            # per page, cycling through as many pages as the message needs
+            # The ask uses the space between the title and footer: one to
+            # three lines per page, depending on title and device geometry
             # (the flash draws the eye; the page flips finish the story).
             lines = _wrap_n(d, sig.sublabel, f_sub, avail, 12)
-            per = 3
             pages = max(1, (len(lines) + per - 1) // per)
             pg = askpage % pages
             for i, ln in enumerate(lines[pg * per:(pg + 1) * per]):
-                d.text((lx, y2 + i * round(s * 0.145)), ln,
+                d.text((lx, y2 + i * line_h), ln,
                        font=f_sub, fill=sub)
             if pages > 1:      # tiny page dots, bottom-left
                 r_ = max(2, s // 40)
-                for pi in range(pages):
-                    x0d = lx + pi * r_ * 3
+                count = min(pages, 4)
+                first = min(max(0, pg - count // 2), pages - count)
+                for dot, pi in enumerate(range(first, first + count)):
+                    x0d = lx + dot * r_ * 3
                     y0d = s - round(s * 0.05) - r_ - (bar_h if grok else 0)
                     d.ellipse([x0d, y0d, x0d + r_, y0d + r_],
                               fill=fill if pi == pg else track)
@@ -222,22 +245,15 @@ def draw_key(sig: Signal | None, px: int, lit: bool = False,
             # Wrap rather than amputate: "3m · 1704k/m" lost its burn rate
             # to an ellipsis on the hottest key of the fleet — the one
             # number that key exists to show.
-            parts = [p_.strip() for p_ in sig.sublabel.split(" · ")]
-            if len(parts) > 1 and all(
-                    d.textlength(p_, font=f_sub) <= avail for p_ in parts):
-                lines = [parts[0], " · ".join(parts[1:])]   # break at the dot
-                if d.textlength(lines[1], font=f_sub) > avail:
-                    lines = parts[:2]
-            else:
-                lines = _wrap2(d, sig.sublabel, f_sub, avail)
-            for i, ln in enumerate(lines[:2]):
-                d.text((lx, y2 + i * round(s * 0.145)), ln,
+            lines = _wrap_n(d, sig.sublabel, f_sub, avail, min(2, per))
+            for i, ln in enumerate(lines):
+                d.text((lx, y2 + i * line_h), ln,
                        font=f_sub, fill=sub)
 
     # progress
     if sig.progress is not None:
         h = round(s * 0.07)
-        y0 = s - round(s * 0.145)
+        y0 = progress_y
         x0, x1 = lx, s - pad - badge_w
         d.rounded_rectangle([x0, y0, x1, y0 + h], radius=h // 2, fill=track)
         w = round((x1 - x0) * sig.progress)

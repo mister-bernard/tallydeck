@@ -107,7 +107,7 @@ def test_conflicting_markers_use_nearest_harness(route_env, monkeypatch):
     assert r['harness'] == 'claude'
 
 
-@pytest.mark.parametrize('account,harness', [('X', ''), ('nonsense', ''), ('A', 'codex'), ('O', 'claude')])
+@pytest.mark.parametrize('account,harness', [('Z', ''), ('nonsense', ''), ('A', 'codex'), ('O', 'claude')])
 def test_bad_overrides_fail_before_launch(route_env, account, harness):
     with pytest.raises(ValueError):
         launch.resolve_launch(account, harness, env=route_env)

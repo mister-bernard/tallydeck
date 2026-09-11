@@ -11,9 +11,10 @@ into the exact session that's asking — briefed, focused, ready to type.
 
 ## Working through the deck
 
-The deck is meant to replace watching panes scroll. Work runs in its own
-tmux session with its own key; you decide when a key asks, from the deck,
-your phone, or a bare option number in chat.
+The deck is meant to replace watching panes scroll. Each work session gets
+one key; child workers fold into their parent. Work stays inline by default;
+a separate session is useful when the task needs independent execution.
+You decide when a key asks, from the deck, your phone, or a numbered choice.
 
 - **`tally spawn <slug> -c <dir> "<task>"`** starts the task as its own tmux
   session (`<slug>`), with the calling harness fed the task as its first prompt. It appears
@@ -196,15 +197,27 @@ off, repo state, related queue tasks. Then one key routes it:
 
 | Key | Action |
 |---|---|
+| **1–9, when shown** | Send the exact numbered choice shown in the popup. Only an explicit next-steps or options list gets shortcuts; completed-work lists do not. Native permission and question tools stay in their own session UI. |
+| **i** | Type a reply to the live session. Blank cancels. |
 | **⏎ Enter** | Open the session **floating in the popup** (resumes it first if it isn't running). Work in it; `Ctrl-b d` puts it back. |
 | **t** | Open it as a **tab** (window) of your current tmux session |
 | **s** | **Split** it into your current window, side by side |
 | **␣ space** | **Done** — mute the alert like archiving mail; it revives only if the session asks anew |
-| anything else | Dismiss — nothing anywhere changed |
+| **x** | Park an inactive session after verifying its live identity and saving its resume command. Active work, running tools, shared panes and ambiguous identities are refused. The terminal shell stays available. |
+| **q / Esc** | Dismiss — nothing anywhere changed |
+| **j / k, arrows, PgUp / PgDn, Home / End** | Scroll the complete brief. Unsupported keys and pasted text do not trigger menu actions. |
 | **long-press the deck key** | Snooze that alarm 15 min (long-press again to wake) |
 
 An alarm **never clears from a press you couldn't see** — it clears when
 the session actually receives your answer, or when you explicitly dismiss.
+
+Grok follows the same attention rules: badge **X**, bottom tally bar, Space
+mutes until new activity, and an unanswered question becomes steady amber
+after five minutes. A live but idle prompt stays quiet; presence alone does
+not mean work is running. Numbered choices require a live pane; use Enter
+to resume a parked session before replying.
+
+[Operator flow preview and release checks](docs/OPERATOR-POLISH.md).
 
 ## Raising your own flags
 

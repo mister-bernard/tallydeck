@@ -208,7 +208,7 @@ def test_real_terminal_scroll_resize_and_query_replies(tmp_path):
 from pathlib import Path
 import sys
 text = 'Please approve B.\\n\\n' + '\\n\\n'.join('Status '+str(i) for i in range(100)) + '\\n\\nENDMARK'
-key=choose(lambda width: body(text,'THE ASK',width), 'Enter open · t tab · space mute', timeout=10)
+key=choose(lambda width: body(text,'THE ASK',width), 'Enter open · t tab · space mute', timeout=10, valid_keys={'t'})
 Path(sys.argv[1]).write_text(key)
 ''')
     result=tmp_path/'key'
@@ -225,6 +225,8 @@ Path(sys.argv[1]).write_text(key)
         first=until(b'Please approve B.')
         # DA1 input should never choose an action, nor should scrolling.
         os.write(master,b'\x1b[?1;2c');time.sleep(.1)
+        assert proc.poll() is None and not result.exists()
+        os.write(master,b'\x1b[200~x1t pasted text\x1b[201~9');time.sleep(.1)
         assert proc.poll() is None and not result.exists()
         os.write(master,b'G');until(b'ENDMARK')
         assert not result.exists()

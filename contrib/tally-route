@@ -107,39 +107,47 @@ trap 'rm -f "$ACTION_FILE"' EXIT
   --taken "$TAKEN" --action-file "$ACTION_FILE" || exit 1
 # read without stripping Enter, which is itself the floating action.
 key=""; IFS= read -r -N 1 key < "$ACTION_FILE" || true
+step=$(tail -c +2 "$ACTION_FILE")
 [ -s "$ACTION_FILE" ] || exit 0
 # First terminal to act wins atomically; scrolling never claims the press.
 mkdir -p "$TAKEN_DIR"
 (set -o noclobber; : > "$TAKEN") 2>/dev/null || exit 0
 
 SESS="${TARGET%%:*}"
+# Paste replies as one bracketed block: multiline choices and shell-looking
+# text are content, and a failed tmux operation must never report "sent".
+send_reply() {
+  local dest="$1" text="$2" buffer="tally-reply-$$"
+  if printf '%s' "$text" | T load-buffer -b "$buffer" - &&
+      T paste-buffer -p -d -b "$buffer" -t "$dest" &&
+      T send-keys -t "$dest" Enter; then
+    echo "  sent."
+  else
+    T delete-buffer -b "$buffer" 2>/dev/null || true
+    echo "  Could not send. Open the session to check its prompt."
+    return 1
+  fi
+}
 case "$key" in
   [1-9])  # pick a numbered next step from the brief and send it to the pane
     n=$key
-    step=$(printf '%s\n' "$ASK" | sed -n "s/^[[:space:]]*${n}[.)][[:space:]]*//p" | head -1)
     if [ -z "$step" ]; then
       echo "  no option $n in the next-steps list"
       sleep 1.4
       exit 0
     fi
     DEST="$TARGET"
-    if [ -z "$DEST" ] && [ -n "$UUID" ]; then
-      ensure_resurrected
-      DEST="${NAME}:1.1"
-    fi
     if [ -z "$DEST" ]; then
-      echo "  no live pane to send that to"
+      echo "  No live pane. Press Enter to resume before sending a choice."
       sleep 1.4
       exit 0
     fi
-    T send-keys -t "$DEST" -l -- "Do this next: $step"
-    T send-keys -t "$DEST" Enter
-    echo "  sent option $n."
+    send_reply "$DEST" "Do this next: $step"
     sleep 0.6
     exit 0 ;;
   x|X)  # CLOSE: park the session — save resume id, free RAM, drop the key
     echo
-    echo "  parking ${LABEL:-session} — saved, resumable, dropping from the deck"
+    echo "  Checking whether ${LABEL:-session} can be parked safely…"
     /usr/bin/python3 - "$SESS" "$UUID" "$PROJ" "$ACCT" "$SIGID" "$TARGET" <<'PY'
 import os, sys
 sys.path.insert(0, os.environ.get("TALLYDECK_HOME", os.path.expanduser("~/projects/tallydeck")))
@@ -148,7 +156,9 @@ slug, uuid, cwd, acct, sigid, target = sys.argv[1:7]
 harness = "grok" if (sigid.startswith("gk/") or sigid.startswith("hunt/") or acct == "X") else (
     "codex" if sigid.startswith("cx/") or acct in ("O", "O2") else "claude")
 rec = park(slug=slug, uuid=uuid, cwd=cwd, harness=harness, account=acct, target=target)
-print("  resume:", rec.get("resume") or "(no uuid — reported only)")
+print("  " + rec.get("message", ""))
+if rec.get("resume"):
+    print("  resume:", rec["resume"])
 PY
     sleep 1.6
     exit 0 ;;
@@ -169,9 +179,7 @@ PY
       DEST="$NAME"
     fi
     # -l is literal: a reply containing ; or $ must not become tmux syntax.
-    T send-keys -t "$DEST" -l -- "$reply"
-    T send-keys -t "$DEST" Enter
-    echo "  sent."
+    send_reply "$DEST" "$reply"
     sleep 0.6
     exit 0 ;;
   l|L)  # TEXT ME THE LINKS — tmux swallows clickable links; the phone does not
@@ -186,7 +194,8 @@ PY
     STATE_DIR="${TALLYDECK_STATE:-$HOME/.tallydeck}"
     if [ -n "$UUID" ]; then
       SID8=$(printf '%s' "$UUID" | cut -c1-8)
-      case "$SIGID" in cx/*) SID8="$UUID" ;; esac
+      case "$SIGID" in cx/*|gk/*|hunt/*) SID8="$UUID" ;; esac
+      [ "$ACCT" = "X" ] && SID8="$UUID"
       rm -f "$STATE_DIR/signals/ask-$SID8.json"
       mkdir -p "$STATE_DIR/acked"
       touch "$STATE_DIR/acked/$SID8"

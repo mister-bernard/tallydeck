@@ -82,7 +82,7 @@ def test_live_grok_pane_keeps_a_quiet_session_on_the_deck(tmp_path):
     src._live_grok_panes = lambda: {uid: "sb-localnet-move:1.1"}
     got = src.poll()
     assert len(got) == 1
-    assert got[0].state == WORKING
+    assert got[0].state == IDLE
     assert got[0].meta["tmux"] == "sb-localnet-move:1.1"
     assert got[0].meta["exact_pane"] is True
     assert "localnet" in got[0].label.lower() or "8555" in got[0].label
@@ -228,3 +228,34 @@ def test_term_surface_marks_grok_keys():
     assert "▁" in render_term(NEO, View(profile=NEO).layout(sigs))
     plain = [Signal(id="cc/x", label="claude", state=WORKING)]
     assert "▁" not in render_term(NEO, View(profile=NEO).layout(plain))
+
+
+def test_real_lifecycle_closes_tools_and_rearms_for_the_next_prompt():
+    recs = [_rec('tool_call', toolCallId='x'), _rec('turn_completed'), _rec('session_recap')]
+    assert classify(recs) == SUCCESS
+    assert classify(recs + [_rec('user_message_chunk')]) == WORKING
+    assert classify([_rec('agent_thought_chunk')]) == WORKING
+    assert classify([_rec('tool_call', toolCallId='x'),
+                     _rec('tool_call_update', toolCallId='x', status='failed'),
+                     _rec('agent_message_chunk')]) == SUCCESS
+
+
+def test_grok_mute_and_flash_expiry_use_full_session_identity(tmp_path, monkeypatch):
+    import os, time
+    from tallydeck.signal import ATTENTION
+    monkeypatch.setenv('TALLYDECK_STATE', str(tmp_path/'state'))
+    uid = '01234567-89ab-4cde-8fab-0123456789ab'
+    folder = tmp_path/'sessions'/'%2Ftmp'/uid; folder.mkdir(parents=True)
+    (folder/'summary.json').write_text(json.dumps({'info':{'id':uid,'cwd':'/tmp'},'generated_title':'Hunt'}))
+    (folder/'chat_history.jsonl').write_text(json.dumps({'type':'assistant','content':'Which region should I search?'})+'\n')
+    log = folder/'updates.jsonl'; log.write_text(json.dumps(_rec('turn_completed'))+'\n')
+    now = time.time(); os.utime(log,(now-400,now-400))
+    src = GrokSessionsSource(root=str(tmp_path/'sessions'), dwell=0, sync_titles=False)
+    src._live_grok_panes = lambda: {}
+    sig = src.poll()[0]
+    assert sig.state == ATTENTION and sig.wants_flash is False
+    ack = tmp_path/'state/acked'/uid; ack.parent.mkdir(parents=True); ack.touch()
+    assert src.poll()[0].state == IDLE
+    os.utime(ack,(now-1,now-1))
+    os.utime(log,(now,now))
+    assert src.poll()[0].state == ATTENTION

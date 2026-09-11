@@ -306,10 +306,18 @@ def cmd_brief(cfg, args):
                 except (OSError, ValueError):
                     pass
         doc = document(**kwargs)
-        key = choose(lambda width: render(doc, width), args.actions or "Enter open · space mute · q dismiss",
+        actions = args.actions or "Enter open · space mute · q dismiss"
+        steps = doc.get("steps", {})
+        actions = actions.replace("1-9 next step · ", "")
+        if steps:
+            actions = f"{'/'.join(steps)} send choice · " + actions
+        key = choose(lambda width: render(doc, width), actions,
+                     valid_keys=set("\n\r tTsSbBxXiI/rRlLqQ\x1b") | set(steps),
                      gone=lambda: bool(args.taken and Path(args.taken).exists()))
         if args.action_file:
-            Path(args.action_file).write_text(key)
+            # First byte stays compatible with the router's action protocol;
+            # a numeric key carries the exact option that was shown after it.
+            Path(args.action_file).write_text(key + steps.get(key, ""))
     else:
         print(build_cached(**kwargs))
 
@@ -394,14 +402,18 @@ def cmd_park(cfg, args):
     """Suspend a live session without deleting it.
 
     Transcript stays on disk. Resume command is written to
-    ~/.tallydeck/parked/ and the reap ledger. The tmux session is killed so
-    the key leaves the deck and the RAM comes back. Hourly `tally reap`
+    ~/.tallydeck/parked/ and the reap ledger. Only a verified inactive agent is stopped; its shell remains available.
+    The key is parked after the process exits. Hourly `tally reap`
     already does this for spawned sessions idle ≥3h; this is the on-demand
     version from a key press (`x`)."""
     from .park import park
     rec = park(slug=args.slug, uuid=args.uuid, cwd=args.cwd,
                harness=args.harness, account=args.account, target=args.target)
-    print(rec.get("resume") or f"parked {args.slug or args.uuid}")
+    print(rec.get("message", ""))
+    if rec.get("resume"):
+        print(rec["resume"])
+    if rec.get("status") != "parked":
+        raise SystemExit(1)
 
 
 def cmd_clear(cfg, args):

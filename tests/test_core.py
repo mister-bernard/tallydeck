@@ -487,7 +487,7 @@ def test_brief_reports_session_and_repo(tmp_path):
                 state="attention")
     assert "widget" in out and "ATTENTION" in out   # styled header
     assert "verify the row counts" in out
-    assert "WHERE IT LEFT OFF" in out
+    assert "WHAT HAPPENED" in out
 
 
 # ── marbled backgrounds ──────────────────────────────────────────────────────
@@ -1554,14 +1554,16 @@ def test_spawn_makes_its_own_tmux_session_with_the_task_as_first_prompt(tmp_path
     env = dict(os.environ, TALLYDECK_STATE=str(tmp_path), TALLY_TMUX_SOCKET=sock, CLAUDE_BIN=str(fake),
                TALLY_SPAWN_NO_GATE="1")
     try:
-        r = subprocess.run([str(spawn), "demo-task", "-a", "A", "-c", "/tmp", "Build it, test it, push."],
+        r = subprocess.run([str(spawn), "demo-task", "--share", "-a", "A", "-c", str(tmp_path), "Build it, test it, push."],
                            capture_output=True, text=True, env=env, timeout=20)
         assert r.returncode == 0 and r.stdout.strip() == "demo-task", r.stderr
         _t.sleep(0.8)
-        assert "PROMPT:Build it, test it, push." in T("capture-pane", "-t", "demo-task", "-p").stdout
+        pane = T("capture-pane", "-t", "demo-task", "-p").stdout
+        assert "PROMPT:You are already the dedicated worker" in pane
+        assert "Build it, test it, push." in pane
         rec = json.loads((tmp_path / "spawned" / "demo-task.json").read_text())
-        assert rec["target"] == T("list-panes", "-t", "demo-task", "-F", "#S:#I.#P").stdout.strip() and rec["cwd"] == "/tmp"
-        r2 = subprocess.run([str(spawn), "demo-task", "-a", "A", "-c", "/tmp", "again"], capture_output=True, text=True, env=env, timeout=20)
+        assert rec["target"] == T("list-panes", "-t", "demo-task", "-F", "#S:#I.#P").stdout.strip() and rec["cwd"] == str(tmp_path)
+        r2 = subprocess.run([str(spawn), "demo-task", "--share", "-a", "A", "-c", str(tmp_path), "again"], capture_output=True, text=True, env=env, timeout=20)
         assert r2.stdout.strip() == "demo-task-2"                 # unique slugs
         assert subprocess.run([str(spawn), "../evil", "x"], capture_output=True, env=env).returncode == 2
     finally:
@@ -1582,17 +1584,23 @@ def test_offer_spawns_immediately_and_asks_nobody(tmp_path):
                TALLY_SPAWN_NO_GATE="1")   # offer's contract, not the memory gate's
     env.pop("TMUX", None)
     try:
-        r = subprocess.run([sys.executable, str(contrib / "tally-offer"), "big-job", "Rebuild the datum", "-a", "A", "-c", "/tmp",
+        r = subprocess.run([sys.executable, str(contrib / "tally-offer"), "big-job", "Rebuild the datum", "-a", "A", "-c", str(tmp_path),
                             "-p", "-"], input="Full brief here.", capture_output=True, text=True, env=env, timeout=30)
         assert r.returncode == 0, r.stderr
         assert "spawned big-job" in r.stdout                       # the caller learns the name at once
         assert "big-job" in T("list-sessions", "-F", "#S").stdout  # already running, nothing answered
         _t.sleep(0.8)
-        assert "PROMPT:Full brief here." in T("capture-pane", "-t", "big-job", "-p").stdout
+        pane = T("capture-pane", "-t", "big-job", "-p").stdout
+        assert "PROMPT:You are already the dedicated worker" in pane
+        assert "Full brief here." in pane
         assert not (tmp_path / "signals" / "offer-big-job.json").exists()
         assert not (tmp_path / "offers" / "big-job.json").exists()
     finally:
         T("kill-server")
+        claim = Path('/home/openclaw/scripts/work-claim.py')
+        if claim.is_file():
+            subprocess.run([str(claim), 'release', str(tmp_path), '--owner', 'spawn:big-job'],
+                           capture_output=True, timeout=5)
 
 
 def test_notifier_announces_session_prompts_when_the_deck_is_away(tmp_path):

@@ -85,7 +85,7 @@ def _last_texts_codex(path: Path, want: int = 2) -> list[str]:
 
 
 def _git(project: str) -> str:
-    if not os.path.isdir(os.path.join(project, ".git")):
+    if not os.path.exists(os.path.join(project, ".git")):
         return ""
     def run(*args):
         try:
@@ -162,7 +162,7 @@ def _last_texts_grok(path: Path, want: int = 2) -> list[str]:
 def document(session: str, project: str, label: str = "",
              roots=None, state: str = "", tasks_cmd=None, ask: str = "",
              codex_roots=None, grok_roots=None):
-    from .decisions import decision_text, decision_support
+    from .decisions import decision_text, decision_support, next_steps
     from .transcripts import pending_ask
     roots = roots or [Path.home() / ".claude/projects"]
     codex_roots = codex_roots or [Path.home() / ".codex/sessions"]
@@ -180,6 +180,9 @@ def document(session: str, project: str, label: str = "",
     raw_ask = ask or tool or (decision_text(texts[0]) if texts else "")
     decision = "" if (raw_ask and COURTESY_IDLE.search(raw_ask)
                       and len(raw_ask.strip()) < 80) else raw_ask
+    # Native tool questions must be answered in their own TUI, never pasted
+    # into the agent's ordinary prompt. Every shortcut uses this same snapshot.
+    steps = {} if tool else next_steps(ask or (texts[0] if texts else ""), explicit=bool(ask))
     sections = []
     if decision:
         # A supplied brief of numbered next steps is the reason this popup
@@ -232,12 +235,14 @@ def document(session: str, project: str, label: str = "",
     tasks = _tasks(project, tasks_cmd)
     if tasks: sections.append(("RELATED TASKS", "\n\n".join(tasks)))
     return {"label": label or os.path.basename(project.rstrip("/")) or project,
+            "steps": steps,
             "state": state or "idle", "project": project, "sections": sections}
 
 
 def render(doc, width):
-    from .popup import header, body, Group
+    from .popup import header, body, options, Group
     return Group(header(doc["label"], doc["state"], width, doc["project"]),
+                 *( [options(list(doc["steps"].values()), width)] if doc.get("steps") else []),
                  *(body(text, title, width) for title, text in doc["sections"]))
 
 

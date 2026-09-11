@@ -54,10 +54,16 @@ def classify(records: list[dict]) -> str:
     """Whose move, from a chronological updates.jsonl tail."""
     pending: set[str] = set()
     saw_agent = False
+    busy = False
     for rec in records:
         u = _update(rec)
         kind = u.get("sessionUpdate")
-        if kind == "tool_call":
+        if kind == "turn_completed":
+            pending.clear()
+            busy, saw_agent = False, True
+        elif kind in ("user_message_chunk", "agent_thought_chunk"):
+            busy, saw_agent = True, False
+        elif kind == "tool_call":
             tid = str(u.get("toolCallId") or "")
             if tid:
                 pending.add(tid)
@@ -65,14 +71,15 @@ def classify(records: list[dict]) -> str:
         elif kind == "tool_call_update":
             tid = str(u.get("toolCallId") or "")
             st = str(u.get("status") or "").lower()
-            if tid and st == "completed":
+            if tid and st in ("completed", "failed", "cancelled", "canceled"):
                 pending.discard(tid)
-            elif tid and st != "completed":
+            elif tid:
                 pending.add(tid)
             saw_agent = False
-        elif kind in ("agent_message_chunk", "agent_thought_chunk"):
+        elif kind == "agent_message_chunk":
+            busy = False
             saw_agent = True
-    if pending:
+    if pending or busy:
         return WORKING
     if saw_agent:
         return SUCCESS
@@ -324,6 +331,13 @@ class GrokSessionsSource(Source):
         active = _iso_epoch(str(info.get("last_active_at") or ""))
         if active:
             mtime = max(mtime, active)
+        from ..paths import acked_dir
+        ack = acked_dir() / uuid
+        muted = False
+        try:
+            muted = ack.is_file() and ack.stat().st_mtime >= mtime
+        except OSError:
+            pass
         pane = live.get(uuid.lower()) or live.get(uuid) or ""
         live_here = bool(pane)
         if not pane and cwd:
@@ -349,15 +363,14 @@ class GrokSessionsSource(Source):
         ended = state in (SUCCESS, ATTENTION)
         if ended and (now - mtime) < self.dwell:
             state, ended = WORKING, False
+        if muted and ended:
+            state = IDLE
         oneshot = kind == "headless"
         if oneshot and state != WORKING:
             # A finished one-shot is not a key. Live ones are visibility only.
             return None
-        if live_here and state in (SUCCESS, IDLE):
-            # The TUI is still in a pane even if the log went quiet.
-            # Dropping it after `stale` is how live X sessions vanished
-            # from an 8-key deck (G, 2026-09-11).
-            state = WORKING
+        # Presence keeps a quiet live session on the deck (stale gate above),
+        # but does not turn an idle prompt into "working".
         title = str(info.get("generated_title") or info.get("session_summary")
                     or "")
         info_pane = self.tmux.info(pane) if pane else None
@@ -396,6 +409,7 @@ class GrokSessionsSource(Source):
             sublabel=sub,
             state=state,
             updated=mtime,
+            flash=False if state == ATTENTION and now - mtime > self.flash_for else None,
             priority=-10 if oneshot else int(min(rate, 1_000_000)),
             group=self.group,
             meta={"project": cwd, "session": uuid,

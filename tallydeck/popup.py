@@ -154,7 +154,8 @@ class Viewport:
         return True
 
 
-def choose(content, actions: str, *, console=None, gone=None, timeout=300, viewport=None):
+def choose(content, actions: str, *, console=None, gone=None, timeout=300, viewport=None,
+           valid_keys=None):
     """Scroll/resize until an action key; terminal query replies never act."""
     import termios, tty
     c = console or Console(theme=THEME, color_system='truecolor')
@@ -163,6 +164,8 @@ def choose(content, actions: str, *, console=None, gone=None, timeout=300, viewp
     deadline = time.monotonic()+timeout
     try:
         tty.setcbreak(fd)
+        c.file.write('\033[?2004h\033[?25l')
+        c.file.flush()
         rendered = content(c.width)
         v.draw(rendered, actions)
         size = (c.width, c.height)
@@ -174,20 +177,44 @@ def choose(content, actions: str, *, console=None, gone=None, timeout=300, viewp
                 rendered = content(c.width); v.draw(rendered, actions)
             if not select.select([fd], [], [], .2)[0]:
                 continue
-            key = os.read(fd, 1).decode('utf-8', 'ignore')
+            raw = os.read(fd, 1)
+            if not raw:
+                return ''
+            key = raw.decode('utf-8', 'ignore')
+            if not key:
+                continue
             if key == '\x1b':
                 while select.select([fd], [], [], .025)[0]:
                     key += os.read(fd, 1).decode('utf-8', 'ignore')
                     if len(key) >= 3 and ('@' <= key[-1] <= '~') or len(key) > 64:
                         break
                 key = {'\x1bOA':'\x1b[A', '\x1bOB':'\x1b[B', '\x1bOH':'\x1b[H', '\x1bOF':'\x1b[F'}.get(key, key)
+                if key == '\x1b[200~':
+                    # Pasted prose is not a sequence of menu commands. In
+                    # particular an 'x' inside a paste must never park a job.
+                    tail = b''
+                    while time.monotonic() < deadline:
+                        if gone and gone():
+                            return ''
+                        if select.select([fd], [], [], .2)[0]:
+                            part = os.read(fd, 1)
+                            if not part:
+                                return ''
+                            tail = (tail + part)[-6:]
+                            if tail == b'\x1b[201~':
+                                break
+                    continue
                 if key.startswith('\x1b[') and not v.scroll(key):
                     continue
                 if key != '\x1b':
                     v.draw(rendered, actions); continue
             if v.scroll(key):
                 v.draw(rendered, actions); continue
+            if valid_keys is not None and key not in valid_keys:
+                continue
             return key
         return ''
     finally:
+        c.file.write('\033[?2004l\033[?25h')
+        c.file.flush()
         termios.tcsetattr(fd, termios.TCSADRAIN, old)

@@ -219,6 +219,9 @@ class CodexSessionsSource(Source):
             mtime, size = st.st_mtime, st.st_size
             meta = _meta(fp)
             uuid = str(meta.get("session_id") or fp.stem[-36:])
+            from ..park import is_parked
+            if is_parked(uuid=uuid):
+                continue
             is_exec = str(meta.get("originator", "")).endswith("exec") \
                 or meta.get("source") == "exec"
             if is_exec and not self.include_exec:
