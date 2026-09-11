@@ -38,11 +38,23 @@ def state_dir():
     return os.path.join(home, ".tallydeck")
 
 
+def _pick(d, *keys):
+    for k in keys:
+        v = d.get(k)
+        if v:
+            return v
+    return ""
+
+
 try:
     d = json.load(sys.stdin)
-    sid = (d.get("session_id") or "")[:8]
-    kind = str(d.get("notification_type") or "")
-    msg = " ".join((d.get("message") or "").split())
+    # Grok's payload is camelCase (sessionId, notificationType); Claude's is
+    # snake_case. Accept both so a Grok Notification is not classified by
+    # message text as a Claude permission prompt.
+    sid_full = str(_pick(d, "session_id", "sessionId") or "")
+    sid = sid_full[:8]
+    kind = str(_pick(d, "notification_type", "notificationType") or "")
+    msg = " ".join(str(_pick(d, "message") or "").split())
     if not kind:
         # Older Claude Code: classify by the message text instead.
         low = msg.lower()
@@ -63,7 +75,6 @@ try:
         home = os.environ.get("HOME", "")
         grok = bool(os.environ.get("GROK_AGENT")
                     or os.environ.get("GROK_SESSION_ID"))
-        sid_full = str(d.get("session_id") or "")
         if not grok and sid_full:
             # Grok inherits Claude Code's Notification hook via compat. A
             # Grok session id lives under ~/.grok/sessions; labelling it as
@@ -76,6 +87,7 @@ try:
                         grok = True
                         break
                     dirnames[:] = [n for n in dirnames if n != "terminal"]
+        grok_title = ""
         if grok:
             acct = "X"
             kind_headless = False
@@ -86,12 +98,17 @@ try:
                         import json as _json
                         info = _json.loads(open(os.path.join(dirpath, "summary.json")).read())
                         kind_headless = str(info.get("session_kind") or "") == "headless"
+                        grok_title = str(info.get("generated_title")
+                                         or info.get("session_summary") or "")
                         break
             except Exception:
                 kind_headless = False
-            # Nobody can answer a headless permission prompt. Raising it as
-            # blocked is how a scoring/fetch job shouted on the deck.
-            if kind_headless and kind == "permission_prompt":
+            # Grok walks a permission_prompt phase on every tool call even
+            # with always-approve. The deck cannot click that TUI dialog, and
+            # pressing the key used to resume Claude against a Grok uuid —
+            # a dead "openclaw / Tool permission requested" overlay. Headless
+            # jobs have nobody to answer anything.
+            if kind == "permission_prompt" or kind_headless:
                 state = ""
         else:
             # Second account = a session running under its own CLAUDE_CONFIG_DIR.
@@ -116,15 +133,17 @@ try:
                 label, _, pane = out.partition("|")
             except Exception:
                 label = pane = ""
+        if not state:
+            sys.exit(0)
         msg = msg or "needs input"
         p = os.path.join(state_dir(), "signals")
         os.makedirs(p, exist_ok=True)
         with open(f"{p}/ask-{sid}.json", "w") as fh:
-            json.dump({"label": label or os.path.basename(cwd) or ("grok" if grok else "claude"),
+            json.dump({"label": label or (grok_title[:24] if grok else "") or os.path.basename(cwd) or ("grok" if grok else "claude"),
                        "state": state, "sublabel": msg[:40],
                        "detail": msg, "priority": prio, "ttl": 1800,
                        "updated": time.time(),
-                       "meta": {"session": d.get("session_id") or "",
+                       "meta": {"session": sid_full,
                                 "project": cwd, "tmux": pane,
                                 "account": acct, "kind": kind,
                                 **({"harness": "grok"} if grok else {})}}, fh)

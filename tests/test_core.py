@@ -884,6 +884,36 @@ def test_notification_hook_raises_only_for_real_asks(tmp_path):
     assert not (tmp_path / "signals" / "ask-22222222.json").exists()
 
 
+def test_grok_permission_prompt_does_not_raise_a_deck_key(tmp_path):
+    """Grok walks permission_prompt on every tool call even with
+    always-approve. Raising BLOCKED put a dead 'openclaw / Tool permission
+    requested' key at top-left; the popup cannot click Grok's TUI dialog."""
+    import subprocess, sys, os
+    from pathlib import Path
+    hook = Path(__file__).resolve().parent.parent / "contrib" / "tally-hook-notify"
+    env = dict(os.environ, TALLYDECK_STATE=str(tmp_path), GROK_AGENT="1")
+    env.pop("TMUX", None)
+    subprocess.run([sys.executable, str(hook)], input=json.dumps(
+        {"sessionId": "01a09258-1b58-78e3-87a9-35f0f2d65318",
+         "cwd": "/home/openclaw", "notificationType": "permission_prompt",
+         "message": "Tool permission requested"}),
+        text=True, env=env, check=True, timeout=10)
+    assert not list((tmp_path / "signals").glob("*.json")) \
+        if (tmp_path / "signals").exists() else True
+    # Claude camelCase still raises, and clear accepts sessionId.
+    env.pop("GROK_AGENT", None)
+    subprocess.run([sys.executable, str(hook)], input=json.dumps(
+        {"sessionId": "66666666-f", "cwd": "/tmp/p",
+         "notificationType": "permission_prompt",
+         "message": "Tool permission requested"}),
+        text=True, env=env, check=True, timeout=10)
+    assert (tmp_path / "signals" / "ask-66666666.json").is_file()
+    clear = hook.parent / "tally-hook-clear"
+    subprocess.run([sys.executable, str(clear)], input=json.dumps(
+        {"sessionId": "66666666-f"}), text=True, env=env, check=True, timeout=10)
+    assert not (tmp_path / "signals" / "ask-66666666.json").exists()
+
+
 def test_brief_shows_the_ask_without_a_log(tmp_path):
     from tallydeck.brief import build
     out = build("", "", label="Aurora", roots=[tmp_path], state="attention",

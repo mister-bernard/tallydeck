@@ -57,13 +57,20 @@ case "$SIGID" in
   cx/*)
     printf -v RESUME '%q resume --dangerously-bypass-approvals-and-sandbox %q; exec bash -l' "${CODEX_BIN:-codex}" "$UUID" ;;
   gk/*|hunt/*)
+    GROK=1 ;;
+esac
+# Hook-raised ask-* keys carry the session uuid, not gk/<uuid>. Account X
+# is Grok; resuming those as Claude opened a dead "openclaw" overlay with
+# nothing to type into.
+[ "$ACCT" = "X" ] && GROK=1
+if [ "${GROK:-0}" = 1 ]; then
     # Grok resume is cwd-sensitive (sessions are grouped by encoded cwd) and
     # must --always-approve or the resurrected TUI parks on a permission
     # prompt — the blank-window failure this branch exists to close.
     GROK_BIN="${GROK_BIN:-$HOME/.local/bin/grok}"
     printf -v RESUME 'cd %q && env HOME=%q %q --always-approve --resume %q; exec bash -l' \
-      "${PROJ:-$HOME}" "$HOME" "$GROK_BIN" "$UUID" ;;
-esac
+      "${PROJ:-$HOME}" "$HOME" "$GROK_BIN" "$UUID"
+fi
 
 # Terminals answer queries (the DA1 reply "^[[?1;2c") and those bytes arrive
 # as INPUT — drain before the menu read, or they dismiss the router; drain
