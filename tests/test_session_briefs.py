@@ -75,6 +75,7 @@ def test_giant_record_question_at_end_is_first_and_complete(tmp_path, kind):
     ('Is it healthy? Yes, all checks pass.', False),
     ('Which environment should I deploy to?', True),
     ('```sh\necho "Should I deploy?"\n```', False),
+    ('waiting for your next prompt', False),
 ])
 def test_decision_extraction(text, expected):
     assert bool(decision_text(text)) is expected

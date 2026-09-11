@@ -109,6 +109,27 @@ def _summary(path: Path) -> dict:
     return d if isinstance(d, dict) else {}
 
 
+def _child_activity(sess: Path) -> tuple[int, int]:
+    """(n_children, n_still_running) from Grok's subagents/ metadata."""
+    sub = sess / "subagents"
+    n = running = 0
+    if not sub.is_dir():
+        return 0, 0
+    for meta in sub.glob("*/meta.json"):
+        try:
+            d = json.loads(meta.read_text())
+        except (OSError, ValueError):
+            continue
+        n += 1
+        if d.get("completed_at"):
+            continue
+        st = str(d.get("status") or "").lower()
+        if st in ("completed", "failed", "cancelled", "done"):
+            continue
+        running += 1
+    return n, running
+
+
 def _cwd_from_group(name: str) -> str:
     try:
         return unquote(name)
@@ -198,9 +219,15 @@ class GrokSessionsSource(Source):
         log_p = sess / "updates.jsonl"
         info = _summary(summary_p)
         kind = str(info.get("session_kind") or "")
+        if kind == "subagent":
+            # Child work is rolled into the parent tile, not a second key.
+            return None
         if kind == "headless" and not self.include_headless:
             return None
+        from ..park import is_parked
         uuid = str((info.get("info") or {}).get("id") or sess.name)
+        if is_parked(uuid=uuid):
+            return None
         cwd = str((info.get("info") or {}).get("cwd")
                   or _cwd_from_group(group))
         try:
@@ -245,8 +272,16 @@ class GrokSessionsSource(Source):
         sub = _age_str(now - mtime)
         if rate >= 20:
             sub += f" · {rate * 60 / 1024:.0f}k/m"
+        n_kids, n_run = _child_activity(sess)
+        if n_run and state in (SUCCESS, IDLE):
+            state = WORKING
         if state == SUCCESS:
             sub = f"done · {_age_str(now - mtime)}"
+        if n_run:
+            extra = f"{n_run} running"
+            sub = extra if not sub else f"{extra} · {sub}"
+        elif n_kids and state == SUCCESS:
+            sub = f"{n_kids} agents done · " + sub if sub else f"{n_kids} agents done"
         if state == ATTENTION and last_text:
             import re as _re
             sub = _re.sub(r"[*_`#]+", "", last_text)[:280]

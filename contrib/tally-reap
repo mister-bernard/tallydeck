@@ -166,7 +166,7 @@ def is_agent(pid: int) -> bool:
         cmd = open(f"/proc/{pid}/cmdline", "rb").read().replace(b"\0", b" ").decode("utf8", "replace")
     except OSError:
         return False
-    return "/claude" in cmd or "/codex" in cmd
+    return "/claude" in cmd or "/codex" in cmd or "/grok" in cmd or cmd.rstrip().endswith(" grok")
 
 
 def fd_uuid(pid: int) -> str:

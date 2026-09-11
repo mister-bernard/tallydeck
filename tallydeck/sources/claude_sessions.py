@@ -34,13 +34,63 @@ import subprocess
 import time
 from pathlib import Path
 
-from ..signal import Signal, WORKING, ATTENTION, SUCCESS, IDLE
+from dataclasses import replace
+
+from ..signal import Signal, WORKING, ATTENTION, SUCCESS, IDLE, BLOCKED, _STATE_WEIGHT
 from ..paths import signals_dir, acked_dir, contrib_bin
 from ..titles import (TitleSync, claude_ai_title, registry_target,
                       resolve_label, tmux_for)
 from .base import Source
 
 TAIL_BYTES = 65536
+
+
+def _rollup_by_tmux(signals: list[Signal]) -> list[Signal]:
+    """One tile per chosen tmux session.
+
+    Teammates, watchers and extra panes of a slug like subnetbridge stay
+    visible as 'N running' on the parent instead of each taking a key.
+    Human `main*` sessions stay per-pane — those are separate conversations.
+    """
+    from ..titles import _AUTO_SESSION
+    groups: dict[str, list[Signal]] = {}
+    passthrough: list[Signal] = []
+    for s in signals:
+        pane = str((s.meta or {}).get("tmux") or "")
+        sess = pane.split(":")[0] if pane else ""
+        if (not sess or _AUTO_SESSION.match(sess)
+                or (s.meta or {}).get("oneshot")):
+            passthrough.append(s)
+            continue
+        groups.setdefault(sess, []).append(s)
+    out = list(passthrough)
+    for _sess, members in groups.items():
+        if len(members) == 1:
+            out.append(members[0])
+            continue
+        hottest = max(members, key=lambda m: (
+            _STATE_WEIGHT.get(m.state, 0), m.updated))
+        # Keep the session's own name (window 1 / matching label), but the
+        # hottest child's state — a paused coordinator with live watchers
+        # must still read as running.
+        named = next((m for m in members
+                      if (m.label or "").lower() == _sess.lower()
+                      or ((m.meta or {}).get("tmux") or "").startswith(_sess + ":1.")),
+                     hottest)
+        primary = named
+        if _STATE_WEIGHT.get(hottest.state, 0) > _STATE_WEIGHT.get(primary.state, 0):
+            primary = replace(primary, state=hottest.state)
+        n_run = sum(1 for m in members if m.state == WORKING)
+        if n_run and primary.state in (SUCCESS, IDLE):
+            primary = replace(primary, state=WORKING)
+        extra = f"{len(members)} panes"
+        if n_run:
+            extra += f" · {n_run} running"
+        sub = extra if not primary.sublabel else f"{extra} · {primary.sublabel}"
+        meta = dict(primary.meta or {})
+        meta["rolled"] = len(members)
+        out.append(replace(primary, sublabel=sub, meta=meta))
+    return out
 MAX_LINES = 200
 
 
@@ -267,6 +317,9 @@ class ClaudeSessionsSource(Source):
                     continue
                 if now - mtime > self.stale:
                     continue
+                from ..park import is_parked
+                if is_parked(uuid=fp.stem):
+                    continue
                 lines = _tail_lines(fp)
                 exact = self._exact_pane(fp.stem)
                 oneshot = bool(exact) and \
@@ -397,7 +450,7 @@ class ClaudeSessionsSource(Source):
                 else ("proj", s.meta["project"])
             if k not in best or s.updated > best[k].updated:
                 best[k] = s
-        return keep + list(best.values())
+        return _rollup_by_tmux(keep + list(best.values()))
 
 
     # ── tmux resolution ──────────────────────────────────────────────────────

@@ -21,6 +21,9 @@ import time
 from pathlib import Path
 
 from .paths import cache_dir
+import re as _re
+
+COURTESY_IDLE = _re.compile(r"waiting for your next prompt", _re.I)
 
 CACHE_DIR = cache_dir()
 
@@ -173,25 +176,29 @@ def document(session: str, project: str, label: str = "",
         texts = _last_texts(fp) if fp else []
     tool = pending_ask(fp, kind) if fp and kind != "grok" else ""
     # A current tool prompt supersedes prose. Earlier messages are support only.
-    decision = ask or tool or (decision_text(texts[0]) if texts else "")
+    # Never treat TUI chrome ("waiting for your next prompt") as an ask.
+    raw_ask = ask or tool or (decision_text(texts[0]) if texts else "")
+    decision = "" if (raw_ask and COURTESY_IDLE.search(raw_ask)
+                      and len(raw_ask.strip()) < 80) else raw_ask
     sections = []
     if decision:
-        # A supplied brief on a key that is NOT asking anything (a background
-        # fleet's roster) is a status report, and heading it "THE ASK" would
-        # invent a question. Anything derived from a transcript, and every
-        # alarm state, keeps the original heading.
-        sections.append((
-            "THE ASK · answer in the session"
-            if not ask or state in ("attention", "blocked") else "STATUS",
-            decision))
+        # A supplied brief of numbered next steps is the reason this popup
+        # exists. A transcript-derived ask still uses THE ASK. A status dump
+        # (fleet roster, hunt counts) stays STATUS so we don't invent a question.
+        if ask and (decision.strip().upper().startswith("NEXT STEPS")
+                    or _re.match(r"\s*\d+[.)]\s", decision)):
+            heading = "NEXT STEPS · 1-9 picks · i types a reply"
+        elif not ask or state in ("attention", "blocked"):
+            heading = "THE ASK · answer in the session"
+        else:
+            heading = "STATUS"
+        sections.append((heading, decision))
         support = decision_support(texts[0], decision) if texts and not tool and not ask else ""
         if support:
             sections.append(("CHOICES / RECOMMENDATION · from the session", support))
     elif state in ("attention", "blocked"):
         sections.append(("ATTENTION", "No concrete decision found in the latest message. "
                          "This flag may have been raised deliberately; open the session to inspect it."))
-    else:
-        sections.append(("STATUS", "No decision requested in the latest message."))
     if texts:
         # A complete opening paragraph is an extract, never an invented summary.
         import re
@@ -201,7 +208,7 @@ def document(session: str, project: str, label: str = "",
         intro = "\n\n".join(candidates[:2])
         if intro and intro != decision and intro != texts[0]:
             sections.append(("SUMMARY · excerpt from latest message", intro))
-        sections.append(("WHERE IT LEFT OFF · full latest message", texts[0]))
+        sections.append(("WHAT HAPPENED · full latest message", texts[0]))
         for txt in texts[1:]: sections.append(("EARLIER · supporting context", txt))
     elif not ask and not tool:
         sections.append(("CONTEXT", "No recent assistant messages found."))

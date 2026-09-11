@@ -390,6 +390,20 @@ def cmd_passthrough(name: str):
     return run
 
 
+def cmd_park(cfg, args):
+    """Suspend a live session without deleting it.
+
+    Transcript stays on disk. Resume command is written to
+    ~/.tallydeck/parked/ and the reap ledger. The tmux session is killed so
+    the key leaves the deck and the RAM comes back. Hourly `tally reap`
+    already does this for spawned sessions idle ≥3h; this is the on-demand
+    version from a key press (`x`)."""
+    from .park import park
+    rec = park(slug=args.slug, uuid=args.uuid, cwd=args.cwd,
+               harness=args.harness, account=args.account, target=args.target)
+    print(rec.get("resume") or f"parked {args.slug or args.uuid}")
+
+
 def cmd_clear(cfg, args):
     if not safe_id(args.id):
         sys.exit(f"bad signal id {args.id!r}")
@@ -465,6 +479,14 @@ def _parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("clear", help="remove a raised signal")
     sp.add_argument("id")
 
+    sp = sub.add_parser("park", help="suspend a session: save resume id, free RAM, drop the key")
+    sp.add_argument("slug", nargs="?", default="")
+    sp.add_argument("--uuid", default="")
+    sp.add_argument("--cwd", default="")
+    sp.add_argument("--harness", default="")
+    sp.add_argument("--account", default="")
+    sp.add_argument("--target", default="")
+
     sp = sub.add_parser("hush", help="pause phone notifications (2h, 45m, or open-ended)")
     sp.add_argument("duration", nargs="?", default="")
     sp.add_argument("--status", action="store_true")
@@ -521,7 +543,7 @@ def main(argv: list[str] | None = None) -> None:
     {
         "serve": cmd_serve, "ls": cmd_ls, "term": cmd_term,
         "png": cmd_png, "deck": cmd_deck,
-        "raise": cmd_raise, "clear": cmd_clear, "brief": cmd_brief,
+        "raise": cmd_raise, "clear": cmd_clear, "park": cmd_park, "brief": cmd_brief,
         "wait": cmd_wait, "hush": cmd_hush, "unhush": cmd_unhush,
         "spawn": cmd_passthrough("tally-spawn"), "offer": cmd_passthrough("tally-offer"),
         "reap": cmd_passthrough("tally-reap"), "close": cmd_passthrough("tally-close"),

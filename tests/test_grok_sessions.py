@@ -107,6 +107,49 @@ def test_grok_key_wears_its_tally_bar_on_the_bottom():
     assert not near(gk.getpixel((1, px // 2)), blue)
 
 
+def test_waiting_for_next_prompt_is_not_a_decision():
+    from tallydeck.decisions import decision_text
+    assert not decision_text("waiting for your next prompt")
+    assert not decision_text("I'll wait here.\n\nwaiting for your next prompt")
+    assert decision_text("Awaiting your approval to continue.")
+
+
+def test_subagent_sessions_are_not_their_own_keys(tmp_path):
+    root = tmp_path / "sessions" / "%2Ftmp%2Fhunt"
+    parent = root / "01parent00-0000-7000-8000-000000000001"
+    child = root / "01child000-0000-7000-8000-000000000002"
+    parent.mkdir(parents=True)
+    child.mkdir()
+    (parent / "summary.json").write_text(json.dumps({
+        "info": {"id": parent.name, "cwd": "/tmp/hunt"},
+        "session_kind": "interactive",
+        "generated_title": "Hunt",
+        "last_active_at": "2099-01-01T00:00:00Z",
+    }))
+    (parent / "updates.jsonl").write_text(
+        json.dumps({"params": {"update": {"sessionUpdate": "agent_message_chunk"}}}) + "\n")
+    (parent / "subagents" / child.name).mkdir(parents=True)
+    (parent / "subagents" / child.name / "meta.json").write_text(json.dumps({
+        "subagent_id": child.name,
+        "parent_session_id": parent.name,
+        "status": "running",
+        "description": "watcher",
+    }))
+    (child / "summary.json").write_text(json.dumps({
+        "info": {"id": child.name, "cwd": "/tmp/hunt"},
+        "session_kind": "subagent",
+        "generated_title": "watcher",
+        "last_active_at": "2099-01-01T00:00:00Z",
+    }))
+    (child / "updates.jsonl").write_text("{}\n")
+    src = GrokSessionsSource(root=str(tmp_path / "sessions"),
+                             stale=10**12, dwell=0, sync_titles=False)
+    got = src.poll()
+    assert [s.meta["session"] for s in got] == [parent.name]
+    assert got[0].state == "working"
+    assert "running" in got[0].sublabel
+
+
 def test_brief_reads_a_grok_transcript(tmp_path):
     from tallydeck.brief import document
     root = tmp_path / "sessions" / "%2Ftmp%2Fhunt"

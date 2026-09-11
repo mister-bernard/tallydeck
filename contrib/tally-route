@@ -90,7 +90,7 @@ TAKEN_DIR="${TALLYDECK_STATE:-$HOME/.tallydeck}/route-taken"
 TAKEN="$TAKEN_DIR/$(printf '%s' "${SIGID:-x}" | tr '/' '_')"
 ACTIONS="space done (mute) · q / Esc dismiss"
 if [ -n "$LIVE" ] || [ -n "$UUID" ]; then
-  ACTIONS="i type a reply · Enter open session · t tab here · s split here · l text me links · $ACTIONS"
+  ACTIONS="1-9 next step · i type a reply · Enter open · t tab · x close (park) · $ACTIONS"
 fi
 ACTION_FILE=$(mktemp)
 trap 'rm -f "$ACTION_FILE"' EXIT
@@ -107,6 +107,44 @@ mkdir -p "$TAKEN_DIR"
 
 SESS="${TARGET%%:*}"
 case "$key" in
+  [1-9])  # pick a numbered next step from the brief and send it to the pane
+    n=$key
+    step=$(printf '%s\n' "$ASK" | sed -n "s/^[[:space:]]*${n}[.)][[:space:]]*//p" | head -1)
+    if [ -z "$step" ]; then
+      echo "  no option $n in the next-steps list"
+      sleep 1.4
+      exit 0
+    fi
+    DEST="$TARGET"
+    if [ -z "$DEST" ] && [ -n "$UUID" ]; then
+      ensure_resurrected
+      DEST="${NAME}:1.1"
+    fi
+    if [ -z "$DEST" ]; then
+      echo "  no live pane to send that to"
+      sleep 1.4
+      exit 0
+    fi
+    T send-keys -t "$DEST" -l -- "Do this next: $step"
+    T send-keys -t "$DEST" Enter
+    echo "  sent option $n."
+    sleep 0.6
+    exit 0 ;;
+  x|X)  # CLOSE: park the session — save resume id, free RAM, drop the key
+    echo
+    echo "  parking ${LABEL:-session} — saved, resumable, dropping from the deck"
+    /usr/bin/python3 - "$SESS" "$UUID" "$PROJ" "$ACCT" "$SIGID" "$TARGET" <<'PY'
+import os, sys
+sys.path.insert(0, os.environ.get("TALLYDECK_HOME", os.path.expanduser("~/projects/tallydeck")))
+from tallydeck.park import park
+slug, uuid, cwd, acct, sigid, target = sys.argv[1:7]
+harness = "grok" if (sigid.startswith("gk/") or sigid.startswith("hunt/") or acct == "X") else (
+    "codex" if sigid.startswith("cx/") or acct in ("O", "O2") else "claude")
+rec = park(slug=slug, uuid=uuid, cwd=cwd, harness=harness, account=acct, target=target)
+print("  resume:", rec.get("resume") or "(no uuid — reported only)")
+PY
+    sleep 1.6
+    exit 0 ;;
   i|I|/)  # TYPE A REPLY into the live pane so a flashing key is steerable
           # from this window, not only after attaching to the TUI.
     if [ -z "$LIVE" ] && [ -z "$TARGET" ]; then

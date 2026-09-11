@@ -4,10 +4,12 @@ import re
 # Optional offers after a report do not block work. Explicit approvals win first.
 COURTESY = re.compile(
     r"^(?:anything\b.*\byou want me to|(?:is there )?anything else\b|"
-    r"(?:let me know|feel free)\b|(?:do you )?want me to (?:also|just)\b)", re.I)
+    r"(?:let me know|feel free)\b|(?:do you )?want me to (?:also|just)\b|"
+    r"waiting for your next prompt)", re.I)
 DIRECT = re.compile(
     r"\b(?:should i|shall i|please (?:confirm|approve|advise|choose|pick)|"
-    r"your call(?=\s*[:?—-])|awaiting your|waiting (?:on|for) your\b|"
+    r"your call(?=\s*[:?—-])|awaiting your|"
+    r"waiting (?:on|for) your (?:decision|approval|input|answer|go|ok|sign)|"
     r"need(?:s)? your (?:decision|approval|input|answer|go|ok|sign)|"
     r"blocked on you|go/no[- ]go|(?:decision|approval|sign[- ]?off) needed|"
     r"need(?:s)? (?:a|your) (?:decision|approval))\b", re.I)
