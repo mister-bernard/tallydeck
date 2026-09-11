@@ -55,8 +55,59 @@ def recent_texts(path: Path, kind: str, want=2):
     return texts
 
 
+def is_codex_user_input(name: str) -> bool:
+    return str(name or "").split(".")[-1] in (
+        "request_user_input", "request_user_input_async")
+
+
+def codex_ask_answered(output) -> bool:
+    """True when the user actually answered, not when the TUI merely queued it.
+
+    Live Codex writes `{"accepted":true}` the instant an async ask is shown,
+    then keeps running tools. That is not an answer.
+    """
+    if output is None:
+        return False
+    raw = output if isinstance(output, str) else json.dumps(output)
+    s = raw.strip()
+    if not s or s in ("{}", "null"):
+        return False
+    try:
+        d = json.loads(s)
+    except ValueError:
+        return True
+    if not isinstance(d, dict):
+        return True
+    if set(d.keys()) <= {"accepted"} and d.get("accepted") is True:
+        return False
+    return True
+
+
+def format_codex_ask(arguments) -> str:
+    raw = arguments if isinstance(arguments, str) else json.dumps(arguments or {})
+    try:
+        args = json.loads(raw) if isinstance(raw, str) else (arguments or {})
+    except ValueError:
+        return str(raw)
+    if not isinstance(args, dict):
+        return str(raw)
+    parts = ["**Answer in the session**"]
+    for q in args.get("questions") or []:
+        if not isinstance(q, dict):
+            parts.append(str(q))
+            continue
+        parts.append(str(q.get("question") or q.get("title") or ""))
+        for o in q.get("options") or []:
+            if isinstance(o, dict):
+                parts.append(f"- {o.get('label', '')}: {o.get('description', '')}".rstrip(": "))
+            else:
+                parts.append(f"- {o}")
+    return "\n\n".join(p for p in parts if p and p != "- ")
+
+
 def pending_ask(path: Path, kind: str):
     """Only the current blocking tool, never a historical unanswered-looking tool."""
+    outputs: dict = {}
     for rec in records_backwards(path):
         if kind == 'claude':
             if rec.get('type') == 'user': return ''
@@ -76,17 +127,19 @@ def pending_ask(path: Path, kind: str):
             return ''
         else:
             p = rec.get('payload') or {}
-            if rec.get('type') == 'event_msg' and p.get('type') in ('task_complete', 'task_started', 'user_message'): return ''
+            if rec.get('type') == 'event_msg' and p.get('type') == 'turn_aborted':
+                return ''
+            if rec.get('type') == 'response_item' and p.get('type') == 'message' \
+                    and p.get('role') == 'user':
+                return ''
             if rec.get('type') == 'response_item' and p.get('type') == 'function_call_output':
-                return ''
+                outputs[str(p.get('call_id') or '')] = p.get('output')
+                continue
             if rec.get('type') == 'response_item' and p.get('type') == 'function_call':
-                if 'request_user_input' in p.get('name', ''):
-                    raw = p.get('arguments') or '{}'
-                    try: args = json.loads(raw)
-                    except ValueError: return str(raw)
-                    return '**Answer in the session**\n\n' + '\n\n'.join(
-                        str(q.get('question') or q.get('title') or '') + '\n' + '\n'.join(
-                            '- '+(str(o.get('label', '')) + ': '+str(o.get('description','')) if isinstance(o,dict) else str(o))
-                            for o in q.get('options', [])) for q in args.get('questions', []))
-                return ''
+                if is_codex_user_input(p.get('name', '')):
+                    cid = str(p.get('call_id') or p.get('id') or '')
+                    if cid in outputs and codex_ask_answered(outputs[cid]):
+                        return ''
+                    return format_codex_ask(p.get('arguments') or '{}')
+                continue
     return ''

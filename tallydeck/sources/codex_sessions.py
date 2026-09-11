@@ -35,7 +35,10 @@ from ..signal import Signal, WORKING, ATTENTION, SUCCESS, IDLE
 from ..paths import contrib_bin
 from ..titles import CodexState, TitleSync, resolve_label, tmux_for
 from .base import Source
+from ..decisions import decision_text
 from .claude_sessions import _tail_lines, _load, asks_question, _age_str
+from ..transcripts import (is_codex_user_input, codex_ask_answered,
+                           format_codex_ask, pending_ask)
 
 # Bookkeeping: true of the log, silent about whose move it is.
 _SKIP_EVENTS = ("token_count", "item_started", "item_updated",
@@ -43,8 +46,18 @@ _SKIP_EVENTS = ("token_count", "item_started", "item_updated",
 
 
 def classify(lines: list[str]) -> tuple[str, str]:
-    """(state, last agent text) from the tail of a rollout log."""
-    for ln in reversed(lines):
+    """(state, last agent text) from the tail of a rollout log.
+
+    `request_user_input_async` is not a tail event. Codex shows the question
+    in the TUI, writes `{"accepted":true}` immediately, and keeps running
+    tools. Walking newest-first then treated those later tools as WORKING
+    and never flashed the deck.
+    """
+    pending = ""
+    pending_id = ""
+    last = IDLE
+    last_text = ""
+    for ln in lines:
         rec = _load(ln)
         if rec is None:
             continue
@@ -56,17 +69,40 @@ def classify(lines: list[str]) -> tuple[str, str]:
                 continue
             if pt == "task_complete":
                 text = str(p.get("last_agent_message") or "")
-                return (ATTENTION if asks_question(text) else SUCCESS), text
+                last_text = pending or text
+                last = ATTENTION if (pending or asks_question(text)) else SUCCESS
+                continue
             if pt == "turn_aborted":
-                return IDLE, ""
-            return WORKING, ""            # task_started, item_completed, …
+                pending = pending_id = ""
+                last, last_text = IDLE, ""
+                continue
+            if not pending:
+                last = WORKING
+            continue
         if t == "response_item":
-            if p.get("type") == "function_call" and p.get("name", "").split(".")[-1] in (
-                    "request_user_input", "request_user_input_async"):
-                return ATTENTION, str(p.get("arguments") or "")
-            return WORKING, ""            # a message/tool call mid-turn
+            pt = p.get("type")
+            if pt == "function_call" and is_codex_user_input(p.get("name", "")):
+                pending = str(p.get("arguments") or "")
+                pending_id = str(p.get("call_id") or p.get("id") or "")
+                last, last_text = ATTENTION, pending
+                continue
+            if pt == "function_call_output" and pending \
+                    and str(p.get("call_id") or "") == pending_id \
+                    and codex_ask_answered(p.get("output")):
+                pending = pending_id = ""
+                last = WORKING
+                continue
+            if pt == "message" and p.get("role") == "user":
+                pending = pending_id = ""
+                last = WORKING
+                continue
+            if not pending:
+                last = WORKING
+            continue
         # session_meta, turn_context, world_state, token_usage_record: skip
-    return IDLE, ""
+    if pending:
+        return ATTENTION, pending
+    return last, last_text
 
 
 def _last_agent_text(lines: list[str], limit: int = 300) -> str:
@@ -188,13 +224,21 @@ class CodexSessionsSource(Source):
             if is_exec and not self.include_exec:
                 continue
             lines = _tail_lines(fp)
-            state, _ = classify(lines)
+            state, ask_text = classify(lines)
+            # Codex exec payloads are huge; a 64KB tail can drop an async
+            # ask that is still unanswered. pending_ask walks past those.
+            pa = pending_ask(fp, "codex")
+            if pa:
+                state, ask_text = ATTENTION, pa
             if state == WORKING and (now - mtime) > self.stall:
                 state = IDLE               # "working" with no output = stalled
             ended = state in (ATTENTION, SUCCESS)
-            # Dwell: a task_complete written a second ago may be followed by
-            # the next turn's task_started. Let the log settle first.
-            if ended and (now - mtime) < self.dwell:
+            # Dwell only SUCCESS: a task_complete written a second ago may be
+            # followed by the next turn's task_started. An unanswered
+            # request_user_input_async must flash while tools keep running;
+            # dwelling it back to WORKING was how a Codex ask never lit the
+            # deck (G, 2026-09-11).
+            if state == SUCCESS and (now - mtime) < self.dwell:
                 state, ended = WORKING, False
             if is_exec and state == ATTENTION:
                 state = WORKING            # nobody answers a one-shot
@@ -228,9 +272,18 @@ class CodexSessionsSource(Source):
                 sub += f" · {rate * 60 / 1024:.0f}k/m"
             if state == SUCCESS:
                 sub = f"done · {_age_str(now - mtime)}"
-            snip = _last_agent_text(lines)
+            snip = ""
+            if state == ATTENTION and ask_text:
+                if ask_text.lstrip().startswith("**"):
+                    snip = ask_text
+                elif ask_text.lstrip().startswith("{"):
+                    snip = format_codex_ask(ask_text)
+                else:
+                    snip = decision_text(ask_text) or ask_text
+            if not snip:
+                snip = _last_agent_text(lines)
             if state == ATTENTION and snip:
-                sub = snip[:280]
+                sub = " ".join(snip.split())[:280]
             flash = None
             if state == ATTENTION and (now - mtime) > self.flash_for:
                 flash = False

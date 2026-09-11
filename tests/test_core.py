@@ -1926,6 +1926,36 @@ def test_codex_classify_reads_the_rollout_grammar():
     assert classify([noise])[0] == IDLE
 
 
+def test_codex_async_ask_stays_attention_while_tools_keep_running():
+    """request_user_input_async writes {accepted:true} and Codex continues.
+    That is a shown question, not an answer — the deck must flash."""
+    from tallydeck.sources.codex_sessions import classify
+    ask = json.dumps({"type": "response_item", "payload": {
+        "type": "function_call", "name": "request_user_input_async",
+        "call_id": "c1",
+        "arguments": json.dumps({"questions": [{
+            "title": "Buying in the UK, or prioritizing US/Canada?",
+            "options": ["Buying in the UK", "Prioritize US/Canada"]}]})}})
+    queued = json.dumps({"type": "response_item", "payload": {
+        "type": "function_call_output", "call_id": "c1",
+        "output": '{"accepted":true}'}})
+    tool = json.dumps({"type": "response_item", "payload": {
+        "type": "custom_tool_call", "name": "exec", "call_id": "exec1"}})
+    tool_out = json.dumps({"type": "response_item", "payload": {
+        "type": "function_call_output", "call_id": "exec1",
+        "output": '{"chunk_id":"abc"}'}})
+    user = json.dumps({"type": "response_item", "payload": {
+        "type": "message", "role": "user",
+        "content": [{"type": "input_text", "text": "UK"}]}})
+    started = json.dumps({"type": "event_msg", "payload": {"type": "task_started"}})
+    assert classify([started, ask])[0] == ATTENTION
+    assert classify([started, ask, queued, tool, tool_out])[0] == ATTENTION
+    answered = json.dumps({"type": "response_item", "payload": {
+        "type": "function_call_output", "call_id": "c1", "output": "UK"}})
+    assert classify([started, ask, answered])[0] == WORKING
+    assert classify([started, ask, queued, tool, user])[0] == WORKING
+
+
 def test_codex_source_emits_keys_marked_as_codex(tmp_path):
     """Every Codex key must carry meta.harness — that marker is the ONLY
     thing the left-edge bar keys off, on every surface."""
