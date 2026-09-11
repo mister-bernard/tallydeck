@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tally-spawn <slug> [-c cwd] [-a A|B|1|2|X] [--harness claude|codex|grok] [-p task-file|-] [--force] [--share] ["task text"]
+# tally-spawn <slug> [-c cwd] [-a A|B|1|2|X] [--harness claude|codex|grok] [-p task-file|-] [--force] [--share] [--worktree] ["task text"]
 #
 # Start a piece of work as ITS OWN tmux session, so it gets its own key on the
 # deck the moment its log appears (the session source labels keys by tmux
@@ -7,6 +7,12 @@
 #
 #   tally spawn wires-nhd -c ~/projects/wires "Rebuild the NHD datum, run the suite, push."
 #   printf '%s' "$LONG_TASK" | tally spawn aurora-sim -c ~/aurora -p -
+#
+# --worktree gives the lane its OWN git worktree and branch (lane/<slug>) under
+# ~/.worktrees/<repo>/<slug>, so several lanes can work one repo in parallel
+# instead of being serialised by the claim registry — or worse, each wandering
+# off into a repo of its own. Close it with `tally close <slug>`, which commits,
+# merges back and removes the tree. Use it for BUILD lanes.
 #
 # The calling harness/account is inherited unless overridden. The task is its first prompt.
 # The session is recorded in
@@ -35,7 +41,7 @@ CWD="$HOME"; ACCT=""; HARNESS=""; TASK=""; FORCE="${TALLY_SPAWN_NO_GATE:-0}"
 # Whether -c was given explicitly. An explicit -c is a DECLARATION of the work tree,
 # so it is claimed; the $HOME default is not a declaration and claiming it would let
 # the first default spawn block every later one.
-CWD_EXPLICIT=0; SHARE=0
+CWD_EXPLICIT=0; SHARE=0; WORKTREE=0
 while [ $# -gt 0 ]; do
   case "$1" in -c|-a|--account|--harness|-p)
     [ $# -ge 2 ] || { echo "tally-spawn: $1 needs a value" >&2; exit 2; } ;;
@@ -47,12 +53,54 @@ while [ $# -gt 0 ]; do
     -p) if [ "$2" = "-" ]; then TASK="$(cat)"; else TASK="$(cat "$2")" || exit 2; fi; shift 2 ;;
     --force) FORCE=1; shift ;;
     --share) SHARE=1; shift ;;
+    --worktree) WORKTREE=1; shift ;;
     --*) echo "tally-spawn: unknown option $1" >&2; exit 2 ;;
     *)  TASK="$1"; shift ;;
   esac
 done
 [ -n "$TASK" ] || { echo "tally-spawn: no task given" >&2; exit 2; }
 [ -d "$CWD" ] || { echo "tally-spawn: no such dir $CWD" >&2; exit 2; }
+
+# ── --worktree: parallel lanes in ONE repo ──────────────────────────────────
+# Until now our only isolation was the claim registry, which SERIALISES: one
+# writer per tree, second writer refused. That is correct and it is also why the
+# repo count exploded — a lane that needed to work alongside another had nowhere
+# to go but a new repo, so SubnetBridge ossified into 13 of them (2026-09-11
+# sweep). Worktrees are the missing third option: N writers, one repo, N trees,
+# each on its own branch.
+#
+# The claim is then taken on the WORKTREE path, not the parent repo, so parallel
+# lanes no longer collide — while two lanes handed the same worktree still do.
+# That is the property worth keeping: isolation per tree, not per repo.
+#
+# Learned from dmux (MIT), which makes worktree-per-task its default. We took
+# the model and left the rest; see reference_dmux_hijacks_live_panes.
+if [ "$WORKTREE" = 1 ]; then
+  REPO_ROOT="$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null)" || {
+    echo "tally-spawn: --worktree needs a git repo; $CWD is not in one" >&2; exit 2; }
+  REPO_NAME="$(basename "$REPO_ROOT")"
+  BASE_REF="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  [ -n "$BASE_REF" ] && [ "$BASE_REF" != HEAD ] || BASE_REF="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+  WT_ROOT="${TALLY_WORKTREE_ROOT:-/home/openclaw/.worktrees}/$REPO_NAME"
+  WT_PATH="$WT_ROOT/$SLUG"
+  BRANCH="lane/$SLUG"
+  mkdir -p "$WT_ROOT"
+  if [ -d "$WT_PATH" ]; then
+    # Reusing a lane's tree silently is how two tasks end up sharing a branch.
+    echo "tally-spawn: REFUSED '$SLUG' — worktree already exists at $WT_PATH" >&2
+    echo "  finish or close that lane first:  tally close $SLUG" >&2
+    exit 3
+  fi
+  if git -C "$REPO_ROOT" show-ref --verify --quiet "refs/heads/$BRANCH"; then
+    echo "tally-spawn: REFUSED '$SLUG' — branch $BRANCH already exists" >&2
+    echo "  close the previous lane, or pick another slug." >&2
+    exit 3
+  fi
+  git -C "$REPO_ROOT" worktree add -b "$BRANCH" "$WT_PATH" "$BASE_REF" >&2 || {
+    echo "tally-spawn: worktree add failed" >&2; exit 3; }
+  echo "tally-spawn: lane tree $WT_PATH on $BRANCH (from $BASE_REF)" >&2
+  CWD="$WT_PATH"; CWD_EXPLICIT=1
+fi
 
 # ── Admission control ────────────────────────────────────────────────────────
 # A session is not free. Measured on this box 2026-09-09: 89 resident agent
@@ -246,12 +294,18 @@ if [ -n "$CLAIMED" ]; then
   fi
 fi
 
-python3 - "$STATE/spawned/$NAME.json" "$NAME" "$CWD" "$ACCT" "$TASKF" "$HARNESS" "$TARGET" <<'PY'
+python3 - "$STATE/spawned/$NAME.json" "$NAME" "$CWD" "$ACCT" "$TASKF" "$HARNESS" "$TARGET" \
+         "${REPO_ROOT:-}" "${BRANCH:-}" "${BASE_REF:-}" <<'PY'
 import json, os, sys, time
 from tallydeck.launch import caller_harness
 p, name, cwd, acct, taskf, harness, target = sys.argv[1:8]
+repo_root, branch, base_ref = (sys.argv[8:11] + ["", "", ""])[:3]
+# Worktree lanes record the repo, branch and base they came from — `tally close`
+# cannot merge and clean up a lane whose provenance it has to guess.
+wt = ({"repo_root": repo_root, "branch": branch, "base_ref": base_ref}
+      if repo_root and branch else {})
 json.dump({"slug": name, "target": target, "cwd": cwd, "account": acct, "harness": harness,
-           "task_file": taskf, "at": time.time(),
+           "task_file": taskf, "at": time.time(), **({"worktree": wt} if wt else {}),
            "origin_session": (os.environ.get("CODEX_THREAD_ID", "") if caller_harness(dict(os.environ)) == "codex" else os.environ.get("CLAUDE_SESSION_ID", "") or os.environ.get("CLAUDE_CODE_SESSION_ID", "")),
            "origin_pane": os.environ.get("TMUX_PANE", "")}, open(p, "w"))
 PY

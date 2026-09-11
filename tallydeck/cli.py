@@ -466,7 +466,9 @@ def _parser() -> argparse.ArgumentParser:
             ("offer", "compatibility name for spawn — starts it, asks nothing",
              "tally offer <slug> \"<one-line summary>\" [-c cwd] [-a A|B|O] [--harness claude|codex] [-p file|-] [\"task text\"]"),
             ("reap", "report (and on request reap) idle spawned sessions",
-             "tally reap [--reap] [--idle-hours N] [--include-unspawned] [--json]")):
+             "tally reap [--reap] [--idle-hours N] [--include-unspawned] [--json]"),
+            ("close", "close a --worktree lane: commit, merge back, remove the tree",
+             "tally close <slug> [--abandon] [--force] [--no-commit]")):
         # add_help=False: --help reaches the helper, which prints its real usage
         sp = sub.add_parser(name, help=help_, usage=usage, add_help=False)
         sp.add_argument("rest", nargs=argparse.REMAINDER)
@@ -512,7 +514,7 @@ def main(argv: list[str] | None = None) -> None:
         "raise": cmd_raise, "clear": cmd_clear, "brief": cmd_brief,
         "wait": cmd_wait, "hush": cmd_hush, "unhush": cmd_unhush,
         "spawn": cmd_passthrough("tally-spawn"), "offer": cmd_passthrough("tally-offer"),
-        "reap": cmd_passthrough("tally-reap"),
+        "reap": cmd_passthrough("tally-reap"), "close": cmd_passthrough("tally-close"),
     }[args.cmd](cfg, args)
 
 

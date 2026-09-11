@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# tally-close <slug> [--abandon] [--force] [--no-commit]
+#
+# Close out a worktree lane: commit what it did, merge it back, remove the tree.
+#
+# This is the step we did not have. `tally spawn --worktree` opens a lane; until
+# now nothing closed one, so lanes accumulated — and a lane that is never closed
+# stops looking like a branch and starts looking like a repo. That is literally
+# how SubnetBridge became 13 repos (2026-09-11 sweep). Borrowed from dmux (MIT),
+# which pairs every worktree with a one-step commit → merge → cleanup; we took
+# that idea and nothing else.
+#
+#   --abandon    throw the lane away: remove tree + branch, merge nothing.
+#   --no-commit  merge only what the lane already committed; leave a dirty tree
+#                alone (and refuse, rather than silently dropping the changes).
+#   --force      proceed even though the lane's tmux session is still alive.
+#
+# Deliberately does NOT push. A local merge is reversible; pushing is a separate,
+# gated decision and this tool never makes it for you.
+set -uo pipefail
+
+STATE="${TALLYDECK_STATE:-$(getent passwd "$(id -u)" | cut -d: -f6)/.tallydeck}"
+SOCKET="${TALLY_TMUX_SOCKET:-/tmp/tmux-1000/cc}"
+CLAIM=/home/openclaw/scripts/work-claim.py
+
+usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; }
+case "${1:-}" in ""|-h|--help) usage >&2; exit 2 ;; esac
+SLUG="$1"; shift
+ABANDON=0; FORCE=0; NO_COMMIT=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --abandon)   ABANDON=1; shift ;;
+    --force)     FORCE=1; shift ;;
+    --no-commit) NO_COMMIT=1; shift ;;
+    *) echo "tally-close: unknown option $1" >&2; exit 2 ;;
+  esac
+done
+
+REC="$STATE/spawned/$SLUG.json"
+[ -f "$REC" ] || { echo "tally-close: no spawn record for '$SLUG' ($REC)" >&2; exit 2; }
+
+read -r WT BRANCH BASE REPO < <(python3 - "$REC" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+w = d.get("worktree") or {}
+print(d.get("cwd", ""), w.get("branch", ""), w.get("base_ref", ""), w.get("repo_root", ""))
+PY
+)
+[ -n "$BRANCH" ] && [ -n "$REPO" ] || {
+  echo "tally-close: '$SLUG' is not a worktree lane (no branch/repo recorded)." >&2
+  echo "  Only lanes started with 'tally spawn --worktree' can be closed this way." >&2
+  exit 2; }
+
+# ── The lane must not still be writing ──────────────────────────────────────
+# Merging a tree while its worker is mid-edit is the same class of failure as two
+# writers in one tree: you capture half a change and nobody knows which half.
+if tmux -S "$SOCKET" has-session -t "=$SLUG" 2>/dev/null && [ "$FORCE" != 1 ]; then
+  echo "tally-close: REFUSED — session '$SLUG' is still alive." >&2
+  echo "  Let it finish, or reap it first. --force closes anyway (it may capture a partial change)." >&2
+  exit 3
+fi
+
+# ── Money-touching code does not get an automated merge ─────────────────────
+# The build lifecycle requires these to be human-attended, and a convenience
+# command is exactly how that requirement gets skipped. Matching the repo path is
+# crude on purpose: a false positive costs one manual merge, a false negative
+# auto-merges value-moving code.
+case "$REPO" in
+  *pearl*|*Pearl*|*PEARL*|*crypto*|*treasury*|*wallet*|*arb-bot*|*vault*)
+    if [ "$ABANDON" != 1 ]; then
+      echo "tally-close: REFUSED — $REPO looks money-touching." >&2
+      echo "  These merge under the full build lifecycle, in a human-attended session." >&2
+      echo "  Merge it by hand, or use --abandon to discard the lane." >&2
+      exit 3
+    fi ;;
+esac
+
+git -C "$WT" rev-parse --git-dir >/dev/null 2>&1 || {
+  echo "tally-close: $WT is not a git worktree (already closed?)" >&2; exit 2; }
+
+cleanup_tree() {
+  git -C "$REPO" worktree remove --force "$WT" 2>/dev/null \
+    || { echo "tally-close: worktree remove failed; tree left at $WT" >&2; return 1; }
+  git -C "$REPO" branch -D "$BRANCH" >/dev/null 2>&1
+  [ -x "$CLAIM" ] && "$CLAIM" release "$WT" --owner "spawn:$SLUG" --force >/dev/null 2>&1
+  return 0
+}
+
+if [ "$ABANDON" = 1 ]; then
+  DIRTY="$(git -C "$WT" status --porcelain | wc -l)"
+  AHEAD="$(git -C "$WT" rev-list --count "$BASE..$BRANCH" 2>/dev/null || echo 0)"
+  echo "tally-close: abandoning '$SLUG' — discarding $DIRTY uncommitted file(s) and $AHEAD commit(s)." >&2
+  cleanup_tree && echo "tally-close: abandoned $SLUG" || exit 1
+  exit 0
+fi
+
+# ── Commit whatever the lane left behind ────────────────────────────────────
+if [ -n "$(git -C "$WT" status --porcelain)" ]; then
+  if [ "$NO_COMMIT" = 1 ]; then
+    echo "tally-close: REFUSED — tree is dirty and --no-commit was given." >&2
+    echo "  Refusing rather than dropping the lane's uncommitted work silently." >&2
+    exit 3
+  fi
+  git -C "$WT" add -A
+  git -C "$WT" -c user.name="Mr. Bernard" -c user.email="mr.bernard@mrb.sh" \
+      commit -q -F - <<EOF
+Close lane $SLUG
+
+Work left uncommitted in the lane worktree, committed by tally-close so the
+merge captures it rather than discarding it.
+EOF
+  echo "tally-close: committed the lane's remaining changes" >&2
+fi
+
+AHEAD="$(git -C "$WT" rev-list --count "$BASE..$BRANCH" 2>/dev/null || echo 0)"
+if [ "$AHEAD" = 0 ]; then
+  echo "tally-close: '$SLUG' made no commits — nothing to merge, removing the tree." >&2
+  cleanup_tree && echo "tally-close: closed $SLUG (no changes)" || exit 1
+  exit 0
+fi
+
+# Merge into the ref the lane branched from, in the main repo.
+CURRENT="$(git -C "$REPO" rev-parse --abbrev-ref HEAD)"
+if [ "$CURRENT" != "$BASE" ]; then
+  echo "tally-close: REFUSED — $REPO is on '$CURRENT' but the lane branched from '$BASE'." >&2
+  echo "  Check out $BASE there first; switching branches under you is not this tool's call." >&2
+  exit 3
+fi
+if [ -n "$(git -C "$REPO" status --porcelain)" ]; then
+  echo "tally-close: REFUSED — $REPO has uncommitted changes; merging onto a dirty tree hides whose work is whose." >&2
+  exit 3
+fi
+
+if git -C "$REPO" merge --no-ff -m "Merge lane $SLUG ($AHEAD commit(s))" "$BRANCH" >&2; then
+  echo "tally-close: merged $BRANCH into $BASE ($AHEAD commit(s))" >&2
+  cleanup_tree && echo "tally-close: closed $SLUG" || exit 1
+  echo "  NOT pushed — that is a separate decision." >&2
+else
+  git -C "$REPO" merge --abort 2>/dev/null
+  echo "tally-close: merge CONFLICTED and was aborted. Nothing was removed." >&2
+  echo "  The lane is intact at $WT on $BRANCH — resolve it by hand." >&2
+  exit 1
+fi
