@@ -50,8 +50,22 @@ DEFAULTS: dict = {
 
 
 def _merge(cfg: dict, user: dict) -> None:
+    """Overlay `user` onto `cfg`. Dicts update keywise; most other values replace.
+
+    `sources` is the exception: kinds the overlay names replace the lower
+    layer's entries of that kind, but kinds it does not name stay. A user
+    file written for Claude+Codex must not silently drop grok-sessions the
+    next time the tracked config grows a harness. Matching is by `kind`
+    only — two Codex accounts in the user file still replace the repo's
+    single Codex source, which is the point of the user file.
+    """
     for k, v in user.items():
-        if isinstance(v, dict) and isinstance(cfg.get(k), dict):
+        if k == "sources" and isinstance(v, list) and isinstance(cfg.get(k), list):
+            named = {s.get("kind") for s in v if isinstance(s, dict)}
+            extras = [s for s in cfg[k]
+                      if isinstance(s, dict) and s.get("kind") not in named]
+            cfg[k] = list(v) + extras
+        elif isinstance(v, dict) and isinstance(cfg.get(k), dict):
             cfg[k].update(v)
         else:
             cfg[k] = v

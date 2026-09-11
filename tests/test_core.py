@@ -335,6 +335,37 @@ def test_config_layers_repo_then_user(tmp_path, monkeypatch):
     assert cfg["client"]["connect"][0] == "ssh"
 
 
+def test_merge_keeps_unlisted_source_kinds():
+    """A user [[sources]] list must not drop a harness the repo added later.
+
+    Matching is by kind: the user's claude-sessions replaces the repo's, and
+    grok-sessions (unlisted) is inherited. Two Codex accounts in the user
+    file still replace the repo's single Codex source.
+    """
+    from tallydeck.config import _merge
+    cfg = {"sources": [
+        {"kind": "claude-sessions", "from": "repo"},
+        {"kind": "codex-sessions", "from": "repo"},
+        {"kind": "grok-sessions"},
+        {"kind": "watchdir"},
+    ]}
+    _merge(cfg, {"sources": [
+        {"kind": "claude-sessions", "from": "user", "roots": ["A", "B"]},
+        {"kind": "codex-sessions", "account": "O"},
+        {"kind": "codex-sessions", "account": "O2"},
+        {"kind": "watchdir"},
+    ]})
+    kinds = [s["kind"] for s in cfg["sources"]]
+    assert kinds == [
+        "claude-sessions", "codex-sessions", "codex-sessions",
+        "watchdir", "grok-sessions",
+    ]
+    assert cfg["sources"][0]["from"] == "user"
+    assert cfg["sources"][0]["roots"] == ["A", "B"]
+    assert not any(s.get("from") == "repo" for s in cfg["sources"]
+                   if s["kind"] in ("claude-sessions", "codex-sessions"))
+
+
 def test_repo_config_carries_no_secrets():
     """The tracked layer must never grow a credential.
 

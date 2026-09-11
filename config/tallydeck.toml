@@ -3,7 +3,8 @@
 # This file is versioned WITH the code, so a `git pull` brings settings and the
 # code that reads them in step. Machine-specific or private values do NOT go
 # here — put those in ~/.config/tallydeck/config.toml, which is not tracked and
-# is merged on top of this file.
+# is merged on top of this file. Source kinds the user file names replace
+# these; kinds it omits stay, so adding a harness here still reaches the deck.
 #
 # Rule of thumb for what may live here: hosts, paths and preferences. Never a
 # token, key, or anything you would not want in a repo — private or not, the

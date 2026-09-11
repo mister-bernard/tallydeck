@@ -242,8 +242,10 @@ tally deck                 # the real fleet, via [client] connect in config
 `config/tallydeck.toml` is tracked, so shared settings arrive with a `git
 pull`. Anything machine-specific — real paths, extra account roots, a task
 hook, your timezone — goes in `~/.config/tallydeck/config.toml`, which is
-not in the repo and wins over the tracked layer. Keep hosts and secrets out
-of the tracked file: see `examples/config.example.toml` for the shape.
+not in the repo and wins over the tracked layer. Source kinds named in the
+user file replace the tracked entries of that kind; omitted kinds stay, so
+a new harness in the repo still lands on the deck. Keep hosts and secrets
+out of the tracked file: see `examples/config.example.toml` for the shape.
 
 The hub is reached by an **ssh alias**, never an address, so nothing
 host-specific lives in the repo. Name it whatever you like in the Mac's

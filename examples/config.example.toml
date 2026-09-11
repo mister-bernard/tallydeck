@@ -2,8 +2,9 @@
 #
 # Loaded on top of the repo's config/tallydeck.toml and wins over it. Real
 # paths, extra account roots, hostnames and hooks belong here, never in the
-# tracked file. Note the merge is shallow: if you define [[sources]] here it
-# replaces the tracked list entirely, so list every source you want.
+# tracked file. Source kinds you name here replace the tracked entries of
+# that kind; kinds you omit are inherited, so a new harness in the repo
+# (grok-sessions) still appears without a hand-edit of this file.
 [view]
 device = "neo"
 hide_idle = false
@@ -14,6 +15,12 @@ kind = "claude-sessions"
 
 [[sources]]
 kind = "watchdir"
+
+# Third harness. Omit this stanza to inherit the tracked grok-sessions
+# source as-is (bottom tally bar, badge X, headless jobs off).
+# [[sources]]
+# kind = "grok-sessions"
+# include_headless = false
 
 # [[sources]]
 # kind = "exec"
