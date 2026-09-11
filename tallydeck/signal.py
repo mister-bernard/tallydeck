@@ -118,6 +118,14 @@ def is_codex(sig: Signal) -> bool:
     return str((sig.meta or {}).get("harness", "")).strip().lower() == "codex"
 
 
+def is_grok(sig: Signal) -> bool:
+    """Does this signal belong to a Grok Build session?
+
+    Same contract as `is_codex`: one marker, renderers key the Grok look
+    (tally bar along the bottom, badge X) off this and nothing else."""
+    return str((sig.meta or {}).get("harness", "")).strip().lower() == "grok"
+
+
 def rank(signals: list[Signal]) -> list[Signal]:
     """Deck ordering for a set of signals."""
     return sorted(signals, key=Signal.sort_key)

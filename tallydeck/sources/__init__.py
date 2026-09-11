@@ -8,10 +8,12 @@ from .execsrc import ExecSource
 from .demo import DemoSource
 from .burn import TokenBurnSource
 from .fleet import BackgroundFleetSource
+from .grok_sessions import GrokSessionsSource
 
 REGISTRY: dict[str, type[Source]] = {
     "claude-sessions": ClaudeSessionsSource,
     "codex-sessions": CodexSessionsSource,
+    "grok-sessions": GrokSessionsSource,
     "watchdir": WatchDirSource,
     "exec": ExecSource,
     "demo": DemoSource,

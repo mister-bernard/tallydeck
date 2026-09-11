@@ -83,8 +83,9 @@ did not see.
 
 That strip is the session's **state in miniature** — same color code as
 above. **Where** it sits tells you which agent the key belongs to: across
-the **top** for Claude Code, down the **left edge** for Codex. Position
-carries the harness so colour can keep meaning state.
+the **top** for Claude Code, down the **left edge** for Codex (right edge
+for Codex account 2), along the **bottom** for Grok. Position carries the
+harness so colour can keep meaning state.
 
 - **Orange bar** → this session is waiting on you (the whole key will also
   be flashing if it's fresh, steady orange if you've let it sit).
@@ -99,8 +100,8 @@ carries the harness so colour can keep meaning state.
   → violet → ember) is that session's **token burn relative to the hottest
   session visible**. Ember = the current #1 spender. Cold black = coasting.
 - **`2m · 45k/m`** — quiet-time and burn rate (log-bytes/minute).
-- **`A` / `B` / `O` badge** — which account's quota the session is draining
-  (`O` is Codex).
+- **`A` / `B` / `O` / `X` badge** — which account's quota the session is draining
+  (`O` is Codex, `X` is Grok).
 - **Placement** — urgent first, then the busiest, flowing top-left ↓ then
   next column. Keys are **sticky**: a session keeps its key while visible,
   so nothing moves between your glance and your press.

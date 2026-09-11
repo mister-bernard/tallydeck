@@ -14,7 +14,8 @@ Anatomy of a key (96 px nominal):
     │ ▂▂▂▂▂▂▂▁▁▁▁▁ │  ← progress (when known)
     └──────────────┘
 
-A Codex-harness key wears the same bar down its LEFT edge instead:
+A Codex-harness key wears the same bar down its LEFT edge instead
+(account 2: RIGHT). A Grok-harness key wears it along the BOTTOM:
 
     ┌──────────────┐
     │▏ astra       │  ← tally bar (state color), vertical
@@ -34,7 +35,7 @@ from __future__ import annotations
 
 from PIL import Image, ImageDraw
 
-from ..signal import Signal, is_codex
+from ..signal import Signal, is_codex, is_grok
 from . import theme
 
 SS = 2  # supersample factor
@@ -141,9 +142,12 @@ def draw_key(sig: Signal | None, px: int, lit: bool = False,
     # the room, which is what the deck is for.
     bar_h = round(s * 0.085)
     codex = is_codex(sig)
+    grok = is_grok(sig)
     acct = str((sig.meta or {}).get("account", ""))
     codex_right = codex and acct.strip().upper() in ("O2", "2")
-    if codex_right:
+    if grok:
+        d.rectangle([0, s - bar_h, s, s], fill=bar)
+    elif codex_right:
         d.rectangle([s - bar_h, 0, s, s], fill=bar)
     elif codex:
         d.rectangle([0, 0, bar_h, s], fill=bar)
@@ -153,7 +157,8 @@ def draw_key(sig: Signal | None, px: int, lit: bool = False,
     pad = round(s * 0.10)
     lx = bar_h + round(s * 0.06) if (codex and not codex_right) else pad
     # A right-edge bar eats from the text's right margin, not its left, or the
-    # label would run underneath it.
+    # label would run underneath it. A bottom Grok bar eats nothing from the
+    # left — it eats from the badge/sublabel below.
     avail = s - lx - pad - (bar_h if codex_right else 0)
     f_label = theme.font("display", round(s * 0.195))
     f_sub = theme.font("regular", round(s * 0.135))
@@ -161,7 +166,7 @@ def draw_key(sig: Signal | None, px: int, lit: bool = False,
     # Wrap instead of amputate: a name that overflows drops to a slightly
     # smaller face and takes two lines, which lets the break land on a
     # hyphen/space instead of mid-word. Ellipsis only past two full lines.
-    y = bar_h + round(s * 0.10)
+    y = pad if grok else bar_h + round(s * 0.10)
     if d.textlength(sig.label, font=f_label) <= avail:
         d.text((lx, y), sig.label, font=f_label, fill=fg)
     else:
@@ -182,7 +187,8 @@ def draw_key(sig: Signal | None, px: int, lit: bool = False,
         aw = d.textlength(acct, font=f_acct)
         bw, bh = aw + round(s * 0.09), round(s * 0.16)
         # Clear of a right-edge Codex bar, so the badge never sits on it.
-        bx1, by1 = s - pad - (bar_h if codex_right else 0), s - round(s * 0.035)
+        bx1, by1 = s - pad - (bar_h if codex_right else 0), \
+            s - round(s * 0.035) - (bar_h if grok else 0)
         bx0, by0 = bx1 - bw, by1 - bh
         d.rounded_rectangle([bx0, by0, bx1, by1], radius=round(s * 0.04),
                             fill=track)
@@ -207,7 +213,7 @@ def draw_key(sig: Signal | None, px: int, lit: bool = False,
                 r_ = max(2, s // 40)
                 for pi in range(pages):
                     x0d = lx + pi * r_ * 3
-                    y0d = s - round(s * 0.05) - r_
+                    y0d = s - round(s * 0.05) - r_ - (bar_h if grok else 0)
                     d.ellipse([x0d, y0d, x0d + r_, y0d + r_],
                               fill=fill if pi == pg else track)
         elif d.textlength(sig.sublabel, font=f_sub) <= avail:

@@ -67,8 +67,8 @@ _AUTO_SESSION = re.compile(r"^main(-[A-Za-z0-9]{1,3}|[A-Z])?$")
 
 # Window names that name the program, not the work.
 _GENERIC_WINDOW = {"", "1", "bash", "zsh", "sh", "fish", "claude", "claude-b",
-                   "codex", "node", "python3", "python", "ssh", "mosh", "tmux",
-                   "cc", "-"}
+                   "codex", "grok", "node", "python3", "python", "ssh", "mosh",
+                   "tmux", "cc", "-"}
 
 # Ours, so we know we may overwrite it. Anything else in @tally_title is a
 # human's and is left alone forever.

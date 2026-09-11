@@ -1775,6 +1775,23 @@ def test_raise_from_a_codex_session_stamps_the_harness(tmp_path, monkeypatch):
     assert d["meta"]["harness"] == "codex"
 
 
+def test_raise_from_a_grok_session_stamps_the_harness(tmp_path, monkeypatch):
+    from tallydeck import cli
+    from tallydeck.signal import is_grok
+    monkeypatch.setenv("TALLYDECK_STATE", str(tmp_path))
+    monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.delenv("CODEX_BIN", raising=False)
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.delenv("TALLY_HARNESS", raising=False)
+    monkeypatch.setenv("GROK_AGENT", "1")
+    monkeypatch.chdir(tmp_path)
+    cli.main(["raise", "gk", "--state", "attention", "--sublabel", "look?"])
+    sig = WatchDirSource(path=str(tmp_path / "signals")).poll()[0]
+    assert sig.meta["harness"] == "grok" and sig.meta["account"] == "X"
+    assert is_grok(sig)
+
+
 def test_codex_lane_uses_account_o_weekly_window_and_flags_a_stale_snapshot():
     """Account O (ChatGPT Pro) reports a WEEKLY quota and session_pct=0 with
     no 5h reset. Painting the session number would show a permanent 0% next

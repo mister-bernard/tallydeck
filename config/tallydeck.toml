@@ -57,6 +57,14 @@ kind = "codex-sessions"
 include_exec = false
 
 [[sources]]
+# The third harness. Grok Build sessions under ~/.grok/sessions. Tally bar
+# along the BOTTOM of the key (Claude top, Codex left/right, Grok bottom);
+# badge is X. Headless grok-oneshot / grok.sh --single jobs are off by
+# default — a scoring run can leave dozens of them, and nobody answers one.
+kind = "grok-sessions"
+include_headless = false
+
+[[sources]]
 # Background fleets: one aggregate key per group of one-shot runners, so a
 # fleet working in the background is VISIBLE without any of its workers being
 # able to demand attention. Off until you say otherwise — flip `enabled` and
@@ -70,6 +78,12 @@ idle_after = 300           # no output on any worker this long → idle, not wor
 priority = 5               # above the one-shot floor (-10), below a hot session
 label_word = "fleet"       # key reads "<fleet> fleet"; "background" wraps mid-word
 # ignore = ["email"]       # fleet names never worth a key on this machine
+
+[[sources]]
+kind = "exec"
+group = "hunt"
+argv = ["/home/openclaw/projects/cruiser-finder/bin/deck-status.py"]
+every = 15
 
 [[sources]]
 kind = "watchdir"

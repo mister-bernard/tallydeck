@@ -61,11 +61,44 @@ try:
     if sid and state:
         cwd = d.get("cwd") or ""
         home = os.environ.get("HOME", "")
-        # Second account = a session running under its own CLAUDE_CONFIG_DIR.
-        # Set TALLY_ACCT_B_MARKER to whatever substring names yours.
-        marker = os.environ.get("TALLY_ACCT_B_MARKER", ".claude-b")
-        acct = "B" if marker in (os.environ.get("CLAUDE_CONFIG_DIR", "")
-                                 or home) else "A"
+        grok = bool(os.environ.get("GROK_AGENT")
+                    or os.environ.get("GROK_SESSION_ID"))
+        sid_full = str(d.get("session_id") or "")
+        if not grok and sid_full:
+            # Grok inherits Claude Code's Notification hook via compat. A
+            # Grok session id lives under ~/.grok/sessions; labelling it as
+            # Claude A is how the deck flashed "cruiser-finder / Tool
+            # permission requested" for a headless grok.sh --single job.
+            grok_root = os.path.expanduser("~/.grok/sessions")
+            if os.path.isdir(grok_root):
+                for dirpath, dirnames, _ in os.walk(grok_root):
+                    if sid_full in dirnames:
+                        grok = True
+                        break
+                    dirnames[:] = [n for n in dirnames if n != "terminal"]
+        if grok:
+            acct = "X"
+            kind_headless = False
+            try:
+                grok_root = os.path.expanduser("~/.grok/sessions")
+                for dirpath, dirnames, files in os.walk(grok_root):
+                    if "summary.json" in files and os.path.basename(dirpath) == sid_full:
+                        import json as _json
+                        info = _json.loads(open(os.path.join(dirpath, "summary.json")).read())
+                        kind_headless = str(info.get("session_kind") or "") == "headless"
+                        break
+            except Exception:
+                kind_headless = False
+            # Nobody can answer a headless permission prompt. Raising it as
+            # blocked is how a scoring/fetch job shouted on the deck.
+            if kind_headless and kind == "permission_prompt":
+                state = ""
+        else:
+            # Second account = a session running under its own CLAUDE_CONFIG_DIR.
+            # Set TALLY_ACCT_B_MARKER to whatever substring names yours.
+            marker = os.environ.get("TALLY_ACCT_B_MARKER", ".claude-b")
+            acct = "B" if marker in (os.environ.get("CLAUDE_CONFIG_DIR", "")
+                                     or home) else "A"
         # The hook runs inside the session's process tree — if it lives in a
         # tmux pane, the pane's session name is the name the operator uses.
         label = ""
@@ -87,13 +120,14 @@ try:
         p = os.path.join(state_dir(), "signals")
         os.makedirs(p, exist_ok=True)
         with open(f"{p}/ask-{sid}.json", "w") as fh:
-            json.dump({"label": label or os.path.basename(cwd) or "claude",
+            json.dump({"label": label or os.path.basename(cwd) or ("grok" if grok else "claude"),
                        "state": state, "sublabel": msg[:40],
                        "detail": msg, "priority": prio, "ttl": 1800,
                        "updated": time.time(),
                        "meta": {"session": d.get("session_id") or "",
                                 "project": cwd, "tmux": pane,
-                                "account": acct, "kind": kind}}, fh)
+                                "account": acct, "kind": kind,
+                                **({"harness": "grok"} if grok else {})}}, fh)
 except Exception:
     pass
 sys.exit(0)

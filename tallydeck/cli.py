@@ -248,8 +248,13 @@ def cmd_raise(cfg, args):
     if not harness and not sid and (os.environ.get("CODEX_HOME")
                                     or os.environ.get("CODEX_BIN")):
         harness = "codex"
+    if not harness and not sid and (os.environ.get("GROK_AGENT")
+                                    or os.environ.get("GROK_SESSION_ID")):
+        harness = "grok"
     if harness:
         meta["harness"] = harness
+    if harness == "grok" and "account" not in meta and not args.account:
+        meta["account"] = "X"
     if args.account:
         meta["account"] = args.account
     elif "account" not in meta and sid:
@@ -443,7 +448,8 @@ def _parser() -> argparse.ArgumentParser:
     sp.add_argument("--tmux", help="tmux pane target (default: this pane)")
     sp.add_argument("--account", help="account badge, e.g. A or B")
     sp.add_argument("--harness", help="which agent harness raised this: "
-                    "'codex' draws the tally bar down the key's left edge "
+                    "'codex' draws the tally bar down the left edge, "
+                    "'grok' along the bottom "
                     "(default: detected from the environment)")
     sp.add_argument("--markdown", metavar="FILE|-",
                     help="full ask as Markdown (headings, tables, lists…); "
@@ -462,9 +468,9 @@ def _parser() -> argparse.ArgumentParser:
 
     for name, help_, usage in (
             ("spawn", "start a task as its own tmux session (own deck key)",
-             "tally spawn <slug> [-c cwd] [-a A|B|O] [--harness claude|codex] [-p file|-] [\"task text\"]"),
+             "tally spawn <slug> [-c cwd] [-a A|B|O|X] [--harness claude|codex|grok] [-p file|-] [\"task text\"]"),
             ("offer", "compatibility name for spawn — starts it, asks nothing",
-             "tally offer <slug> \"<one-line summary>\" [-c cwd] [-a A|B|O] [--harness claude|codex] [-p file|-] [\"task text\"]"),
+             "tally offer <slug> \"<one-line summary>\" [-c cwd] [-a A|B|O|X] [--harness claude|codex|grok] [-p file|-] [\"task text\"]"),
             ("reap", "report (and on request reap) idle spawned sessions",
              "tally reap [--reap] [--idle-hours N] [--include-unspawned] [--json]"),
             ("close", "close a --worktree lane: commit, merge back, remove the tree",
