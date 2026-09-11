@@ -28,7 +28,7 @@ import sys
 import threading
 import time
 
-from .signal import Signal, rank
+from .signal import Signal, rank, rollup_same_pane
 from .sources.base import Source
 from .paths import hub_alive
 
@@ -82,7 +82,7 @@ class Hub:
                 s = self._table[sid]
                 s.meta["opened"] = True
                 s.flash = False          # steady while the popup is up
-        return rank(list(self._table.values()))
+        return rank(rollup_same_pane(list(self._table.values())))
 
     def snapshot_line(self, signals: list[Signal]) -> str:
         return json.dumps(

@@ -59,6 +59,35 @@ def test_headless_sessions_are_hidden_by_default(tmp_path):
     assert is_grok(got[0]) and not is_codex(got[0])
 
 
+def test_live_grok_pane_keeps_a_quiet_session_on_the_deck(tmp_path):
+    """An idle Grok TUI still occupies a pane. Dropping it after `stale`
+    is how live X sessions vanished while only Cruiser remained."""
+    import os, time
+    root = tmp_path / "sessions" / "%2Ftmp%2Flive"
+    uid = "01cccccccc-dddd-7eee-8fff-000000000000"
+    sess = root / uid
+    sess.mkdir(parents=True)
+    (sess / "summary.json").write_text(json.dumps({
+        "info": {"id": uid, "cwd": "/tmp/live"},
+        "session_kind": "interactive",
+        "generated_title": "Move localnet onto 8555",
+        "last_active_at": "2020-01-01T00:00:00Z",
+    }))
+    (sess / "updates.jsonl").write_text("{}\n")
+    old = time.time() - 10_000
+    os.utime(sess / "updates.jsonl", (old, old))
+    src = GrokSessionsSource(root=str(tmp_path / "sessions"),
+                             stale=1800, dwell=0, sync_titles=False)
+    assert src.poll() == []
+    src._live_grok_panes = lambda: {uid: "sb-localnet-move:1.1"}
+    got = src.poll()
+    assert len(got) == 1
+    assert got[0].state == WORKING
+    assert got[0].meta["tmux"] == "sb-localnet-move:1.1"
+    assert got[0].meta["exact_pane"] is True
+    assert "localnet" in got[0].label.lower() or "8555" in got[0].label
+
+
 def test_interactive_session_becomes_a_key(tmp_path):
     root = tmp_path / "sessions" / "%2Fhome%2Fopenclaw%2Fprojects%2Fcruiser-finder"
     sess = root / "01bbbbbbbb-cccc-7ddd-8eee-ffffffffffff"
@@ -85,6 +114,31 @@ def test_interactive_session_becomes_a_key(tmp_path):
     assert got[0].meta["account"] == "X"
     assert got[0].label
     assert "cruiser" in got[0].label.lower() or got[0].label == "Cruiser finder hunt"[:24]
+
+
+def test_sessions_on_the_same_pane_collapse_to_one_key():
+    """Hunt board + Grok TUI + leftover clones on cruiser-finder:1.1
+    are one Cruiser Finder, not a pad of duplicates."""
+    from tallydeck.signal import rollup_same_pane, ATTENTION, SUCCESS
+    pane = "cruiser-finder:1.1"
+    hunt = Signal(id="hunt/cruiser", label="cruiser", state=SUCCESS,
+                  group="hunt", sublabel="98 cars · 30 hot",
+                  meta={"tmux": pane, "harness": "grok"})
+    live = Signal(id="gk/live", label="cruiser-finder", state=WORKING,
+                  group="gk", meta={"tmux": pane, "harness": "grok",
+                                    "exact_pane": True})
+    clone = Signal(id="gk/old", label="cruiser-finder", state=ATTENTION,
+                   group="gk", meta={"tmux": pane, "harness": "grok"})
+    other = Signal(id="gk/nnum", label="n-number.org pages", state=WORKING,
+                   group="gk", meta={"tmux": "", "harness": "grok"})
+    got = rollup_same_pane([hunt, live, clone, other])
+    by_id = {s.id: s for s in got}
+    assert set(by_id) == {"hunt/cruiser", "gk/nnum"}
+    merged = by_id["hunt/cruiser"]
+    assert merged.state == ATTENTION
+    assert merged.meta["rolled"] == 3
+    assert "98 cars" in merged.sublabel
+    assert "3 sessions" in merged.sublabel
 
 
 def test_grok_key_wears_its_tally_bar_on_the_bottom():

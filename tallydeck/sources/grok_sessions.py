@@ -23,12 +23,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import unquote
 
-from ..signal import Signal, WORKING, SUCCESS, IDLE, ATTENTION
+from ..signal import Signal, WORKING, SUCCESS, IDLE, ATTENTION, rollup_same_pane
 from ..paths import contrib_bin, state_dir
 from ..titles import TitleSync, resolve_label, tmux_for
 from .base import Source
@@ -137,6 +139,10 @@ def _cwd_from_group(name: str) -> str:
         return name
 
 
+_UUID = re.compile(
+    r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", re.I)
+
+
 def _spawned_panes() -> dict[str, str]:
     """cwd → tmux target for live tally-spawn grok sessions."""
     root = state_dir() / "spawned"
@@ -155,6 +161,25 @@ def _spawned_panes() -> dict[str, str]:
         if cwd and target:
             out[cwd] = target
     return out
+
+
+def _uuid_from_fds(pid: int) -> str:
+    """Session id a grok process is actually holding, from its open files."""
+    fd = Path(f"/proc/{pid}/fd")
+    try:
+        for entry in fd.iterdir():
+            try:
+                target = os.readlink(entry)
+            except OSError:
+                continue
+            if "/.grok/sessions/" not in target:
+                continue
+            m = _UUID.search(target)
+            if m:
+                return m.group(1).lower()
+    except OSError:
+        return ""
+    return ""
 
 
 class GrokSessionsSource(Source):
@@ -179,6 +204,8 @@ class GrokSessionsSource(Source):
         self.tmux = tmux_for(self.socket)
         self.sync = TitleSync(self.tmux, opts.get("sync_every")) \
             if opts.get("sync_titles", True) else None
+        self._lg_ts = 0.0
+        self._lg_cache: dict[str, str] = {}
 
     def _burn_rate(self, session: str, now: float, size: int) -> float:
         samples = self._samples.setdefault(session, [])
@@ -194,7 +221,8 @@ class GrokSessionsSource(Source):
         now = time.time()
         if not self.root.is_dir():
             return []
-        panes = _spawned_panes()
+        live = self._live_grok_panes()
+        spawned = _spawned_panes()
         titled: list[tuple[str, str]] = []
         signals: list[Signal] = []
         for group in self.root.iterdir():
@@ -203,7 +231,7 @@ class GrokSessionsSource(Source):
             for sess in group.iterdir():
                 if not sess.is_dir():
                     continue
-                sig = self._one(sess, group.name, panes, now)
+                sig = self._one(sess, group.name, live, spawned, now)
                 if sig is None:
                     continue
                 if sig.meta.get("tmux") and not sig.meta.get("oneshot"):
@@ -211,10 +239,68 @@ class GrokSessionsSource(Source):
                 signals.append(sig)
         if self.sync:
             self.sync.push(titled)
-        return signals
+        return rollup_same_pane(signals)
 
-    def _one(self, sess: Path, group: str, panes: dict[str, str],
-             now: float) -> Signal | None:
+    def _live_grok_panes(self) -> dict[str, str]:
+        """uuid → tmux target for interactive grok TUIs on our socket.
+
+        Grok does not export a session id. The process holds
+        ~/.grok/sessions/<cwd>/<uuid>/ files, so the open-fd list is the
+        identity; the pane is the tmux ancestor of that pid. `--single`
+        jobs are ignored — those are headless and stay off the deck.
+        """
+        now = time.time()
+        if now - self._lg_ts < 15:
+            return self._lg_cache
+        out: dict[str, str] = {}
+        try:
+            panes = subprocess.run(
+                ["tmux", "-S", self.socket, "list-panes", "-a", "-F",
+                 "#{session_name}:#{window_index}.#{pane_index} #{pane_pid}"],
+                capture_output=True, text=True, timeout=3)
+            ps = subprocess.run(["ps", "-eo", "pid=,ppid=,comm="],
+                                capture_output=True, text=True, timeout=3)
+        except (OSError, subprocess.TimeoutExpired):
+            self._lg_cache, self._lg_ts = out, now
+            return out
+        kids: dict[int, list[int]] = {}
+        comm: dict[int, str] = {}
+        for ln in ps.stdout.splitlines():
+            parts = ln.split(None, 2)
+            if len(parts) < 3:
+                continue
+            try:
+                pid, ppid = int(parts[0]), int(parts[1])
+            except ValueError:
+                continue
+            kids.setdefault(ppid, []).append(pid)
+            comm[pid] = parts[2].strip()
+        for ln in panes.stdout.splitlines():
+            bits = ln.split()
+            if len(bits) != 2 or not bits[1].isdigit():
+                continue
+            target, root = bits[0], int(bits[1])
+            stack, seen = [root], 0
+            while stack and seen < 32:
+                pid = stack.pop()
+                seen += 1
+                stack.extend(kids.get(pid, []))
+                if not comm.get(pid, "").startswith("grok"):
+                    continue
+                try:
+                    cmd = Path(f"/proc/{pid}/cmdline").read_bytes()
+                except OSError:
+                    continue
+                if b"--single" in cmd.split(b"\0"):
+                    continue
+                uid = _uuid_from_fds(pid)
+                if uid and uid not in out:
+                    out[uid] = target
+        self._lg_cache, self._lg_ts = out, now
+        return out
+
+    def _one(self, sess: Path, group: str, live: dict[str, str],
+             spawned: dict[str, str], now: float) -> Signal | None:
         summary_p = sess / "summary.json"
         log_p = sess / "updates.jsonl"
         info = _summary(summary_p)
@@ -238,7 +324,14 @@ class GrokSessionsSource(Source):
         active = _iso_epoch(str(info.get("last_active_at") or ""))
         if active:
             mtime = max(mtime, active)
-        if now - mtime > self.stale:
+        pane = live.get(uuid.lower()) or live.get(uuid) or ""
+        live_here = bool(pane)
+        if not pane and cwd:
+            # tally-spawn records are cwd-keyed. Fine for routing a fresh
+            # session; not an identity — every old hunt in that directory
+            # would inherit the live pane and flood the deck.
+            pane = spawned.get(os.path.realpath(cwd), "")
+        if now - mtime > self.stale and not live_here:
             return None
         records = _tail_records(log_p) if log_p.is_file() else []
         state = classify(records)
@@ -260,7 +353,11 @@ class GrokSessionsSource(Source):
         if oneshot and state != WORKING:
             # A finished one-shot is not a key. Live ones are visibility only.
             return None
-        pane = panes.get(os.path.realpath(cwd), "") if cwd else ""
+        if live_here and state in (SUCCESS, IDLE):
+            # The TUI is still in a pane even if the log went quiet.
+            # Dropping it after `stale` is how live X sessions vanished
+            # from an 8-key deck (G, 2026-09-11).
+            state = WORKING
         title = str(info.get("generated_title") or info.get("session_summary")
                     or "")
         info_pane = self.tmux.info(pane) if pane else None
@@ -303,6 +400,6 @@ class GrokSessionsSource(Source):
             group=self.group,
             meta={"project": cwd, "session": uuid,
                   "account": self.account, "harness": "grok",
-                  "oneshot": oneshot, "exact_pane": bool(pane),
+                  "oneshot": oneshot, "exact_pane": live_here,
                   "tmux": pane},
         )

@@ -72,7 +72,7 @@ include_headless = false
 # the four c64 autopilot jobs (say) become one "c64 background" key whose
 # press opens the most recently active of their tmux windows.
 kind = "background-fleet"
-enabled = false
+enabled = true
 sessions = ["oneshot"]     # the same disposable-runner sessions as above
 min_workers = 2            # one job is a job; two are a fleet
 idle_after = 300           # no output on any worker this long → idle, not working

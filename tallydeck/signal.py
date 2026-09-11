@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, replace
 from typing import Any
 
 # ── states ───────────────────────────────────────────────────────────────────
@@ -129,6 +129,61 @@ def is_grok(sig: Signal) -> bool:
 def rank(signals: list[Signal]) -> list[Signal]:
     """Deck ordering for a set of signals."""
     return sorted(signals, key=Signal.sort_key)
+
+
+def rollup_same_pane(signals: list[Signal]) -> list[Signal]:
+    """One key per live tmux pane.
+
+    A hunt board, a Grok TUI, and leftover sessions that all sit on
+    `cruiser-finder:1.1` are one Cruiser Finder, not a pad full of clones.
+    Paneless signals and unique panes pass through. `main*` stays per-pane
+    because those targets already differ (`mainA:1.1` vs `mainA:1.2`).
+    """
+    groups: dict[str, list[Signal]] = {}
+    rest: list[Signal] = []
+    for s in signals:
+        pane = str((s.meta or {}).get("tmux") or "")
+        if not pane:
+            rest.append(s)
+            continue
+        groups.setdefault(pane, []).append(s)
+    out = list(rest)
+    for pane, members in groups.items():
+        if len(members) == 1:
+            out.append(members[0])
+            continue
+        primary = _pane_primary(members)
+        hottest = max(members, key=lambda m: (
+            _STATE_WEIGHT.get(m.state, 0), m.updated))
+        n_run = sum(1 for m in members if m.state == WORKING)
+        extra = f"{len(members)} sessions"
+        if n_run:
+            extra += f" · {n_run} running"
+        sub = extra if not primary.sublabel else f"{extra} · {primary.sublabel}"
+        meta = dict(primary.meta or {})
+        meta["rolled"] = len(members)
+        meta["tmux"] = pane
+        out.append(replace(
+            primary,
+            state=hottest.state,
+            sublabel=sub,
+            updated=max(m.updated for m in members),
+            meta=meta,
+        ))
+    return out
+
+
+def _pane_primary(members: list[Signal]) -> Signal:
+    """Hunt board is the public face of a hunt pane; else the hottest."""
+    def group_of(s: Signal) -> str:
+        return (s.group or s.id.split("/", 1)[0] or "").lower()
+    for g in ("hunt", "gk", "cc", "cx"):
+        hit = [m for m in members if group_of(m) == g]
+        if hit:
+            return max(hit, key=lambda m: (
+                _STATE_WEIGHT.get(m.state, 0), m.updated))
+    return max(members, key=lambda m: (
+        _STATE_WEIGHT.get(m.state, 0), m.updated))
 
 
 def summarize(signals: list[Signal]) -> str:

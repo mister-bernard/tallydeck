@@ -58,6 +58,10 @@ from .claude_sessions import _age_str
 JOB = re.compile(r"^job-(\d+)-(\d+)-(.+)$")
 # A worker slot inside a fleet: A, B, A2, B2 — a letter and maybe one digit.
 SLOT = re.compile(r"^[A-Za-z]\d?$")
+# cc-oneshot -l often ends in the reviewer model; strip it so
+# garage-review-opus and garage-review-sonnet are one fleet, not two.
+_MODEL = re.compile(
+    r"-(?:opus|sonnet|haiku|grok|gpt-?\d*|gemini|minimax|codex)$", re.I)
 # tmux -F field separator: printable (tmux renders control characters as the
 # literal four characters "\037"), and not something anyone types.
 _SEP = "␟"
@@ -230,7 +234,7 @@ class BackgroundFleetSource(Source):
             quiet = _age_str(now - w.activity) if w.activity else "?"
             mark = "→" if i == 0 else " "
             acct = f" [{w.account}]" if w.account else ""
-            lines.append(f"{mark} {w.target:<12} {w.name[:44]:<46} "
+            lines.append(f"{mark} {w.target:<12} {(w.task or w.window)[:44]:<46} "
                          f"{age} old · {quiet} quiet{acct}")
         lines += ["", f"Enter opens {workers[0].target} — the most recently "
                       f"active of the {len(workers)}."]
@@ -310,7 +314,8 @@ class BackgroundFleetSource(Source):
             m = JOB.match(p["window"])
             started, label = (float(m.group(1)), m.group(3)) if m \
                 else (0.0, p["window"])
-            parts = label.split("-")
+            core = _MODEL.sub("", label)
+            parts = core.split("-")
             fleet = parts[0].lower()
             rest = parts[1:]
             slot = ""

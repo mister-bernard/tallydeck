@@ -274,6 +274,11 @@ class ClaudeSessionsSource(Source):
         # One-shots (disposable runner windows) have no human loop: they must
         # never demand attention and always rank below persistent sessions.
         self.oneshot_sessions = set(opts.get("oneshot_sessions", ["oneshot"]))
+        # Same default as grok headless / codex exec: nobody answers a
+        # disposable runner, and a truncated `job-<epoch>-<pid>-n` key is
+        # how two dark unlabeled tiles ate the pad (G, 2026-09-11). The
+        # background-fleet source is the visibility path for those workers.
+        self.include_oneshots = bool(opts.get("include_oneshots", False))
         # Titles: the pane table both session sources share, and the writer
         # that pushes the resolved title back into tmux for the manager.
         self.tmux = tmux_for(self.socket)
@@ -355,6 +360,8 @@ class ClaudeSessionsSource(Source):
                             ackf.unlink()      # session spoke again: rearm
                     except OSError:
                         pass
+                if oneshot and not self.include_oneshots:
+                    continue
                 if oneshot and state == ATTENTION:
                     state = WORKING            # nobody answers a one-shot
                 # Real cwd from the records; munged-name reconstruction only

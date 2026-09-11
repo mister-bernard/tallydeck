@@ -615,6 +615,8 @@ def test_oneshots_never_shout_and_sink(tmp_path, monkeypatch):
     _os.utime(proj / "aaaa1111.jsonl", (t, t))
     src = ClaudeSessionsSource(root=str(tmp_path))
     monkeypatch.setattr(src, "_session_panes", lambda: {"aaaa1111": "oneshot:1.3"})
+    assert src.poll() == []            # off the deck, like grok headless
+    src.include_oneshots = True
     s = src.poll()[0]
     assert s.state == SUCCESS          # an ended one-shot never flashes
     assert s.wants_flash is False
@@ -1413,6 +1415,8 @@ def test_session_keys_carry_a_hub_side_route_action(tmp_path, monkeypatch):
     monkeypatch.setattr(src, "_session_panes", lambda: {"abcd1234": "oneshot:1.1"})
     monkeypatch.setattr(src, "_all_pane_targets", lambda: {"oneshot:1.1"})
     src._exact_memo = {}
+    assert src.poll() == []
+    src.include_oneshots = True
     assert src.poll()[0].action is None
 
 

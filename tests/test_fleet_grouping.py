@@ -69,6 +69,21 @@ class OneKeyPerFleet(unittest.TestCase):
         self.assertNotIn("fleet/dc", self.sigs)
         self.assertEqual(source(min_workers=1).poll().__len__(), 3)
 
+    def test_reviewer_suffix_does_not_split_a_fleet(self):
+        """garage-review-opus and garage-review-sonnet are one fleet."""
+        src = source()
+        src._runner_panes = lambda: [
+            {"target": "oneshot:2.1", "window": "job-1-1-garage-review-sonnet",
+             "activity": NOW, "pid": "0", "cwd": "/tmp"},
+            {"target": "oneshot:3.1", "window": "job-1-2-garage-review-opus",
+             "activity": NOW, "pid": "0", "cwd": "/tmp"},
+            {"target": "oneshot:4.1", "window": "job-1-3-nn-lead-audit-opus",
+             "activity": NOW, "pid": "0", "cwd": "/tmp"},
+        ]
+        got = {s.meta["fleet"]: s for s in src.poll()}
+        self.assertEqual(got["garage"].meta["workers"], 2)
+        self.assertNotIn("nn", got)
+
     def test_it_never_asks_for_anything(self):
         for s in self.sigs.values():
             self.assertIn(s.state, (WORKING, IDLE))
