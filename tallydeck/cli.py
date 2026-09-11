@@ -273,6 +273,7 @@ def cmd_brief(cfg, args):
     from .brief import build_cached
     roots = []
     codex_roots = []
+    grok_roots = []
     for spec in cfg["sources"]:
         if spec.get("kind") == "claude-sessions":
             for r in spec.get("roots", []) or []:
@@ -282,10 +283,13 @@ def cmd_brief(cfg, args):
         elif spec.get("kind") == "codex-sessions":
             if spec.get("root"):
                 codex_roots.append(Path(str(spec["root"])).expanduser())
+        elif spec.get("kind") == "grok-sessions":
+            grok_roots.append(Path(str(spec.get("root") or Path.home() / ".grok" / "sessions")).expanduser())
     tasks_cmd = cfg.get("brief", {}).get("tasks_cmd") or None
     kwargs = dict(session=args.session or "", project=args.project or "",
                   label=args.label or "", roots=roots or None, state=args.state or "",
-                  tasks_cmd=tasks_cmd, ask=args.ask or "", codex_roots=codex_roots or None)
+                  tasks_cmd=tasks_cmd, ask=args.ask or "",
+                  codex_roots=codex_roots or None, grok_roots=grok_roots or None)
     if getattr(args, "interactive", False):
         from .brief import document, render
         from .popup import choose

@@ -41,8 +41,19 @@ def _codex_session_file(session: str, roots: list[Path]) -> Path | None:
     return None
 
 
+def _grok_session_file(session: str, roots: list[Path]) -> Path | None:
+    """Grok stores ~/.grok/sessions/<urlencoded-cwd>/<uuid>/chat_history.jsonl."""
+    if not session:
+        return None
+    for root in roots:
+        for hit in root.glob(f"*/{session}/chat_history.jsonl"):
+            return hit
+    return None
+
+
 def _find_session(session: str, roots: list[Path],
-                   codex_roots: list[Path]) -> tuple[Path | None, str]:
+                   codex_roots: list[Path],
+                   grok_roots: list[Path] | None = None) -> tuple[Path | None, str]:
     """(path, kind) — kind picks which transcript parser reads it. Claude
     checked first: cheap glob, and a session id collision across harnesses
     is not a real-world case worth optimizing for."""
@@ -54,6 +65,9 @@ def _find_session(session: str, roots: list[Path],
     fp = _codex_session_file(session, codex_roots)
     if fp:
         return fp, "codex"
+    fp = _grok_session_file(session, grok_roots or [])
+    if fp:
+        return fp, "grok"
     return None, ""
 
 
@@ -137,16 +151,27 @@ def _tasks(project: str, tasks_cmd: list[str] | None = None,
     return hits
 
 
+def _last_texts_grok(path: Path, want: int = 2) -> list[str]:
+    from .transcripts import recent_texts
+    return recent_texts(path, "grok", want)
+
+
 def document(session: str, project: str, label: str = "",
              roots=None, state: str = "", tasks_cmd=None, ask: str = "",
-             codex_roots=None):
+             codex_roots=None, grok_roots=None):
     from .decisions import decision_text, decision_support
     from .transcripts import pending_ask
     roots = roots or [Path.home() / ".claude/projects"]
     codex_roots = codex_roots or [Path.home() / ".codex/sessions"]
-    fp, kind = _find_session(session, roots, codex_roots)
-    texts = (_last_texts_codex(fp) if kind == "codex" else _last_texts(fp)) if fp else []
-    tool = pending_ask(fp, kind) if fp else ""
+    grok_roots = grok_roots or [Path.home() / ".grok" / "sessions"]
+    fp, kind = _find_session(session, roots, codex_roots, grok_roots)
+    if kind == "codex":
+        texts = _last_texts_codex(fp) if fp else []
+    elif kind == "grok":
+        texts = _last_texts_grok(fp) if fp else []
+    else:
+        texts = _last_texts(fp) if fp else []
+    tool = pending_ask(fp, kind) if fp and kind != "grok" else ""
     # A current tool prompt supersedes prose. Earlier messages are support only.
     decision = ask or tool or (decision_text(texts[0]) if texts else "")
     sections = []
@@ -211,8 +236,9 @@ def render(doc, width):
 
 def build(session: str, project: str, label: str = "", roots=None,
           state: str = "", tasks_cmd=None, ask: str = "", codex_roots=None,
-          width: int | None = None) -> str:
-    doc = document(session, project, label, roots, state, tasks_cmd, ask, codex_roots)
+          grok_roots=None, width: int | None = None) -> str:
+    doc = document(session, project, label, roots, state, tasks_cmd, ask,
+                   codex_roots, grok_roots)
     width = width or shutil.get_terminal_size((80, 24)).columns
     try:
         from .popup import Console, THEME
@@ -230,8 +256,9 @@ def build(session: str, project: str, label: str = "", roots=None,
 
 def build_cached(session: str, project: str, label: str = "", roots=None,
                  state: str = "", tasks_cmd=None, ask: str = "", codex_roots=None,
-                 width: int | None = None) -> str:
+                 grok_roots=None, width: int | None = None) -> str:
     # Do not cache presentation (terminal width, label, repo and
     # tasks can change independently of its mtime). Full identity prevents UUIDv7
     # collisions; old brief-<prefix>.ans files are intentionally never consulted.
-    return build(session, project, label, roots, state, tasks_cmd, ask, codex_roots, width)
+    return build(session, project, label, roots, state, tasks_cmd, ask,
+                 codex_roots, grok_roots, width)

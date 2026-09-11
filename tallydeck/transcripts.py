@@ -40,6 +40,15 @@ def recent_texts(path: Path, kind: str, want=2):
                 text = p.get('last_agent_message') or ''
             elif rec.get('type') == 'response_item' and p.get('role') == 'assistant':
                 text = '\n\n'.join(str(b.get('text') or '') for b in p.get('content', []) if isinstance(b, dict))
+        elif kind == 'grok':
+            if rec.get('type') == 'assistant':
+                c = rec.get('content')
+                if isinstance(c, str):
+                    text = c
+                elif isinstance(c, list):
+                    text = '\n\n'.join(
+                        str(b.get('text') or '') for b in c
+                        if isinstance(b, dict) and b.get('type') == 'text')
         text = text.strip()
         if text and (not texts or texts[-1] != text): texts.append(text)
         if len(texts) >= want: break

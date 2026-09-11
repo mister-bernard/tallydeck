@@ -107,6 +107,24 @@ def test_grok_key_wears_its_tally_bar_on_the_bottom():
     assert not near(gk.getpixel((1, px // 2)), blue)
 
 
+def test_brief_reads_a_grok_transcript(tmp_path):
+    from tallydeck.brief import document
+    root = tmp_path / "sessions" / "%2Ftmp%2Fhunt"
+    uid = "01cccccccc-dddd-7eee-8fff-000000000000"
+    sess = root / uid
+    sess.mkdir(parents=True)
+    (sess / "chat_history.jsonl").write_text(
+        json.dumps({"type": "assistant",
+                    "content": "Should I ping you about the Caspian Blue County in NM?"})
+        + "\n")
+    doc = document(uid, "/tmp/hunt", label="cruiser-finder",
+                   grok_roots=[tmp_path / "sessions"], state="attention")
+    blob = "\n".join(t for _, t in doc["sections"])
+    assert "Caspian Blue County" in blob
+    assert any(h.startswith("THE ASK") or h.startswith("WHERE IT LEFT OFF")
+               for h, _ in doc["sections"])
+
+
 def test_term_surface_marks_grok_keys():
     sigs = [Signal(id="gk/x", label="grok", state=WORKING,
                    meta={"harness": "grok"})]

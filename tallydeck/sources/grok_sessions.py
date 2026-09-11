@@ -28,7 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import unquote
 
-from ..signal import Signal, WORKING, SUCCESS, IDLE
+from ..signal import Signal, WORKING, SUCCESS, IDLE, ATTENTION
 from ..paths import contrib_bin, state_dir
 from ..titles import TitleSync, resolve_label, tmux_for
 from .base import Source
@@ -217,7 +217,16 @@ class GrokSessionsSource(Source):
         state = classify(records)
         if state == WORKING and (now - mtime) > self.stall:
             state = IDLE
-        ended = state in (SUCCESS,)
+        last_text = ""
+        chat = sess / "chat_history.jsonl"
+        if chat.is_file() and state in (SUCCESS, IDLE):
+            from ..transcripts import recent_texts
+            from .claude_sessions import asks_question
+            texts = recent_texts(chat, "grok", 1)
+            last_text = texts[0] if texts else ""
+            if last_text and asks_question(last_text):
+                state = ATTENTION
+        ended = state in (SUCCESS, ATTENTION)
         if ended and (now - mtime) < self.dwell:
             state, ended = WORKING, False
         oneshot = kind == "headless"
@@ -238,6 +247,9 @@ class GrokSessionsSource(Source):
             sub += f" · {rate * 60 / 1024:.0f}k/m"
         if state == SUCCESS:
             sub = f"done · {_age_str(now - mtime)}"
+        if state == ATTENTION and last_text:
+            import re as _re
+            sub = _re.sub(r"[*_`#]+", "", last_text)[:280]
         action = None
         if not oneshot:
             route = contrib_bin("tally-popup-route")

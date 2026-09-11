@@ -49,12 +49,20 @@ if [ -n "$TARGET" ] && ! T display -p -t "$TARGET" '#{pane_id}' >/dev/null 2>&1;
   TARGET=""
 fi
 
-# Which claude binary owns this session's history (account B has its own HOME).
+# Which binary owns this session's history (account B has its own HOME).
 BIN="claude"
 [ "$ACCT" = "B" ] && BIN="$HOME/.local/bin/claude-b"
 printf -v RESUME '%q --dangerously-skip-permissions --resume %q; exec bash -l' "$BIN" "$UUID"
-case "$SIGID" in cx/*)
-  printf -v RESUME '%q resume --dangerously-bypass-approvals-and-sandbox %q; exec bash -l' "${CODEX_BIN:-codex}" "$UUID" ;;
+case "$SIGID" in
+  cx/*)
+    printf -v RESUME '%q resume --dangerously-bypass-approvals-and-sandbox %q; exec bash -l' "${CODEX_BIN:-codex}" "$UUID" ;;
+  gk/*|hunt/*)
+    # Grok resume is cwd-sensitive (sessions are grouped by encoded cwd) and
+    # must --always-approve or the resurrected TUI parks on a permission
+    # prompt — the blank-window failure this branch exists to close.
+    GROK_BIN="${GROK_BIN:-$HOME/.local/bin/grok}"
+    printf -v RESUME 'cd %q && env HOME=%q %q --always-approve --resume %q; exec bash -l' \
+      "${PROJ:-$HOME}" "$HOME" "$GROK_BIN" "$UUID" ;;
 esac
 
 # Terminals answer queries (the DA1 reply "^[[?1;2c") and those bytes arrive
@@ -82,7 +90,7 @@ TAKEN_DIR="${TALLYDECK_STATE:-$HOME/.tallydeck}/route-taken"
 TAKEN="$TAKEN_DIR/$(printf '%s' "${SIGID:-x}" | tr '/' '_')"
 ACTIONS="space done (mute) · q / Esc dismiss"
 if [ -n "$LIVE" ] || [ -n "$UUID" ]; then
-  ACTIONS="Enter open floating · t tab here · s split here · l text me links · $ACTIONS"
+  ACTIONS="i type a reply · Enter open session · t tab here · s split here · l text me links · $ACTIONS"
 fi
 ACTION_FILE=$(mktemp)
 trap 'rm -f "$ACTION_FILE"' EXIT
@@ -99,6 +107,28 @@ mkdir -p "$TAKEN_DIR"
 
 SESS="${TARGET%%:*}"
 case "$key" in
+  i|I|/)  # TYPE A REPLY into the live pane so a flashing key is steerable
+          # from this window, not only after attaching to the TUI.
+    if [ -z "$LIVE" ] && [ -z "$TARGET" ]; then
+      echo "  no live pane to type into — Enter to resume the session first"
+      sleep 2
+      exit 0
+    fi
+    echo
+    printf '  Steer the session (blank cancels): '
+    IFS= read -r reply || true
+    [ -n "$reply" ] || exit 0
+    DEST="$TARGET"
+    if [ -z "$DEST" ] && [ -n "$UUID" ]; then
+      ensure_resurrected
+      DEST="$NAME"
+    fi
+    # -l is literal: a reply containing ; or $ must not become tmux syntax.
+    T send-keys -t "$DEST" -l -- "$reply"
+    T send-keys -t "$DEST" Enter
+    echo "  sent."
+    sleep 0.6
+    exit 0 ;;
   l|L)  # TEXT ME THE LINKS — tmux swallows clickable links; the phone does not
     if [ -n "$UUID" ]; then
       "$(dirname "$(realpath "$0")")/tally-link" "$UUID" "${LABEL:-session}"
