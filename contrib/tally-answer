@@ -248,7 +248,10 @@ def _pane_target(q: dict) -> str:
     belongs to its neighbour, so a target recorded when the question went out
     can paste G's answer into a different agent's prompt.
     """
-    for cand in (str(q.get("pane_id") or ""), str(q.get("pane") or "")):
+    # A known ID is authoritative, even when dead. Its old position may
+    # now belong to another agent. Only legacy records may use a position.
+    candidates = [str(q.get("pane_id") or q.get("pane") or "")]
+    for cand in candidates:
         if not cand:
             continue
         # `display -t %999` for a pane that is GONE exits 0 and prints empty
@@ -261,7 +264,7 @@ def _pane_target(q: dict) -> str:
             continue
         if cand.startswith("%") and pid != cand:
             continue
-        return target
+        return pid if cand.startswith("%") else target
     return ""
 
 

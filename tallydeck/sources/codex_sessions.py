@@ -267,8 +267,8 @@ class CodexSessionsSource(Source):
             prose = "" if is_exec else self.state.title(uuid)
             label = resolve_label(harness_prose=prose, pane=info,
                                   cwd=cwd) or "codex"
-            if pane and not is_exec:
-                titled.append((pane, label))   # same topic on every surface
+            if info and info.pane_id and not is_exec:
+                titled.append((info.pane_id, label))   # same topic on every surface
             rate = self._burn_rate(uuid, now, size)
             sub = _age_str(now - mtime)
             if rate >= 20:

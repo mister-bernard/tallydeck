@@ -284,6 +284,15 @@ class AnsweringFromChat(unittest.TestCase):
         self.assertEqual(self.ans._typed("use us-west-2"), "use us-west-2")
 
 
+class PhonePaneIdentity(unittest.TestCase):
+    def test_dead_id_never_falls_back_to_reused_position(self):
+        ans = load("tally-answer")
+        def tmux(*args):
+            return "|:." if "%999" in args else "%277|main:1.4"
+        ans._tmux = tmux
+        self.assertEqual(ans._pane_target({"pane_id": "%999", "pane": "main:1.4"}), "")
+
+
 @unittest.skipIf(not shutil.which("tmux"), "tmux not installed")
 class IntoARealPane(unittest.TestCase):
     """The paste, against a real tmux server: buffer, bracketed paste, Enter.
@@ -324,9 +333,44 @@ class IntoARealPane(unittest.TestCase):
 
     def test_a_pane_id_addresses_the_pane_wherever_it_sits(self):
         self.assertEqual(self.ans._pane_target({"pane_id": self.pane_id}),
-                         self.target)
+                         self.pane_id)
         self.assertEqual(self.ans._pane_target({"pane_id": "%999",
                                                 "pane": "gone:9.9"}), "")
+
+    def test_title_and_reply_follow_pane_after_visual_swap(self):
+        from tallydeck.titles import Tmux, TitleSync
+        tmux = ["tmux", "-S", self.sock]
+        other_out = Path(self.tmp.name) / "neighbor"
+        other = subprocess.run(tmux + ["split-window", "-d", "-P", "-F",
+                               "#{pane_id}", "-t", self.pane_id,
+                               f"cat > {other_out}"], check=True,
+                               capture_output=True, text=True).stdout.strip()
+        table = Tmux(self.sock)
+        table.panes(force=True)
+        sync = TitleSync(table, every=0)
+        route = self.ans._pane_target({"pane_id": self.pane_id, "pane": self.target})
+        subprocess.run(tmux + ["swap-pane", "-s", self.pane_id, "-t", other], check=True)
+        sync.push([(self.pane_id, "Current subject")], force=True)
+        def title(pid):
+            return subprocess.run(tmux + ["show-options", "-p", "-v", "-t", pid,
+                                         "@tally_title"], capture_output=True,
+                                  text=True).stdout.strip()
+        self.assertEqual(title(self.pane_id), "Current subject")
+        self.assertEqual(title(other), "")
+        self.assertTrue(self.ans._paste_into_pane(route, "2"))
+        for _ in range(40):
+            if self.out.exists() and self.out.read_text().strip():
+                break
+            time.sleep(0.05)
+        self.assertEqual(self.out.read_text().strip(), "2")
+        self.assertEqual(other_out.read_text().strip(), "")
+
+    def test_dead_id_rejects_a_live_replacement_at_its_old_position(self):
+        tmux = ["tmux", "-S", self.sock]
+        subprocess.run(tmux + ["split-window", "-d", "-t", self.pane_id, "cat"], check=True)
+        subprocess.run(tmux + ["kill-pane", "-t", self.pane_id], check=True)
+        self.assertEqual(self.ans._pane_target({"pane_id": self.pane_id,
+                                                "pane": self.target}), "")
 
 
 if __name__ == "__main__":

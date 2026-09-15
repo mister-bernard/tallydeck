@@ -19,6 +19,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from tallydeck import titles as titles_mod
@@ -315,10 +316,10 @@ class OurOwnTitlesAreCorrectable(unittest.TestCase):
                  pane_id="%276", title="Storage expansion",
                  authored=self.authored()["%276"])
         t = FakeTmux({"main:1.4": p})
-        TitleSync(t, every=0).push([("main:1.4", "Getting everything running")],
+        TitleSync(t, every=0).push([("%276", "Getting everything running")],
                                    force=True)
         self.assertEqual(t.titles,
-                         [("main:1.4", "Getting everything running")])
+                         [("%276", "Getting everything running")])
 
     def test_a_torn_or_absent_ledger_is_not_a_human_title(self):
         (self.state / "title-renames-broken.json").write_text("{oh no")
@@ -331,6 +332,15 @@ class OurOwnTitlesAreCorrectable(unittest.TestCase):
         record_renames([{"pane": "%9", "old_title": "", "old_source": "",
                          "new_title": "Deck alerts"}], other)
         self.assertEqual(authored_titles(other)["%9"], frozenset({"Deck alerts"}))
+
+    def test_two_batches_in_one_second_keep_both_receipts(self):
+        self.state = self.state / "fresh-batches"
+        with patch.object(titles_mod.time, "strftime", return_value="20260915-010000"):
+            record_renames([{"pane": "%276", "new_title": "Storage expansion"}], self.state)
+            record_renames([{"pane": "%277", "new_title": "Deck alerts"}], self.state)
+        p = pane(title="Storage expansion", authored=self.authored()["%276"])
+        self.assertEqual(resolve_label(harness_title="Current subject", pane=p),
+                         "Current subject")
 
 
 class FakeListPanes(Tmux):
@@ -484,8 +494,8 @@ class Sync(unittest.TestCase):
 
     def test_multi_pane_window_is_not_renamed(self):
         t, s = self.sync({"main-O:1.1": pane(npanes=5)})
-        s.push([("main-O:1.1", "deck work")], force=True)
-        self.assertEqual(t.titles, [("main-O:1.1", "deck work")])
+        s.push([("%1", "deck work")], force=True)
+        self.assertEqual(t.titles, [("%1", "deck work")])
         self.assertEqual(t.renames, [],
                          "a five-session window must not be named after one")
 
@@ -496,7 +506,7 @@ class Sync(unittest.TestCase):
 
     def test_human_named_window_is_left_alone(self):
         t, s = self.sync({"main-O:1.1": pane(window="Session titles")})
-        s.push([("main-O:1.1", "deck work")], force=True)
+        s.push([("%1", "deck work")], force=True)
         self.assertEqual(t.renames, [])
 
     def test_throttle_holds_between_pushes(self):
@@ -509,6 +519,28 @@ class Sync(unittest.TestCase):
         t, s = self.sync({})
         s.push([("ghost:9.9", "nothing")], force=True)
         self.assertEqual(t.titles, [])
+
+    def test_refresh_cannot_move_a_title_onto_its_neighbor(self):
+        original = pane(target="main:1.4", pane_id="%276", npanes=6)
+        neighbor = pane(target="main:1.5", pane_id="%277", npanes=6)
+        t = FakeTmux({original.target: original, neighbor.target: neighbor})
+        # Pairs are resolved before the forced refresh. %7 closes in between.
+        def refreshed(force=False):
+            if force:
+                original.target = "main:1.3"
+                neighbor.target = "main:1.4"
+                t._panes = {original.target: original, neighbor.target: neighbor}
+            return t._panes
+        t.panes = refreshed
+        TitleSync(t, every=0).push([("main:1.4", "Current subject")], force=True)
+        self.assertEqual(t.titles, [("%276", "Current subject")])
+        self.assertEqual(neighbor.title, "")
+
+    def test_stable_id_pair_survives_visual_order_change(self):
+        p = pane(target="main:1.3", pane_id="%276", npanes=5)
+        t, sync = self.sync({p.target: p})
+        sync.push([("%276", "Current subject")], force=True)
+        self.assertEqual(t.titles, [("%276", "Current subject")])
 
 
 class CodexIdentity(unittest.TestCase):

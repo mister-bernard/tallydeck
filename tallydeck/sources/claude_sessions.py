@@ -404,9 +404,9 @@ class ClaudeSessionsSource(Source):
                 sess = pane.split(":", 1)[0] if pane else ""
                 label = resolve_label(harness_title=harness_title, pane=info,
                                       session_name=sess, cwd=full)
-                if pane and not oneshot:
+                if info and info.pane_id and not oneshot:
                     # Same topic on every surface: key, pane border, window.
-                    self._titled.append((pane, label))
+                    self._titled.append((info.pane_id, label))
                 # The press is HUB-OWNED, like a raised question: the hub
                 # runs tmux, so it puts the router popup up on the operator's
                 # attached terminal(s) itself. Nothing on the deck machine has

@@ -50,6 +50,7 @@ import os
 import re
 import sqlite3
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -499,8 +500,15 @@ def record_renames(records: list[dict], state: Path | None = None) -> str:
     """
     root = Path(state) if state is not None else state_dir()
     root.mkdir(parents=True, exist_ok=True)
-    fp = root / f"title-renames-{time.strftime('%Y%m%d-%H%M%S')}.json"
-    fp.write_text(json.dumps(list(records), ensure_ascii=False, indent=2))
+    # Unique batches cannot erase provenance when two writers run in one
+    # second. Publish only complete JSON so readers never see half a receipt.
+    prefix = f"title-renames-{time.strftime('%Y%m%d-%H%M%S')}-"
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=root,
+                                     prefix=prefix, suffix=".tmp", delete=False) as f:
+        json.dump(list(records), f, ensure_ascii=False, indent=2)
+        temporary = Path(f.name)
+    fp = temporary.with_suffix(".json")
+    temporary.replace(fp)
     _ledger["sig"] = None              # next read rebuilds
     return str(fp)
 
@@ -737,16 +745,31 @@ class TitleSync:
         self._ts = 0.0
 
     def push(self, pairs, force: bool = False) -> int:
-        """pairs: iterable of (pane target, title). Returns writes made."""
+        """Pairs of (stable pane ID, title); legacy targets bind before refresh.
+
+        Returns writes made. Production sources must pass IDs captured when
+        resolving the label, rather than positions which can be reused.
+        """
         now = time.time()
         if not force and now - self._ts < self.every:
             return 0
         self._ts = now
-        panes = self.tmux.panes(force=True)
-        writes = 0
+        # Freeze identities BEFORE refreshing positions. Source polls pass
+        # stable IDs; positional callers are bound to the table they read.
+        previous = self.tmux.panes()
+        bound = []
         for target, title in pairs:
+            old = previous.get(target)
+            pane_id = target if target.startswith("%") else (
+                old.pane_id if old else "")
+            if pane_id:
+                bound.append((pane_id, title))
+        panes = self.tmux.panes(force=True)
+        by_id = {p.pane_id: p for p in panes.values()}
+        writes = 0
+        for target, title in bound:
             title = " ".join(str(title or "").split())[:120]
-            info = panes.get(target)
+            info = by_id.get(target)
             if not title or info is None or info.manual_title:
                 continue
             if info.title != title:
