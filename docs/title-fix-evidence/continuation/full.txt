@@ -1,0 +1,39 @@
+........................................................................ [ 20%]
+........................................................................ [ 40%]
+........................................................................ [ 60%]
+................................................................ [ 78%]
+........................................................................ [ 98%]
+.....                                                                    [100%]
+=============================== warnings summary ===============================
+tests/test_core.py::test_marble_luminance_ceiling_holds_across_heat
+tests/test_core.py::test_marble_luminance_ceiling_holds_across_heat
+  /home/openclaw/runs/queue-start-59783/tallydeck/tests/test_core.py:511: DeprecationWarning: Image.Image.getdata is deprecated and will be removed in Pillow 14 (2027-10-15). Use get_flattened_data instead.
+    for r, g, b in img.getdata():
+
+tests/test_core.py::test_marble_luminance_ceiling_holds_across_heat
+tests/test_core.py::test_marble_luminance_ceiling_holds_across_heat
+  /home/openclaw/runs/queue-start-59783/tallydeck/tests/test_core.py:521: DeprecationWarning: Image.Image.getdata is deprecated and will be removed in Pillow 14 (2027-10-15). Use get_flattened_data instead.
+    mean = lambda im: sum(sum(p) for p in im.getdata()) / (3 * 64 * 64)
+
+tests/test_core.py::test_fireworks_overlay_keeps_size_and_changes_the_face
+tests/test_core.py::test_fireworks_overlay_keeps_size_and_changes_the_face
+  /home/openclaw/runs/queue-start-59783/tallydeck/tests/test_core.py:984: DeprecationWarning: Image.Image.getdata is deprecated and will be removed in Pillow 14 (2027-10-15). Use get_flattened_data instead.
+    assert list(burst.getdata()) != list(face.getdata())
+
+tests/test_core.py::test_meter2_renders_the_split_bar_with_and_without_codex
+tests/test_core.py::test_meter2_renders_the_split_bar_with_and_without_codex
+  /home/openclaw/runs/queue-start-59783/tallydeck/tests/test_core.py:1716: DeprecationWarning: Image.Image.getdata is deprecated and will be removed in Pillow 14 (2027-10-15). Use get_flattened_data instead.
+    assert list(a.getdata()) != list(b.getdata())
+
+tests/test_core.py::test_meter2_splits_the_bottom_bar_across_two_codex_accounts
+tests/test_core.py::test_meter2_splits_the_bottom_bar_across_two_codex_accounts
+  /home/openclaw/runs/queue-start-59783/tallydeck/tests/test_core.py:1798: DeprecationWarning: Image.Image.getdata is deprecated and will be removed in Pillow 14 (2027-10-15). Use get_flattened_data instead.
+    assert list(one.getdata()) != list(both.getdata())
+
+tests/test_core.py::test_meter2_whispers_the_codex_window_and_staleness
+tests/test_core.py::test_meter2_whispers_the_codex_window_and_staleness
+  /home/openclaw/runs/queue-start-59783/tallydeck/tests/test_core.py:1903: DeprecationWarning: Image.Image.getdata is deprecated and will be removed in Pillow 14 (2027-10-15). Use get_flattened_data instead.
+    assert list(a.getdata()) != list(b.getdata())     # "weekly" vs "stale"
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+357 passed, 12 warnings, 8 subtests passed in 26.01s

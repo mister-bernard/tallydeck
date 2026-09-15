@@ -2,11 +2,12 @@
 
 ## Outcome
 
-Candidate committed as `07efa25079d135010f5bf6e696c132cf34586e0b` on
-`queue/title-fix-59783` in the assigned isolated checkout. **Full acceptance is
-blocked**, not green: 86 title/phone tests pass; the full suite has the same
-10 launch/ownership failures as the untouched baseline. Parent `tc147d0`
-retains review, release and physical-device acceptance. Nothing was deployed.
+Title behavior candidate `07efa25079d135010f5bf6e696c132cf34586e0b` now has
+full local acceptance at `f98e489a35c47f299bfb727fa7b3f9c9f610ed5b` on
+`queue/title-fix-59783`: **357 passed, 8 subtests passed**, plus **86 passed**
+in the required title/phone modules. The continuation changes test fixtures only.
+Parent `tc147d0` retains independent review, release and physical-device
+acceptance. Nothing was deployed.
 
 ## Intention and acceptance
 
@@ -14,8 +15,8 @@ Keep the displayed topic and phone reply attached to the correct session,
 even when panes move, while preserving genuine human title overrides.
 Ordinary local candidate; no new dependencies. Required checks were the title
 and phone test modules, the full existing pytest suite, and diff validation.
-The pipeline claim for this checkout belongs to the executing task's runner
-(`pipeline-8a819f4bbcff4e70820168eb450d3d5b`); it was preserved.
+The original runner claim was reconciled by the parent before this continuation.
+This worker did not change host ownership records or release any host claim.
 
 ## Before / after
 
@@ -55,31 +56,58 @@ git diff --check
 | Untouched baseline full suite, extracted with `git archive` into a temporary directory inside this checkout | 338 passed, 10 failed, 8 subtests passed | 1 |
 | Four new deterministic regressions against original implementation | 80 passed, 4 failed | 1 |
 | Candidate title/phone modules, including two additional real tmux regressions | 86 passed | 0 |
-| Final candidate full suite | 344 passed, 10 failed, 8 subtests passed | 1 |
+| Initial candidate full suite (historical) | 344 passed, 10 failed, 8 subtests passed | 1 |
+| Continuation title/phone modules | 86 passed | 0 |
+| Continuation full suite, exact configured acceptance command | 357 passed, 8 subtests passed, 12 deprecation warnings | 0 |
 | Diff whitespace validation | Clean | 0 |
 
-Full-suite failures match the baseline by test name: one offer test in
-`test_core.py`, five parametrized real-tmux launch cases, the offer route test,
-and three admission tests in `test_launch_routing.py`. Each spawn was refused
-by the installed ownership helper while its follow-up exact-path lookup printed
-`FREE`. The wrapper suppresses the acquire command's stderr; the specific
-registry condition is **not established** by that output. Shared ownership
-records and admission controls were not cleared, bypassed or modified.
+### Test-isolation continuation
 
-Logs and SHA-256 bindings are in [docs/title-fix-evidence](docs/title-fix-evidence).
-The manifest binds source files, project metadata, external claim helper and
-logs. Builder and inline diff reviewer: OpenAI Codex, GPT-6 Astra. No independent
+The ten historical launch failures used the host registry. Parent diagnosis
+identified an old broad `/tmp` claim overlapping disposable test directories.
+This worker did not remove it or rerun the failing tests against host state.
+
+`tests/conftest.py` now loads the installed `work-claim.py` implementation and
+binds its `REG` global to a per-test disposable directory before calling `main`.
+A disposable copy of `contrib/tally-spawn` changes only its literal helper path;
+the assertion requires exactly one such binding. `TALLYDECK_HOME` points the
+copy back to this candidate. Production code, helper and registry remain
+unchanged. Missing helper is a test failure, not a skip or success stub.
+
+Launch and offer fixtures use this path, including offer cleanup. Real atomic
+acquire/adopt/release behavior is exercised with real private tmux sockets and
+fake agents. Added tests verify one winner across competing helper processes,
+cross-launcher refusal before creating a session, and ancestor/child overlap
+refusal. Existing memory admission assertions remain intact; their force/no-gate
+cases were pre-existing test scenarios using disposable processes, not overrides
+of this worker's admission. The standalone non-pytest claim script was not run.
+
+Configured full acceptance (exit 0, 26.01 seconds):
+
+```sh
+/usr/bin/env PYTHONPATH=/home/openclaw/projects/lofoten-sweeper/.venv/lib/python3.12/site-packages /usr/bin/python3 -m pytest -q
+```
+
+The 12 warnings are existing Pillow `getdata` deprecations in core tests.
+No failed or skipped tests were reported. The preliminary core/launch run
+passed 144 tests before adding the three ownership regressions; full acceptance
+includes those regressions. Title/phone acceptance passed in 0.93 seconds.
+
+Historical logs remain in [docs/title-fix-evidence](docs/title-fix-evidence).
+The continuation manifest and logs in its `continuation` directory bind the
+clean tested source commit/tree, tracked source hashes, external helper hash,
+installed package metadata and actual commands/exit statuses. Evidence logs
+normalize trailing whitespace only. This is not a hermetic build receipt.
+Builder and inline diff reviewer: OpenAI Codex, GPT-6 Astra. No independent
 reviewer was launched because this execution unit explicitly forbids delegation;
-parent review is still required. These are local test receipts, not hermetic
-build or independent review attestations.
+parent review is still required.
 
 ## Limitations and resume
 
-- Full-suite green remains mandatory. Resolve the launch/ownership test
-  environment through its owner, then rerun both commands above against the
-  candidate. Do not weaken admission or reuse the failed receipt as acceptance.
-- The dispatcher's configured bare `python3 -m pytest` also needs an existing
-  pytest-capable environment; system Python currently cannot import pytest.
+- Local acceptance is green. The configured command supplies the installed
+  pytest path explicitly; bare system Python still lacks pytest. The external
+  ownership helper remains a declared local dependency; changes require fresh
+  acceptance evidence.
 - No live Stream Deck/Mac, real phone delivery, production tmux, cron, installed
   scripts, gateway or service changes were exercised. Parent owns device checks
   and promotion. No SSH, credentials, installs or external sends were used.
