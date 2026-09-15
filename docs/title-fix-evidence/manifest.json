@@ -1,0 +1,22 @@
+{
+  "candidate": "07efa25079d135010f5bf6e696c132cf34586e0b",
+  "baseline": "43e0e829b57f7a15adf63851fed742aec0cb7075",
+  "python": "3.12.3",
+  "dependency_path": "/home/openclaw/projects/lofoten-sweeper/.venv/lib/python3.12/site-packages",
+  "inputs_sha256": {
+    "tallydeck/titles.py": "7965a816834f6a9999ea23b0a2d253ad08586bcb244446191ef59a7e189647a3",
+    "tallydeck/sources/claude_sessions.py": "bcf65e82438f43e2b7c66c6ff65b2ca51801d3f9c0e6f3c6ead49922084a4b94",
+    "tallydeck/sources/codex_sessions.py": "548d8f00fc45a16408a38c482dbe06509505c3d33fd0d8afa03eb19ca148a0df",
+    "contrib/tally-answer": "61c40bfc35d3da6f8182ec27287264747b57b86fde78f9f77bedd1ed68323b1b",
+    "tests/test_titles.py": "1d1a284e6fc5cdc3d852ffea1b31bb870727d58bc70fdda3922ba719327887c5",
+    "tests/test_phone_ask.py": "9785d3cd61a8ee28cbe3be341daaca842538855e10eda05d594d70e89023ae9d",
+    "pyproject.toml": "838c826e7cd166da31a25cd1d97c9fa76b8bde216f6f5bad0c52fcb07a0c5ce2",
+    "/home/openclaw/scripts/work-claim.py": "73b5e44acb850d2d8ff08ec9c45fda3295a8898d5bf7da5b6bb9eddd719e3897"
+  },
+  "evidence_sha256": {
+    "baseline-full.txt": "69c90a55052632c768054152fb72e1cdc04e676a739ccdc47f643842f0a803d1",
+    "regressions-before.txt": "e3040fc8ed41c52745e7b9d764adbbac634a538afd9e9bea1062232622a9da5b",
+    "targeted-after.txt": "bde7aefafb6638b0ba2e386333bde8ed17f40a7c7ff59eec4e64c181d6e74217",
+    "full-after.txt": "3a5f03a06bc347740bf43b1d3721e9f408b679a76b8c0c43bd2d23d549007d5c"
+  }
+}

@@ -1,0 +1,342 @@
+........................................................................ [ 20%]
+........................F............................................... [ 41%]
+.......................FFFFFF....FFF.................................... [ 62%]
+................................................................ [ 80%]
+....................................................................     [100%]
+=================================== FAILURES ===================================
+________________ test_offer_spawns_immediately_and_asks_nobody _________________
+
+tmp_path = PosixPath('/tmp/pytest-of-openclaw/pytest-141/test_offer_spawns_immediately_0')
+
+    def test_offer_spawns_immediately_and_asks_nobody(tmp_path):
+        """The old offer raised a decision and held the work until it was answered,
+        which made the operator's answer a precondition for anything starting. It
+        spawns on the spot now: no signal raised, no waiter, no offer record."""
+        import subprocess, os, sys, time as _t
+        from pathlib import Path
+        sock, T = _scratch_tmux()
+        contrib = Path(__file__).resolve().parent.parent / "contrib"
+        fake = tmp_path / "fakeclaude"; fake.write_text("#!/bin/sh\necho \"PROMPT:$2\"; sleep 20\n"); fake.chmod(0o755)
+        env = dict(os.environ, TALLYDECK_STATE=str(tmp_path), TALLY_TMUX_SOCKET=sock, CLAUDE_BIN=str(fake),
+                   TALLY_BIN=str(contrib / "tally"), TALLY_SPAWN_BIN=str(contrib / "tally-spawn"),
+                   TALLY_SPAWN_NO_GATE="1")   # offer's contract, not the memory gate's
+        env.pop("TMUX", None)
+        try:
+            r = subprocess.run([sys.executable, str(contrib / "tally-offer"), "big-job", "Rebuild the datum", "-a", "A", "-c", str(tmp_path),
+                                "-p", "-"], input="Full brief here.", capture_output=True, text=True, env=env, timeout=30)
+>           assert r.returncode == 0, r.stderr
+E           AssertionError: tally-offer: spawn failed: tally-spawn: REFUSED 'big-job' — another worker already owns /tmp/pytest-of-openclaw/pytest-141/test_offer_spawns_immediately_0.
+E               FREE /tmp/pytest-of-openclaw/pytest-141/test_offer_spawns_immediately — run it here instead
+E             
+E           assert 1 == 0
+E            +  where 1 = CompletedProcess(args=['/usr/bin/python3', '/home/openclaw/runs/queue-start-59783/tallydeck/.baseline-j547n3ty/contrib...pawns_immediately_0.\n  FREE /tmp/pytest-of-openclaw/pytest-141/test_offer_spawns_immediately — run it here instead\n").returncode
+
+tests/test_core.py:1589: AssertionError
+_______________ test_real_tmux_launch[markers0-options0-codex-O] _______________
+
+isolated = (PosixPath('/tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers00'), {'SHELL': '/bin/bash', 'CODEX_MANAGE...ch_markers00/tmux.sock'], PosixPath('/tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers00/capture.json'))
+markers = {'CODEX_THREAD_ID': 'parent-cx'}, options = [], harness = 'codex'
+account = 'O'
+
+    @pytest.mark.parametrize('markers,options,harness,account', [
+        ({'CODEX_THREAD_ID': 'parent-cx'}, [], 'codex', 'O'),
+        ({'CLAUDECODE': '1'}, [], 'claude', 'A'),
+        ({'CLAUDECODE': '1', 'HOME': '/x/.claude-b'}, [], 'claude', 'B'),
+        ({'CODEX_THREAD_ID': 'parent-cx'}, ['-a', 'B'], 'claude', 'B'),
+        ({'CLAUDECODE': '1'}, ['--harness', 'codex'], 'codex', 'O'),
+    ])
+    def test_real_tmux_launch(isolated, markers, options, harness, account):
+        state, env, tmux, capture = isolated
+        task = 'Keep quotes " and `backticks` and $(literal) intact.\nSecond line.'
+        r = subprocess.run([str(ROOT / 'contrib/tally-spawn'), 'demo', '-c', str(state), *options, '-p', '-'],
+                           input=task, text=True, capture_output=True, env=env | markers, timeout=15)
+>       assert r.returncode == 0, r.stderr
+E       AssertionError: tally-spawn: REFUSED 'demo' — another worker already owns /tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers00.
+E           FREE /tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers00
+E           Two writers in one tree is the failure this gate exists for; the second one
+E           silently overwrites the first's edits and neither knows.
+E         
+E           If the holder is LIVE:  wait for it, or give this worker its own tree.
+E           If it is STALE:         the owner's process is gone but its work may be half
+E                                   written — look before taking over, then
+E                                   /home/openclaw/scripts/work-claim.py acquire "/tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers00" --owner "spawn:demo" --force
+E           Read-only alongside it: re-run with --share (records no claim).
+E         
+E       assert 3 == 0
+E        +  where 3 = CompletedProcess(args=['/home/openclaw/runs/queue-start-59783/tallydeck/.baseline-j547n3ty/contrib/tally-spawn', 'demo...x_launch_markers00" --owner "spawn:demo" --force\n  Read-only alongside it: re-run with --share (records no claim).\n').returncode
+
+tests/test_launch_routing.py:173: AssertionError
+______________ test_real_tmux_launch[markers1-options1-claude-A] _______________
+
+isolated = (PosixPath('/tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers10'), {'SHELL': '/bin/bash', 'CODEX_MANAGE...ch_markers10/tmux.sock'], PosixPath('/tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers10/capture.json'))
+markers = {'CLAUDECODE': '1'}, options = [], harness = 'claude', account = 'A'
+
+    @pytest.mark.parametrize('markers,options,harness,account', [
+        ({'CODEX_THREAD_ID': 'parent-cx'}, [], 'codex', 'O'),
+        ({'CLAUDECODE': '1'}, [], 'claude', 'A'),
+        ({'CLAUDECODE': '1', 'HOME': '/x/.claude-b'}, [], 'claude', 'B'),
+        ({'CODEX_THREAD_ID': 'parent-cx'}, ['-a', 'B'], 'claude', 'B'),
+        ({'CLAUDECODE': '1'}, ['--harness', 'codex'], 'codex', 'O'),
+    ])
+    def test_real_tmux_launch(isolated, markers, options, harness, account):
+        state, env, tmux, capture = isolated
+        task = 'Keep quotes " and `backticks` and $(literal) intact.\nSecond line.'
+        r = subprocess.run([str(ROOT / 'contrib/tally-spawn'), 'demo', '-c', str(state), *options, '-p', '-'],
+                           input=task, text=True, capture_output=True, env=env | markers, timeout=15)
+>       assert r.returncode == 0, r.stderr
+E       AssertionError: tally-spawn: REFUSED 'demo' — another worker already owns /tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers10.
+E           FREE /tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers10
+E           Two writers in one tree is the failure this gate exists for; the second one
+E           silently overwrites the first's edits and neither knows.
+E         
+E           If the holder is LIVE:  wait for it, or give this worker its own tree.
+E           If it is STALE:         the owner's process is gone but its work may be half
+E                                   written — look before taking over, then
+E                                   /home/openclaw/scripts/work-claim.py acquire "/tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers10" --owner "spawn:demo" --force
+E           Read-only alongside it: re-run with --share (records no claim).
+E         
+E       assert 3 == 0
+E        +  where 3 = CompletedProcess(args=['/home/openclaw/runs/queue-start-59783/tallydeck/.baseline-j547n3ty/contrib/tally-spawn', 'demo...x_launch_markers10" --owner "spawn:demo" --force\n  Read-only alongside it: re-run with --share (records no claim).\n').returncode
+
+tests/test_launch_routing.py:173: AssertionError
+______________ test_real_tmux_launch[markers2-options2-claude-B] _______________
+
+isolated = (PosixPath('/tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers20'), {'SHELL': '/bin/bash', 'CODEX_MANAGE...ch_markers20/tmux.sock'], PosixPath('/tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers20/capture.json'))
+markers = {'CLAUDECODE': '1', 'HOME': '/x/.claude-b'}, options = []
+harness = 'claude', account = 'B'
+
+    @pytest.mark.parametrize('markers,options,harness,account', [
+        ({'CODEX_THREAD_ID': 'parent-cx'}, [], 'codex', 'O'),
+        ({'CLAUDECODE': '1'}, [], 'claude', 'A'),
+        ({'CLAUDECODE': '1', 'HOME': '/x/.claude-b'}, [], 'claude', 'B'),
+        ({'CODEX_THREAD_ID': 'parent-cx'}, ['-a', 'B'], 'claude', 'B'),
+        ({'CLAUDECODE': '1'}, ['--harness', 'codex'], 'codex', 'O'),
+    ])
+    def test_real_tmux_launch(isolated, markers, options, harness, account):
+        state, env, tmux, capture = isolated
+        task = 'Keep quotes " and `backticks` and $(literal) intact.\nSecond line.'
+        r = subprocess.run([str(ROOT / 'contrib/tally-spawn'), 'demo', '-c', str(state), *options, '-p', '-'],
+                           input=task, text=True, capture_output=True, env=env | markers, timeout=15)
+>       assert r.returncode == 0, r.stderr
+E       AssertionError: tally-spawn: REFUSED 'demo' — another worker already owns /tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers20.
+E           FREE /tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers20
+E           Two writers in one tree is the failure this gate exists for; the second one
+E           silently overwrites the first's edits and neither knows.
+E         
+E           If the holder is LIVE:  wait for it, or give this worker its own tree.
+E           If it is STALE:         the owner's process is gone but its work may be half
+E                                   written — look before taking over, then
+E                                   /home/openclaw/scripts/work-claim.py acquire "/tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers20" --owner "spawn:demo" --force
+E           Read-only alongside it: re-run with --share (records no claim).
+E         
+E       assert 3 == 0
+E        +  where 3 = CompletedProcess(args=['/home/openclaw/runs/queue-start-59783/tallydeck/.baseline-j547n3ty/contrib/tally-spawn', 'demo...x_launch_markers20" --owner "spawn:demo" --force\n  Read-only alongside it: re-run with --share (records no claim).\n').returncode
+
+tests/test_launch_routing.py:173: AssertionError
+______________ test_real_tmux_launch[markers3-options3-claude-B] _______________
+
+isolated = (PosixPath('/tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers30'), {'SHELL': '/bin/bash', 'CODEX_MANAGE...ch_markers30/tmux.sock'], PosixPath('/tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers30/capture.json'))
+markers = {'CODEX_THREAD_ID': 'parent-cx'}, options = ['-a', 'B']
+harness = 'claude', account = 'B'
+
+    @pytest.mark.parametrize('markers,options,harness,account', [
+        ({'CODEX_THREAD_ID': 'parent-cx'}, [], 'codex', 'O'),
+        ({'CLAUDECODE': '1'}, [], 'claude', 'A'),
+        ({'CLAUDECODE': '1', 'HOME': '/x/.claude-b'}, [], 'claude', 'B'),
+        ({'CODEX_THREAD_ID': 'parent-cx'}, ['-a', 'B'], 'claude', 'B'),
+        ({'CLAUDECODE': '1'}, ['--harness', 'codex'], 'codex', 'O'),
+    ])
+    def test_real_tmux_launch(isolated, markers, options, harness, account):
+        state, env, tmux, capture = isolated
+        task = 'Keep quotes " and `backticks` and $(literal) intact.\nSecond line.'
+        r = subprocess.run([str(ROOT / 'contrib/tally-spawn'), 'demo', '-c', str(state), *options, '-p', '-'],
+                           input=task, text=True, capture_output=True, env=env | markers, timeout=15)
+>       assert r.returncode == 0, r.stderr
+E       AssertionError: tally-spawn: REFUSED 'demo' — another worker already owns /tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers30.
+E           FREE /tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers30
+E           Two writers in one tree is the failure this gate exists for; the second one
+E           silently overwrites the first's edits and neither knows.
+E         
+E           If the holder is LIVE:  wait for it, or give this worker its own tree.
+E           If it is STALE:         the owner's process is gone but its work may be half
+E                                   written — look before taking over, then
+E                                   /home/openclaw/scripts/work-claim.py acquire "/tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers30" --owner "spawn:demo" --force
+E           Read-only alongside it: re-run with --share (records no claim).
+E         
+E       assert 3 == 0
+E        +  where 3 = CompletedProcess(args=['/home/openclaw/runs/queue-start-59783/tallydeck/.baseline-j547n3ty/contrib/tally-spawn', 'demo...x_launch_markers30" --owner "spawn:demo" --force\n  Read-only alongside it: re-run with --share (records no claim).\n').returncode
+
+tests/test_launch_routing.py:173: AssertionError
+_______________ test_real_tmux_launch[markers4-options4-codex-O] _______________
+
+isolated = (PosixPath('/tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers40'), {'SHELL': '/bin/bash', 'CODEX_MANAGE...ch_markers40/tmux.sock'], PosixPath('/tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers40/capture.json'))
+markers = {'CLAUDECODE': '1'}, options = ['--harness', 'codex']
+harness = 'codex', account = 'O'
+
+    @pytest.mark.parametrize('markers,options,harness,account', [
+        ({'CODEX_THREAD_ID': 'parent-cx'}, [], 'codex', 'O'),
+        ({'CLAUDECODE': '1'}, [], 'claude', 'A'),
+        ({'CLAUDECODE': '1', 'HOME': '/x/.claude-b'}, [], 'claude', 'B'),
+        ({'CODEX_THREAD_ID': 'parent-cx'}, ['-a', 'B'], 'claude', 'B'),
+        ({'CLAUDECODE': '1'}, ['--harness', 'codex'], 'codex', 'O'),
+    ])
+    def test_real_tmux_launch(isolated, markers, options, harness, account):
+        state, env, tmux, capture = isolated
+        task = 'Keep quotes " and `backticks` and $(literal) intact.\nSecond line.'
+        r = subprocess.run([str(ROOT / 'contrib/tally-spawn'), 'demo', '-c', str(state), *options, '-p', '-'],
+                           input=task, text=True, capture_output=True, env=env | markers, timeout=15)
+>       assert r.returncode == 0, r.stderr
+E       AssertionError: tally-spawn: REFUSED 'demo' — another worker already owns /tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers40.
+E           FREE /tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers40
+E           Two writers in one tree is the failure this gate exists for; the second one
+E           silently overwrites the first's edits and neither knows.
+E         
+E           If the holder is LIVE:  wait for it, or give this worker its own tree.
+E           If it is STALE:         the owner's process is gone but its work may be half
+E                                   written — look before taking over, then
+E                                   /home/openclaw/scripts/work-claim.py acquire "/tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers40" --owner "spawn:demo" --force
+E           Read-only alongside it: re-run with --share (records no claim).
+E         
+E       assert 3 == 0
+E        +  where 3 = CompletedProcess(args=['/home/openclaw/runs/queue-start-59783/tallydeck/.baseline-j547n3ty/contrib/tally-spawn', 'demo...x_launch_markers40" --owner "spawn:demo" --force\n  Read-only alongside it: re-run with --share (records no claim).\n').returncode
+
+tests/test_launch_routing.py:173: AssertionError
+____________ test_offer_spawns_the_caller_route_without_a_question _____________
+
+isolated = (PosixPath('/tmp/pytest-of-openclaw/pytest-141/test_offer_spawns_the_caller_r0'), {'SHELL': '/bin/bash', 'CODEX_MANAGE...he_caller_r0/tmux.sock'], PosixPath('/tmp/pytest-of-openclaw/pytest-141/test_offer_spawns_the_caller_r0/capture.json'))
+
+    def test_offer_spawns_the_caller_route_without_a_question(isolated):
+        state, env, tmux, capture = isolated
+        r = subprocess.run([str(ROOT / 'contrib/tally-offer'), 'offered', 'A task', '-c', str(state), '-p', '-'],
+                           input='Full brief', text=True, capture_output=True,
+                           env=env | {'CODEX_THREAD_ID': 'parent-cx'}, timeout=30)
+>       assert r.returncode == 0, r.stderr
+E       AssertionError: tally-offer: spawn failed: tally-spawn: REFUSED 'offered' — another worker already owns /tmp/pytest-of-openclaw/pytest-141/test_offer_spawns_the_caller_r0.
+E           FREE /tmp/pytest-of-openclaw/pytest-141/test_offer_spawns_the_caller_ — run it here instead
+E         
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/home/openclaw/runs/queue-start-59783/tallydeck/.baseline-j547n3ty/contrib/tally-offer', 'offe...pawns_the_caller_r0.\n  FREE /tmp/pytest-of-openclaw/pytest-141/test_offer_spawns_the_caller_ — run it here instead\n").returncode
+
+tests/test_launch_routing.py:201: AssertionError
+_______________________ test_a_healthy_box_still_spawns ________________________
+
+isolated = (PosixPath('/tmp/pytest-of-openclaw/pytest-141/test_a_healthy_box_still_spawn0'), {'SHELL': '/bin/bash', 'CODEX_MANAGE...still_spawn0/tmux.sock'], PosixPath('/tmp/pytest-of-openclaw/pytest-141/test_a_healthy_box_still_spawn0/capture.json'))
+tmp_path = PosixPath('/tmp/pytest-of-openclaw/pytest-141/test_a_healthy_box_still_spawn0')
+
+    def test_a_healthy_box_still_spawns(isolated, tmp_path):
+        state, env, tmux, _ = isolated
+        r = _spawn(_gate_env(env), 'roomy', '-c', str(state), 'task',
+                   meminfo=_meminfo(avail_mb=8000, swap_free_mb=8000), tmp_path=tmp_path)
+>       assert r.returncode == 0, r.stderr
+E       AssertionError: tally-spawn: REFUSED 'roomy' — another worker already owns /tmp/pytest-of-openclaw/pytest-141/test_a_healthy_box_still_spawn0.
+E           FREE /tmp/pytest-of-openclaw/pytest-141/test_a_healthy_box_still_spawn0
+E           Two writers in one tree is the failure this gate exists for; the second one
+E           silently overwrites the first's edits and neither knows.
+E         
+E           If the holder is LIVE:  wait for it, or give this worker its own tree.
+E           If it is STALE:         the owner's process is gone but its work may be half
+E                                   written — look before taking over, then
+E                                   /home/openclaw/scripts/work-claim.py acquire "/tmp/pytest-of-openclaw/pytest-141/test_a_healthy_box_still_spawn0" --owner "spawn:roomy" --force
+E           Read-only alongside it: re-run with --share (records no claim).
+E         
+E       assert 3 == 0
+E        +  where 3 = CompletedProcess(args=['/home/openclaw/runs/queue-start-59783/tallydeck/.baseline-j547n3ty/contrib/tally-spawn', 'room..._box_still_spawn0" --owner "spawn:roomy" --force\n  Read-only alongside it: re-run with --share (records no claim).\n').returncode
+
+tests/test_launch_routing.py:309: AssertionError
+________________________ test_force_overrides_the_gate _________________________
+
+isolated = (PosixPath('/tmp/pytest-of-openclaw/pytest-141/test_force_overrides_the_gate0'), {'SHELL': '/bin/bash', 'CODEX_MANAGED...des_the_gate0/tmux.sock'], PosixPath('/tmp/pytest-of-openclaw/pytest-141/test_force_overrides_the_gate0/capture.json'))
+tmp_path = PosixPath('/tmp/pytest-of-openclaw/pytest-141/test_force_overrides_the_gate0')
+
+    def test_force_overrides_the_gate(isolated, tmp_path):
+        state, env, _, _ = isolated
+        r = _spawn(_gate_env(env), 'urgent', '-c', str(state), 'task', '--force',
+                   meminfo=_meminfo(avail_mb=10, swap_free_mb=0), tmp_path=tmp_path)
+>       assert r.returncode == 0, r.stderr
+E       AssertionError: tally-spawn: REFUSED 'urgent' — another worker already owns /tmp/pytest-of-openclaw/pytest-141/test_force_overrides_the_gate0.
+E           FREE /tmp/pytest-of-openclaw/pytest-141/test_force_overrides_the_gate0
+E           Two writers in one tree is the failure this gate exists for; the second one
+E           silently overwrites the first's edits and neither knows.
+E         
+E           If the holder is LIVE:  wait for it, or give this worker its own tree.
+E           If it is STALE:         the owner's process is gone but its work may be half
+E                                   written — look before taking over, then
+E                                   /home/openclaw/scripts/work-claim.py acquire "/tmp/pytest-of-openclaw/pytest-141/test_force_overrides_the_gate0" --owner "spawn:urgent" --force
+E           Read-only alongside it: re-run with --share (records no claim).
+E         
+E       assert 3 == 0
+E        +  where 3 = CompletedProcess(args=['/home/openclaw/runs/queue-start-59783/tallydeck/.baseline-j547n3ty/contrib/tally-spawn', 'urge...rrides_the_gate0" --owner "spawn:urgent" --force\n  Read-only alongside it: re-run with --share (records no claim).\n').returncode
+
+tests/test_launch_routing.py:317: AssertionError
+_________________ test_no_swap_configured_is_not_an_empty_swap _________________
+
+isolated = (PosixPath('/tmp/pytest-of-openclaw/pytest-141/test_no_swap_configured_is_not0'), {'SHELL': '/bin/bash', 'CODEX_MANAGE...ured_is_not0/tmux.sock'], PosixPath('/tmp/pytest-of-openclaw/pytest-141/test_no_swap_configured_is_not0/capture.json'))
+tmp_path = PosixPath('/tmp/pytest-of-openclaw/pytest-141/test_no_swap_configured_is_not0')
+
+    def test_no_swap_configured_is_not_an_empty_swap(isolated, tmp_path):
+        """A box with swap turned off has SwapTotal=0; that is not a reason to
+        refuse every spawn on it forever."""
+        state, env, _, _ = isolated
+        r = _spawn(_gate_env(env), 'swapless', '-c', str(state), 'task',
+                   meminfo=_meminfo(avail_mb=8000, swap_free_mb=0, swap_total_mb=0),
+                   tmp_path=tmp_path)
+>       assert r.returncode == 0, r.stderr
+E       AssertionError: tally-spawn: REFUSED 'swapless' — another worker already owns /tmp/pytest-of-openclaw/pytest-141/test_no_swap_configured_is_not0.
+E           FREE /tmp/pytest-of-openclaw/pytest-141/test_no_swap_configured_is_not0
+E           Two writers in one tree is the failure this gate exists for; the second one
+E           silently overwrites the first's edits and neither knows.
+E         
+E           If the holder is LIVE:  wait for it, or give this worker its own tree.
+E           If it is STALE:         the owner's process is gone but its work may be half
+E                                   written — look before taking over, then
+E                                   /home/openclaw/scripts/work-claim.py acquire "/tmp/pytest-of-openclaw/pytest-141/test_no_swap_configured_is_not0" --owner "spawn:swapless" --force
+E           Read-only alongside it: re-run with --share (records no claim).
+E         
+E       assert 3 == 0
+E        +  where 3 = CompletedProcess(args=['/home/openclaw/runs/queue-start-59783/tallydeck/.baseline-j547n3ty/contrib/tally-spawn', 'swap...igured_is_not0" --owner "spawn:swapless" --force\n  Read-only alongside it: re-run with --share (records no claim).\n').returncode
+
+tests/test_launch_routing.py:327: AssertionError
+=============================== warnings summary ===============================
+tests/test_core.py::test_marble_luminance_ceiling_holds_across_heat
+tests/test_core.py::test_marble_luminance_ceiling_holds_across_heat
+  /home/openclaw/runs/queue-start-59783/tallydeck/.baseline-j547n3ty/tests/test_core.py:511: DeprecationWarning: Image.Image.getdata is deprecated and will be removed in Pillow 14 (2027-10-15). Use get_flattened_data instead.
+    for r, g, b in img.getdata():
+
+tests/test_core.py::test_marble_luminance_ceiling_holds_across_heat
+tests/test_core.py::test_marble_luminance_ceiling_holds_across_heat
+  /home/openclaw/runs/queue-start-59783/tallydeck/.baseline-j547n3ty/tests/test_core.py:521: DeprecationWarning: Image.Image.getdata is deprecated and will be removed in Pillow 14 (2027-10-15). Use get_flattened_data instead.
+    mean = lambda im: sum(sum(p) for p in im.getdata()) / (3 * 64 * 64)
+
+tests/test_core.py::test_fireworks_overlay_keeps_size_and_changes_the_face
+tests/test_core.py::test_fireworks_overlay_keeps_size_and_changes_the_face
+  /home/openclaw/runs/queue-start-59783/tallydeck/.baseline-j547n3ty/tests/test_core.py:984: DeprecationWarning: Image.Image.getdata is deprecated and will be removed in Pillow 14 (2027-10-15). Use get_flattened_data instead.
+    assert list(burst.getdata()) != list(face.getdata())
+
+tests/test_core.py::test_meter2_renders_the_split_bar_with_and_without_codex
+tests/test_core.py::test_meter2_renders_the_split_bar_with_and_without_codex
+  /home/openclaw/runs/queue-start-59783/tallydeck/.baseline-j547n3ty/tests/test_core.py:1716: DeprecationWarning: Image.Image.getdata is deprecated and will be removed in Pillow 14 (2027-10-15). Use get_flattened_data instead.
+    assert list(a.getdata()) != list(b.getdata())
+
+tests/test_core.py::test_meter2_splits_the_bottom_bar_across_two_codex_accounts
+tests/test_core.py::test_meter2_splits_the_bottom_bar_across_two_codex_accounts
+  /home/openclaw/runs/queue-start-59783/tallydeck/.baseline-j547n3ty/tests/test_core.py:1798: DeprecationWarning: Image.Image.getdata is deprecated and will be removed in Pillow 14 (2027-10-15). Use get_flattened_data instead.
+    assert list(one.getdata()) != list(both.getdata())
+
+tests/test_core.py::test_meter2_whispers_the_codex_window_and_staleness
+tests/test_core.py::test_meter2_whispers_the_codex_window_and_staleness
+  /home/openclaw/runs/queue-start-59783/tallydeck/.baseline-j547n3ty/tests/test_core.py:1903: DeprecationWarning: Image.Image.getdata is deprecated and will be removed in Pillow 14 (2027-10-15). Use get_flattened_data instead.
+    assert list(a.getdata()) != list(b.getdata())     # "weekly" vs "stale"
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_core.py::test_offer_spawns_immediately_and_asks_nobody - As...
+FAILED tests/test_launch_routing.py::test_real_tmux_launch[markers0-options0-codex-O]
+FAILED tests/test_launch_routing.py::test_real_tmux_launch[markers1-options1-claude-A]
+FAILED tests/test_launch_routing.py::test_real_tmux_launch[markers2-options2-claude-B]
+FAILED tests/test_launch_routing.py::test_real_tmux_launch[markers3-options3-claude-B]
+FAILED tests/test_launch_routing.py::test_real_tmux_launch[markers4-options4-codex-O]
+FAILED tests/test_launch_routing.py::test_offer_spawns_the_caller_route_without_a_question
+FAILED tests/test_launch_routing.py::test_a_healthy_box_still_spawns - Assert...
+FAILED tests/test_launch_routing.py::test_force_overrides_the_gate - Assertio...
+FAILED tests/test_launch_routing.py::test_no_swap_configured_is_not_an_empty_swap
+10 failed, 338 passed, 12 warnings, 8 subtests passed in 23.68s

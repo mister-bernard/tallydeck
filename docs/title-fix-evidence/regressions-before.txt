@@ -1,0 +1,87 @@
+..............................F............F.F.......................... [ 85%]
+.........F..                                                             [100%]
+=================================== FAILURES ===================================
+_ OurOwnTitlesAreCorrectable.test_two_batches_in_one_second_keep_both_receipts _
+
+self = <test_titles.OurOwnTitlesAreCorrectable testMethod=test_two_batches_in_one_second_keep_both_receipts>
+
+    def test_two_batches_in_one_second_keep_both_receipts(self):
+        self.state = self.state / "fresh-batches"
+        with patch.object(titles_mod.time, "strftime", return_value="20260915-010000"):
+            record_renames([{"pane": "%276", "new_title": "Storage expansion"}], self.state)
+            record_renames([{"pane": "%277", "new_title": "Deck alerts"}], self.state)
+>       p = pane(title="Storage expansion", authored=self.authored()["%276"])
+                                                     ^^^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: '%276'
+
+tests/test_titles.py:341: KeyError
+___________ Sync.test_refresh_cannot_move_a_title_onto_its_neighbor ____________
+
+self = <test_titles.Sync testMethod=test_refresh_cannot_move_a_title_onto_its_neighbor>
+
+    def test_refresh_cannot_move_a_title_onto_its_neighbor(self):
+        original = pane(target="main:1.4", pane_id="%276", npanes=6)
+        neighbor = pane(target="main:1.5", pane_id="%277", npanes=6)
+        t = FakeTmux({original.target: original, neighbor.target: neighbor})
+        # Pairs are resolved before the forced refresh. %7 closes in between.
+        def refreshed(force=False):
+            if force:
+                original.target = "main:1.3"
+                neighbor.target = "main:1.4"
+                t._panes = {original.target: original, neighbor.target: neighbor}
+            return t._panes
+        t.panes = refreshed
+        TitleSync(t, every=0).push([("main:1.4", "Current subject")], force=True)
+>       self.assertEqual(t.titles, [("%276", "Current subject")])
+E       AssertionError: Lists differ: [('main:1.4', 'Current subject')] != [('%276', 'Current subject')]
+E       
+E       First differing element 0:
+E       ('main:1.4', 'Current subject')
+E       ('%276', 'Current subject')
+E       
+E       - [('main:1.4', 'Current subject')]
+E       ?    ^^^^^^^^
+E       
+E       + [('%276', 'Current subject')]
+E       ?    ^^^^
+
+tests/test_titles.py:536: AssertionError
+____________ Sync.test_stable_id_pair_survives_visual_order_change _____________
+
+self = <test_titles.Sync testMethod=test_stable_id_pair_survives_visual_order_change>
+
+    def test_stable_id_pair_survives_visual_order_change(self):
+        p = pane(target="main:1.3", pane_id="%276", npanes=5)
+        t, sync = self.sync({p.target: p})
+        sync.push([("%276", "Current subject")], force=True)
+>       self.assertEqual(t.titles, [("%276", "Current subject")])
+E       AssertionError: Lists differ: [] != [('%276', 'Current subject')]
+E       
+E       Second list contains 1 additional elements.
+E       First extra element 0:
+E       ('%276', 'Current subject')
+E       
+E       - []
+E       + [('%276', 'Current subject')]
+
+tests/test_titles.py:543: AssertionError
+______ PhonePaneIdentity.test_dead_id_never_falls_back_to_reused_position ______
+
+self = <test_phone_ask.PhonePaneIdentity testMethod=test_dead_id_never_falls_back_to_reused_position>
+
+    def test_dead_id_never_falls_back_to_reused_position(self):
+        ans = load("tally-answer")
+        def tmux(*args):
+            return "|:." if "%999" in args else "%277|main:1.4"
+        ans._tmux = tmux
+>       self.assertEqual(ans._pane_target({"pane_id": "%999", "pane": "main:1.4"}), "")
+E       AssertionError: 'main:1.4' != ''
+E       - main:1.4
+
+tests/test_phone_ask.py:293: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_titles.py::OurOwnTitlesAreCorrectable::test_two_batches_in_one_second_keep_both_receipts
+FAILED tests/test_titles.py::Sync::test_refresh_cannot_move_a_title_onto_its_neighbor
+FAILED tests/test_titles.py::Sync::test_stable_id_pair_survives_visual_order_change
+FAILED tests/test_phone_ask.py::PhonePaneIdentity::test_dead_id_never_falls_back_to_reused_position
+4 failed, 80 passed in 0.76s
