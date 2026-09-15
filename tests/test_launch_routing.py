@@ -119,7 +119,7 @@ def test_missing_codex_does_not_fall_back_to_claude(route_env):
 
 
 @pytest.fixture
-def isolated(tmp_path):
+def isolated(tmp_path, private_claims):
     capture = tmp_path / 'capture.json'
     fake = tmp_path / 'fake agent'
     fake.write_text('#!/usr/bin/python3\nimport json,os,sys,time\n'
@@ -136,7 +136,7 @@ def isolated(tmp_path):
     env.update(TALLYDECK_STATE=str(tmp_path), TALLY_TMUX_SOCKET=sock,
                TALLY_ACCOUNTS_FILE=str(tmp_path / 'missing.json'),
                CLAUDE_BIN=str(fake), CLAUDE_BIN_B=str(fake), CODEX_BIN=str(fake),
-               TALLY_BIN=str(ROOT / 'contrib/tally'), TALLY_SPAWN_BIN=str(ROOT / 'contrib/tally-spawn'),
+               TALLY_BIN=str(ROOT / 'contrib/tally'), **private_claims['env'],
                # These tests are about ROUTING, not admission. The memory gate
                # is a property of the machine, and on a box under the pressure
                # the gate exists for it refuses every spawn — which would make
@@ -168,7 +168,7 @@ def wait_json(path):
 def test_real_tmux_launch(isolated, markers, options, harness, account):
     state, env, tmux, capture = isolated
     task = 'Keep quotes " and `backticks` and $(literal) intact.\nSecond line.'
-    r = subprocess.run([str(ROOT / 'contrib/tally-spawn'), 'demo', '-c', str(state), *options, '-p', '-'],
+    r = subprocess.run([env['TALLY_SPAWN_BIN'], 'demo', '-c', str(state), *options, '-p', '-'],
                        input=task, text=True, capture_output=True, env=env | markers, timeout=15)
     assert r.returncode == 0, r.stderr
     got = wait_json(capture)
@@ -271,7 +271,7 @@ def _spawn(env, *args, meminfo=None, tmp_path=None):
         # tally-spawn reads /proc/meminfo directly; point a copy of the script
         # at the fake by way of a wrapper that shadows the path.
         e['TALLY_MEMINFO'] = str(fake)
-    return subprocess.run([str(ROOT / 'contrib/tally-spawn'), *args],
+    return subprocess.run([env['TALLY_SPAWN_BIN'], *args],
                           capture_output=True, text=True, env=e, timeout=30)
 
 
@@ -325,3 +325,49 @@ def test_no_swap_configured_is_not_an_empty_swap(isolated, tmp_path):
                meminfo=_meminfo(avail_mb=8000, swap_free_mb=0, swap_total_mb=0),
                tmp_path=tmp_path)
     assert r.returncode == 0, r.stderr
+
+
+def test_private_claims_serialize_competing_launchers(private_claims, tmp_path):
+    """Two real processes contend for one tree; only one may acquire it."""
+    helper = str(private_claims['helper'])
+    resource = str(tmp_path / 'contended')
+    processes = [subprocess.Popen(
+        [helper, 'acquire', resource, '--owner', owner, '--pid', str(os.getpid()),
+         '--launcher', launcher], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True) for owner, launcher in [('first', 'codex-oneshot'),
+                                          ('second', 'tally-spawn')]]
+    results = [(p.communicate(timeout=10), p.wait()) for p in processes]
+    assert sorted(code for _, code in results) == [0, 3], results
+    records = list(private_claims['registry'].glob('*.json'))
+    assert len(records) == 1
+    record = json.loads(records[0].read_text())
+    assert record['pid'] == os.getpid() and record['starttime']
+    assert record['resource'] == resource
+
+
+def test_spawn_refuses_private_cross_launcher_claim(isolated, private_claims):
+    state, env, tmux, capture = isolated
+    acquired = subprocess.run(
+        [str(private_claims['helper']), 'acquire', str(state), '--owner', 'other',
+         '--pid', str(os.getpid()), '--launcher', 'codex-oneshot'],
+        capture_output=True, text=True, timeout=10)
+    assert acquired.returncode == 0, acquired.stderr
+    r = _spawn(env, 'conflict', '-c', str(state), 'task')
+    assert r.returncode == 3 and 'codex-oneshot' in r.stderr, r.stderr
+    assert not capture.exists()
+    assert not (state / 'spawned/conflict.json').exists()
+    assert subprocess.run(tmux + ['has-session', '-t', '=conflict'],
+                          capture_output=True).returncode != 0
+
+
+def test_private_claims_preserve_overlap_refusal(private_claims, tmp_path):
+    helper = str(private_claims['helper'])
+    def acquire(path, owner):
+        return subprocess.run(
+            [helper, 'acquire', str(path), '--owner', owner, '--pid', str(os.getpid())],
+            capture_output=True, text=True, timeout=10)
+    first = acquire(tmp_path, 'ancestor')
+    assert first.returncode == 0, first.stderr
+    second = acquire(tmp_path / 'child', 'descendant')
+    assert second.returncode == 3, second.stderr
+    assert 'overlapping resource held by ancestor' in second.stderr

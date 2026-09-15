@@ -1570,7 +1570,7 @@ def test_spawn_makes_its_own_tmux_session_with_the_task_as_first_prompt(tmp_path
         T("kill-server")
 
 
-def test_offer_spawns_immediately_and_asks_nobody(tmp_path):
+def test_offer_spawns_immediately_and_asks_nobody(tmp_path, private_claims):
     """The old offer raised a decision and held the work until it was answered,
     which made the operator's answer a precondition for anything starting. It
     spawns on the spot now: no signal raised, no waiter, no offer record."""
@@ -1580,7 +1580,7 @@ def test_offer_spawns_immediately_and_asks_nobody(tmp_path):
     contrib = Path(__file__).resolve().parent.parent / "contrib"
     fake = tmp_path / "fakeclaude"; fake.write_text("#!/bin/sh\necho \"PROMPT:$2\"; sleep 20\n"); fake.chmod(0o755)
     env = dict(os.environ, TALLYDECK_STATE=str(tmp_path), TALLY_TMUX_SOCKET=sock, CLAUDE_BIN=str(fake),
-               TALLY_BIN=str(contrib / "tally"), TALLY_SPAWN_BIN=str(contrib / "tally-spawn"),
+               TALLY_BIN=str(contrib / "tally"), **private_claims["env"],
                TALLY_SPAWN_NO_GATE="1")   # offer's contract, not the memory gate's
     env.pop("TMUX", None)
     try:
@@ -1597,7 +1597,7 @@ def test_offer_spawns_immediately_and_asks_nobody(tmp_path):
         assert not (tmp_path / "offers" / "big-job.json").exists()
     finally:
         T("kill-server")
-        claim = Path('/home/openclaw/scripts/work-claim.py')
+        claim = private_claims['helper']
         if claim.is_file():
             subprocess.run([str(claim), 'release', str(tmp_path), '--owner', 'spawn:big-job'],
                            capture_output=True, timeout=5)
