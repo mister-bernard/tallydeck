@@ -27,7 +27,7 @@ tmp_path = PosixPath('/tmp/pytest-of-openclaw/pytest-141/test_offer_spawns_immed
 >           assert r.returncode == 0, r.stderr
 E           AssertionError: tally-offer: spawn failed: tally-spawn: REFUSED 'big-job' — another worker already owns /tmp/pytest-of-openclaw/pytest-141/test_offer_spawns_immediately_0.
 E               FREE /tmp/pytest-of-openclaw/pytest-141/test_offer_spawns_immediately — run it here instead
-E             
+E
 E           assert 1 == 0
 E            +  where 1 = CompletedProcess(args=['/usr/bin/python3', '/home/openclaw/runs/queue-start-59783/tallydeck/.baseline-j547n3ty/contrib...pawns_immediately_0.\n  FREE /tmp/pytest-of-openclaw/pytest-141/test_offer_spawns_immediately — run it here instead\n").returncode
 
@@ -55,13 +55,13 @@ E       AssertionError: tally-spawn: REFUSED 'demo' — another worker already o
 E           FREE /tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers00
 E           Two writers in one tree is the failure this gate exists for; the second one
 E           silently overwrites the first's edits and neither knows.
-E         
+E
 E           If the holder is LIVE:  wait for it, or give this worker its own tree.
 E           If it is STALE:         the owner's process is gone but its work may be half
 E                                   written — look before taking over, then
 E                                   /home/openclaw/scripts/work-claim.py acquire "/tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers00" --owner "spawn:demo" --force
 E           Read-only alongside it: re-run with --share (records no claim).
-E         
+E
 E       assert 3 == 0
 E        +  where 3 = CompletedProcess(args=['/home/openclaw/runs/queue-start-59783/tallydeck/.baseline-j547n3ty/contrib/tally-spawn', 'demo...x_launch_markers00" --owner "spawn:demo" --force\n  Read-only alongside it: re-run with --share (records no claim).\n').returncode
 
@@ -88,13 +88,13 @@ E       AssertionError: tally-spawn: REFUSED 'demo' — another worker already o
 E           FREE /tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers10
 E           Two writers in one tree is the failure this gate exists for; the second one
 E           silently overwrites the first's edits and neither knows.
-E         
+E
 E           If the holder is LIVE:  wait for it, or give this worker its own tree.
 E           If it is STALE:         the owner's process is gone but its work may be half
 E                                   written — look before taking over, then
 E                                   /home/openclaw/scripts/work-claim.py acquire "/tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers10" --owner "spawn:demo" --force
 E           Read-only alongside it: re-run with --share (records no claim).
-E         
+E
 E       assert 3 == 0
 E        +  where 3 = CompletedProcess(args=['/home/openclaw/runs/queue-start-59783/tallydeck/.baseline-j547n3ty/contrib/tally-spawn', 'demo...x_launch_markers10" --owner "spawn:demo" --force\n  Read-only alongside it: re-run with --share (records no claim).\n').returncode
 
@@ -122,13 +122,13 @@ E       AssertionError: tally-spawn: REFUSED 'demo' — another worker already o
 E           FREE /tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers20
 E           Two writers in one tree is the failure this gate exists for; the second one
 E           silently overwrites the first's edits and neither knows.
-E         
+E
 E           If the holder is LIVE:  wait for it, or give this worker its own tree.
 E           If it is STALE:         the owner's process is gone but its work may be half
 E                                   written — look before taking over, then
 E                                   /home/openclaw/scripts/work-claim.py acquire "/tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers20" --owner "spawn:demo" --force
 E           Read-only alongside it: re-run with --share (records no claim).
-E         
+E
 E       assert 3 == 0
 E        +  where 3 = CompletedProcess(args=['/home/openclaw/runs/queue-start-59783/tallydeck/.baseline-j547n3ty/contrib/tally-spawn', 'demo...x_launch_markers20" --owner "spawn:demo" --force\n  Read-only alongside it: re-run with --share (records no claim).\n').returncode
 
@@ -156,13 +156,13 @@ E       AssertionError: tally-spawn: REFUSED 'demo' — another worker already o
 E           FREE /tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers30
 E           Two writers in one tree is the failure this gate exists for; the second one
 E           silently overwrites the first's edits and neither knows.
-E         
+E
 E           If the holder is LIVE:  wait for it, or give this worker its own tree.
 E           If it is STALE:         the owner's process is gone but its work may be half
 E                                   written — look before taking over, then
 E                                   /home/openclaw/scripts/work-claim.py acquire "/tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers30" --owner "spawn:demo" --force
 E           Read-only alongside it: re-run with --share (records no claim).
-E         
+E
 E       assert 3 == 0
 E        +  where 3 = CompletedProcess(args=['/home/openclaw/runs/queue-start-59783/tallydeck/.baseline-j547n3ty/contrib/tally-spawn', 'demo...x_launch_markers30" --owner "spawn:demo" --force\n  Read-only alongside it: re-run with --share (records no claim).\n').returncode
 
@@ -190,13 +190,13 @@ E       AssertionError: tally-spawn: REFUSED 'demo' — another worker already o
 E           FREE /tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers40
 E           Two writers in one tree is the failure this gate exists for; the second one
 E           silently overwrites the first's edits and neither knows.
-E         
+E
 E           If the holder is LIVE:  wait for it, or give this worker its own tree.
 E           If it is STALE:         the owner's process is gone but its work may be half
 E                                   written — look before taking over, then
 E                                   /home/openclaw/scripts/work-claim.py acquire "/tmp/pytest-of-openclaw/pytest-141/test_real_tmux_launch_markers40" --owner "spawn:demo" --force
 E           Read-only alongside it: re-run with --share (records no claim).
-E         
+E
 E       assert 3 == 0
 E        +  where 3 = CompletedProcess(args=['/home/openclaw/runs/queue-start-59783/tallydeck/.baseline-j547n3ty/contrib/tally-spawn', 'demo...x_launch_markers40" --owner "spawn:demo" --force\n  Read-only alongside it: re-run with --share (records no claim).\n').returncode
 
@@ -213,7 +213,7 @@ isolated = (PosixPath('/tmp/pytest-of-openclaw/pytest-141/test_offer_spawns_the_
 >       assert r.returncode == 0, r.stderr
 E       AssertionError: tally-offer: spawn failed: tally-spawn: REFUSED 'offered' — another worker already owns /tmp/pytest-of-openclaw/pytest-141/test_offer_spawns_the_caller_r0.
 E           FREE /tmp/pytest-of-openclaw/pytest-141/test_offer_spawns_the_caller_ — run it here instead
-E         
+E
 E       assert 1 == 0
 E        +  where 1 = CompletedProcess(args=['/home/openclaw/runs/queue-start-59783/tallydeck/.baseline-j547n3ty/contrib/tally-offer', 'offe...pawns_the_caller_r0.\n  FREE /tmp/pytest-of-openclaw/pytest-141/test_offer_spawns_the_caller_ — run it here instead\n").returncode
 
@@ -232,13 +232,13 @@ E       AssertionError: tally-spawn: REFUSED 'roomy' — another worker already 
 E           FREE /tmp/pytest-of-openclaw/pytest-141/test_a_healthy_box_still_spawn0
 E           Two writers in one tree is the failure this gate exists for; the second one
 E           silently overwrites the first's edits and neither knows.
-E         
+E
 E           If the holder is LIVE:  wait for it, or give this worker its own tree.
 E           If it is STALE:         the owner's process is gone but its work may be half
 E                                   written — look before taking over, then
 E                                   /home/openclaw/scripts/work-claim.py acquire "/tmp/pytest-of-openclaw/pytest-141/test_a_healthy_box_still_spawn0" --owner "spawn:roomy" --force
 E           Read-only alongside it: re-run with --share (records no claim).
-E         
+E
 E       assert 3 == 0
 E        +  where 3 = CompletedProcess(args=['/home/openclaw/runs/queue-start-59783/tallydeck/.baseline-j547n3ty/contrib/tally-spawn', 'room..._box_still_spawn0" --owner "spawn:roomy" --force\n  Read-only alongside it: re-run with --share (records no claim).\n').returncode
 
@@ -257,13 +257,13 @@ E       AssertionError: tally-spawn: REFUSED 'urgent' — another worker already
 E           FREE /tmp/pytest-of-openclaw/pytest-141/test_force_overrides_the_gate0
 E           Two writers in one tree is the failure this gate exists for; the second one
 E           silently overwrites the first's edits and neither knows.
-E         
+E
 E           If the holder is LIVE:  wait for it, or give this worker its own tree.
 E           If it is STALE:         the owner's process is gone but its work may be half
 E                                   written — look before taking over, then
 E                                   /home/openclaw/scripts/work-claim.py acquire "/tmp/pytest-of-openclaw/pytest-141/test_force_overrides_the_gate0" --owner "spawn:urgent" --force
 E           Read-only alongside it: re-run with --share (records no claim).
-E         
+E
 E       assert 3 == 0
 E        +  where 3 = CompletedProcess(args=['/home/openclaw/runs/queue-start-59783/tallydeck/.baseline-j547n3ty/contrib/tally-spawn', 'urge...rrides_the_gate0" --owner "spawn:urgent" --force\n  Read-only alongside it: re-run with --share (records no claim).\n').returncode
 
@@ -285,13 +285,13 @@ E       AssertionError: tally-spawn: REFUSED 'swapless' — another worker alrea
 E           FREE /tmp/pytest-of-openclaw/pytest-141/test_no_swap_configured_is_not0
 E           Two writers in one tree is the failure this gate exists for; the second one
 E           silently overwrites the first's edits and neither knows.
-E         
+E
 E           If the holder is LIVE:  wait for it, or give this worker its own tree.
 E           If it is STALE:         the owner's process is gone but its work may be half
 E                                   written — look before taking over, then
 E                                   /home/openclaw/scripts/work-claim.py acquire "/tmp/pytest-of-openclaw/pytest-141/test_no_swap_configured_is_not0" --owner "spawn:swapless" --force
 E           Read-only alongside it: re-run with --share (records no claim).
-E         
+E
 E       assert 3 == 0
 E        +  where 3 = CompletedProcess(args=['/home/openclaw/runs/queue-start-59783/tallydeck/.baseline-j547n3ty/contrib/tally-spawn', 'swap...igured_is_not0" --owner "spawn:swapless" --force\n  Read-only alongside it: re-run with --share (records no claim).\n').returncode
 

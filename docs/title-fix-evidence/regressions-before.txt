@@ -34,14 +34,14 @@ self = <test_titles.Sync testMethod=test_refresh_cannot_move_a_title_onto_its_ne
         TitleSync(t, every=0).push([("main:1.4", "Current subject")], force=True)
 >       self.assertEqual(t.titles, [("%276", "Current subject")])
 E       AssertionError: Lists differ: [('main:1.4', 'Current subject')] != [('%276', 'Current subject')]
-E       
+E
 E       First differing element 0:
 E       ('main:1.4', 'Current subject')
 E       ('%276', 'Current subject')
-E       
+E
 E       - [('main:1.4', 'Current subject')]
 E       ?    ^^^^^^^^
-E       
+E
 E       + [('%276', 'Current subject')]
 E       ?    ^^^^
 
@@ -56,11 +56,11 @@ self = <test_titles.Sync testMethod=test_stable_id_pair_survives_visual_order_ch
         sync.push([("%276", "Current subject")], force=True)
 >       self.assertEqual(t.titles, [("%276", "Current subject")])
 E       AssertionError: Lists differ: [] != [('%276', 'Current subject')]
-E       
+E
 E       Second list contains 1 additional elements.
 E       First extra element 0:
 E       ('%276', 'Current subject')
-E       
+E
 E       - []
 E       + [('%276', 'Current subject')]
 

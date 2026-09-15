@@ -14,9 +14,10 @@
     "/home/openclaw/scripts/work-claim.py": "73b5e44acb850d2d8ff08ec9c45fda3295a8898d5bf7da5b6bb9eddd719e3897"
   },
   "evidence_sha256": {
-    "baseline-full.txt": "69c90a55052632c768054152fb72e1cdc04e676a739ccdc47f643842f0a803d1",
-    "regressions-before.txt": "e3040fc8ed41c52745e7b9d764adbbac634a538afd9e9bea1062232622a9da5b",
+    "baseline-full.txt": "bf02930f1b97e3d0060dece4e6d11ad34a55091c783a315b32ce8858c8323ee4",
+    "regressions-before.txt": "3666d8b34f7184567ba5e2099e0f9d7fdf2db20d04ecf3c6bc3f072efb730ec4",
     "targeted-after.txt": "bde7aefafb6638b0ba2e386333bde8ed17f40a7c7ff59eec4e64c181d6e74217",
-    "full-after.txt": "3a5f03a06bc347740bf43b1d3721e9f408b679a76b8c0c43bd2d23d549007d5c"
-  }
+    "full-after.txt": "24e8e0f1282306a287b7520da9edc8eb34734c5469a344e743135fb705019134"
+  },
+  "evidence_normalization": "Trailing whitespace removed from pytest output; content otherwise unchanged."
 }
