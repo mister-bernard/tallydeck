@@ -552,6 +552,13 @@ class ClaudeSessionsSource(Source):
                     # the renderer wraps and pages the text itself.
                     import re as _re
                     sub = _re.sub(r"[*_`#]+", "", snip)[:280]
+                if status == "waiting":
+                    # A dialog is the ask, not the last message (which can be
+                    # a progress note): say what is wanted, on which tool.
+                    why = (live or {}).get("waiting_for") or "input needed"
+                    open_calls = sorted(tail.pending.values(), key=lambda v: v[1])
+                    sub = why[:1].upper() + why[1:] + (
+                        f" · {open_calls[-1][0]}" if open_calls else "")
                 flash = None
                 if state == ATTENTION and (now - last) > self.flash_for:
                     flash = False
@@ -854,6 +861,9 @@ def _registry_record(d: dict) -> dict | None:
             "tmux_session": tm.split(":", 1)[0] if ":" in tm else "",
             "start": str(d.get("procStart") or ""),
             "status": str(d.get("status") or ""),
+            # Claude Code's own reason when status is `waiting` (its
+            # requires_action): "permission prompt" or "input needed".
+            "waiting_for": str(d.get("waitingFor") or ""),
             "updated": float(d.get("updatedAt") or 0) / 1000.0}
 
 

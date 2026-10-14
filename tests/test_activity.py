@@ -408,3 +408,19 @@ def test_a_source_can_be_switched_off_from_the_user_layer():
                        {"kind": "watchdir", "path": "/nonexistent"}], "presence": {"enabled": False}}
     hub = _build_hub(cfg, False)
     assert [type(s).__name__ for s in hub.sources] == ["WatchDirSource"]
+
+
+def test_a_waiting_session_says_what_it_waits_for(tmp_path, monkeypatch):
+    recs = [assistant(500, [{"type": "text", "text": "Still in progress, more soon."}], "end_turn", mid="m1"),
+            prompt(60), assistant(30, [tool_use("Bash", "b1")], "tool_use", mid="m2")]
+    monkeypatch.setenv("TALLYDECK_STATE", str(tmp_path / "state"))
+    home = tmp_path / ".claude-c"
+    write(home / ".claude" / "projects" / "-home-u" / f"{UID}.jsonl", recs)
+    reg = home / ".claude" / "sessions"; reg.mkdir(parents=True)
+    (reg / f"{os.getpid()}.json").write_text(json.dumps({
+        "pid": os.getpid(), "sessionId": UID, "kind": "interactive", "procStart": own_start(),
+        "status": "waiting", "waitingFor": "permission prompt", "tmux": ""}))
+    from tallydeck.sources.claude_sessions import ClaudeSessionsSource
+    s, = ClaudeSessionsSource(root=str(tmp_path / "none"), discover=[str(tmp_path / ".claude-*")],
+                              socket=str(tmp_path / "no.sock"), sync_titles=False).poll()
+    assert s.state == ATTENTION and s.sublabel == "Permission prompt · Bash"
