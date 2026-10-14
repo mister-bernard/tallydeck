@@ -57,7 +57,8 @@ def resume_cmd(harness: str, account: str, cwd: str, uuid: str) -> str:
         argv = ["env", "CODEX_HOME=" + route["codex_home"], route["binary"],
                 "resume", "--dangerously-bypass-approvals-and-sandbox", uuid]
     else:
-        binary = str(Path.home() / ".local/bin/claude-b") if account == "B" else "claude"
+        from .paths import claude_bin
+        binary = claude_bin(account)
         argv = [binary, "--dangerously-skip-permissions", "--resume", uuid]
     return "cd " + shlex.quote(cwd) + " && " + shlex.join(argv)
 

@@ -182,3 +182,29 @@ def hub_alive() -> Path:
     operator is at the deck — questions go there first, and to the phone
     only when nobody is plugged in."""
     return state_dir() / "hub.alive"
+
+
+_ACCOUNT_HOME = __import__("re").compile(r"/\.claude-([A-Za-z0-9]{1,8})(?:/|$)")
+
+
+def claude_account(home_or_cfgdir: str) -> str:
+    """Account letter for a Claude HOME or CLAUDE_CONFIG_DIR.
+
+    Every extra account lives under a HOME named `.claude-<x>`, and that
+    suffix is the badge: `.claude-b` → B, `.claude-c` → C. The operator's
+    own HOME is account A. The old rule was "contains .claude-b → B, else
+    A", so account C was labelled A everywhere and its keys resumed with
+    A's binary."""
+    m = _ACCOUNT_HOME.search(str(home_or_cfgdir or ""))
+    return m.group(1).upper() if m else "A"
+
+
+def claude_bin(account: str, home: Path | None = None) -> str:
+    """The launcher that owns an account's sessions: `claude` for A,
+    `~/.local/bin/claude-<x>` for every other account that has one."""
+    acct = str(account or "").strip()
+    if acct and acct.upper() not in ("A", "O", "O2", "X"):
+        cand = Path(home or Path.home()) / ".local" / "bin" / f"claude-{acct.lower()}"
+        if cand.is_file() and os.access(cand, os.X_OK):
+            return str(cand)
+    return "claude"

@@ -13,7 +13,16 @@ in one of those. Skipping them:
   assistant, turn ended, asks    → it is asking you              → ATTENTION
   assistant, turn ended, no ask  → it finished; nothing to do    → SUCCESS
   nothing conversational         →                                  IDLE
-  mtime older than `stale`       → dropped entirely
+  mtime older than `stale`       → dropped entirely, unless a live
+                                   Claude process still owns the session
+
+Live identity comes from Claude Code's own process registry,
+`<HOME>/.claude/sessions/<pid>.json`: session id, exact tmux pane id and
+its status (busy · shell · idle · waiting), rewritten as the process
+changes state. It is the authority on three things the log tail can only
+guess at: which pane a session is in, whether it is still running at all,
+and whether it is mid-turn. The tail still decides the one thing the
+registry does not say — whether a finished turn ends in a question.
 
 A `system/turn_duration` record after the last assistant record is Claude
 Code's own end-of-turn marker: when it is present the verdict is final and
@@ -37,7 +46,7 @@ from pathlib import Path
 from dataclasses import replace
 
 from ..signal import Signal, WORKING, ATTENTION, SUCCESS, IDLE, BLOCKED, _STATE_WEIGHT
-from ..paths import signals_dir, acked_dir, contrib_bin
+from ..paths import signals_dir, acked_dir, contrib_bin, claude_account
 from ..titles import (TitleSync, claude_ai_title, registry_target,
                       resolve_label, tmux_for)
 from .base import Source
@@ -166,6 +175,22 @@ def classify(lines: list[str]) -> tuple[str, bool]:
     return IDLE, False
 
 
+def _ask_tool_pending(lines: list[str]) -> bool:
+    """Is the session parked on a question TOOL (AskUserQuestion,
+    ExitPlanMode)? That is the harness asking — unlike prose ending in '?'."""
+    for ln in reversed(lines):
+        rec = _load(ln)
+        if rec is None or rec.get("type") not in ("assistant", "user"):
+            continue
+        if rec.get("type") == "user":
+            return False
+        content = (rec.get("message") or {}).get("content", [])
+        last = content[-1] if isinstance(content, list) and content else None
+        return isinstance(last, dict) and last.get("type") == "tool_use" \
+            and last.get("name") in ASK_TOOLS
+    return False
+
+
 def _assistant_wants_input(lines: list[str]) -> bool:
     """Kept for callers/tests: does the tail wait on the human?"""
     return classify(lines)[0] == ATTENTION
@@ -243,6 +268,18 @@ class ClaudeSessionsSource(Source):
         else:
             self.roots = [("", Path(opts.get(
                 "root", Path.home() / ".claude" / "projects")).expanduser())]
+        # Accounts appear over time (C arrived 2026-09-12 and was never added
+        # here, so every C session was missing from the deck for a month).
+        # `discover` globs account HOMEs; each one's `.claude-<x>` suffix is
+        # its badge. Explicit roots win on overlap.
+        known = {os.path.realpath(p) for _, p in self.roots}
+        for pattern in opts.get("discover", []) or []:
+            import glob
+            for home in sorted(glob.glob(os.path.expanduser(str(pattern)))):
+                proj = Path(home) / ".claude" / "projects"
+                if proj.is_dir() and os.path.realpath(proj) not in known:
+                    known.add(os.path.realpath(proj))
+                    self.roots.append((claude_account(home), proj))
         self.root = self.roots[0][1]      # kept: existing callers/tests read it
         self.stale = float(opts.get("stale", 1800))
         # A session whose tail says "Claude's move" but whose log has not
@@ -286,6 +323,44 @@ class ClaudeSessionsSource(Source):
             if opts.get("sync_titles", True) else None
         self._titled: list[tuple[str, str]] = []
 
+    def _registry(self, root: Path) -> dict[str, dict]:
+        """{session uuid: live record} from Claude Code's process registry.
+
+        `root` is `<HOME>/.claude/projects`; the registry is its sibling
+        `sessions/`. A record counts only while its process is alive AND is
+        the same process (kernel start time = the recorded procStart), so a
+        recycled pid can never resurrect a session. Cheap: one small JSON
+        per running Claude, re-read only when the file changes."""
+        reg_dir = root.parent / "sessions"
+        cache = self.__dict__.setdefault("_reg_cache", {})
+        out: dict[str, dict] = {}
+        try:
+            entries = list(reg_dir.glob("*.json"))
+        except OSError:
+            return out
+        for fp in entries:
+            try:
+                key = (str(fp), fp.stat().st_mtime_ns)
+            except OSError:
+                continue
+            rec = cache.get(key)
+            if rec is None:
+                try:
+                    d = json.loads(fp.read_text())
+                except (OSError, ValueError):
+                    continue
+                rec = _registry_record(d)
+                cache[key] = rec
+            if rec and _alive(rec["pid"], rec["start"]):
+                prev = out.get(rec["session"])
+                if prev is None or rec["updated"] > prev["updated"]:
+                    out[rec["session"]] = rec
+        if len(cache) > 4 * max(1, len(entries)):
+            live = {(str(fp)) for fp in entries}
+            for k in [k for k in cache if k[0] not in live]:
+                cache.pop(k, None)
+        return out
+
     def poll(self) -> list[Signal]:
         signals: list[Signal] = []
         now = time.time()
@@ -311,6 +386,16 @@ class ClaudeSessionsSource(Source):
 
     def _scan(self, root, acct: str, now: float) -> list[Signal]:
         signals: list[Signal] = []
+        registry = self._registry(root)
+        # A pane belongs to the session its live process says it is running.
+        # After /clear the old log still names the same pane through the
+        # sticky memo; it must not keep a key (or a stale question) there.
+        claimed: dict[str, str] = {}
+        for uuid, rec in registry.items():
+            tgt = self.tmux.target_for_id(rec["pane_id"]) if rec["pane_id"] else ""
+            rec["target"] = tgt
+            if tgt:
+                claimed[tgt] = uuid
         for proj_dir in root.iterdir():
             if not proj_dir.is_dir():
                 continue
@@ -320,18 +405,37 @@ class ClaudeSessionsSource(Source):
                     mtime, size = st.st_mtime, st.st_size
                 except OSError:
                     continue
-                if now - mtime > self.stale:
+                live = registry.get(fp.stem)
+                if now - mtime > self.stale and not live:
                     continue
                 from ..park import is_parked
                 if is_parked(uuid=fp.stem):
                     continue
                 lines = _tail_lines(fp)
-                exact = self._exact_pane(fp.stem)
+                exact = (live or {}).get("target") or self._exact_pane(fp.stem)
+                if exact and claimed.get(exact, fp.stem) != fp.stem:
+                    exact = ""              # that pane runs another session now
                 oneshot = bool(exact) and \
                     exact.split(":", 1)[0] in self.oneshot_sessions
                 state, final = classify(lines)
                 if state == WORKING and (now - mtime) > self.stall:
                     state = IDLE               # "working" for 15 min with no output = stalled
+                status = (live or {}).get("status", "")
+                # A question the harness itself is holding open (a dialog,
+                # AskUserQuestion) — as opposed to prose that ends in '?'.
+                asked = status == "waiting" or _ask_tool_pending(lines)
+                if status in ("busy", "shell"):
+                    # Claude says it is mid-turn: a long tool run is working,
+                    # not stalled, and a '?' in a mid-turn message is not a
+                    # question yet. A pending AskUserQuestion still asks.
+                    if not asked:
+                        state, final = WORKING, True
+                elif status == "waiting":
+                    state, final = ATTENTION, True   # a dialog wants the human
+                elif status == "idle":
+                    final = True               # turn over: no dwell needed
+                    if state == WORKING:
+                        state = IDLE           # interrupted or killed mid-turn
                 ended = state in (ATTENTION, SUCCESS)
                 # Dwell: tool results log as "user" records, so mid-turn the
                 # tail flaps. A fresh assistant tail with no end-of-turn
@@ -434,7 +538,8 @@ class ClaudeSessionsSource(Source):
                     group=self.group,
                     meta={"project": full, "session": fp.stem,
                           "account": acct, "exact_pane": bool(exact),
-                          "oneshot": oneshot,
+                          "oneshot": oneshot, "live": bool(live),
+                          "asked": asked,
                           # Resolved hub-side because only the hub can see
                           # tmux. Without it the deck machine would have to
                           # re-derive the pane over ssh on every press.
@@ -627,6 +732,37 @@ class ClaudeSessionsSource(Source):
                     self._snooze[sid] = time.time() + self.snooze_for
                 return True
         return False
+
+def _registry_record(d: dict) -> dict | None:
+    """One registry file → the fields we use, or None if it is not one."""
+    try:
+        pid = int(d["pid"])
+        session = str(d["sessionId"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not session or d.get("kind", "interactive") not in ("interactive", "bg"):
+        return None
+    tm = str(d.get("tmux") or "")          # "mainC:@50.%54"
+    pane_id = tm[tm.rfind("%"):] if "%" in tm else ""
+    return {"pid": pid, "session": session, "pane_id": pane_id,
+            "start": str(d.get("procStart") or ""),
+            "status": str(d.get("status") or ""),
+            "updated": float(d.get("updatedAt") or 0) / 1000.0}
+
+
+def _alive(pid: int, start: str) -> bool:
+    """Is `pid` running, and is it the process that wrote the record?"""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return False
+    if not start:
+        return True
+    try:
+        return stat.rsplit(")", 1)[1].split()[19] == start
+    except IndexError:
+        return False
+
 
 def _age_str(seconds: float) -> str:
     s = int(seconds)

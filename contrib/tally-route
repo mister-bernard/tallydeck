@@ -7,12 +7,12 @@
 #
 #   Enter → GO THERE, floating: live pane → grouped view (own selection,
 #           nothing shared moves); dead → resume attached here.
-#           Ctrl-b d puts it back / leaves it running.
+#           Ctrl-Q comes back (Ctrl-b d still works) and leaves it running.
 #   t     → open it as a TAB (window) of your current session
 #   s     → SPLIT it into your current window, side by side
 #   ␣     → DONE: mute this alert until the session asks anew; for a raised
 #           flag (`tally raise` / hook) this retires the flag itself
-#   other → dismiss; nothing anywhere changes
+#   Ctrl-Q → close (q / Esc too); nothing anywhere changes
 #
 # A raised flag with no session behind it still gets the popup: the ask is
 # shown, ␣ retires it, anything else leaves it flashing. Reading is not
@@ -49,13 +49,22 @@ if [ -n "$TARGET" ] && ! T display -p -t "$TARGET" '#{pane_id}' >/dev/null 2>&1;
   TARGET=""
 fi
 
-# Which binary owns this session's history (account B has its own HOME).
+# Which binary owns this session's history: every extra Claude account has
+# its own HOME and a claude-<x> launcher (claude-b, claude-c, …). The old
+# "B or else A" rule resumed account-C sessions with A's binary, which
+# cannot see their history.
 BIN="claude"
-[ "$ACCT" = "B" ] && BIN="$HOME/.local/bin/claude-b"
+case "$ACCT" in
+  ""|A|O|O2|X) ;;
+  *) acct_lc=$(printf '%s' "$ACCT" | tr 'A-Z' 'a-z')
+     [ -x "$HOME/.local/bin/claude-$acct_lc" ] && BIN="$HOME/.local/bin/claude-$acct_lc" ;;
+esac
 printf -v RESUME '%q --dangerously-skip-permissions --resume %q; exec bash -l' "$BIN" "$UUID"
 case "$SIGID" in
   cx/*)
-    printf -v RESUME '%q resume --dangerously-bypass-approvals-and-sandbox %q; exec bash -l' "${CODEX_BIN:-codex}" "$UUID" ;;
+    CX="${CODEX_BIN:-codex}"
+    [ "$ACCT" = "O2" ] && [ -x "$HOME/.local/bin/codex-2" ] && CX="$HOME/.local/bin/codex-2"
+    printf -v RESUME '%q resume --dangerously-bypass-approvals-and-sandbox %q; exec bash -l' "$CX" "$UUID" ;;
   gk/*|hunt/*)
     GROK=1 ;;
 esac
@@ -77,6 +86,25 @@ fi
 # before any attach, or they land in a Claude prompt as a typed line.
 drain_input() { while read -r -s -n 10000 -t 0.05 _ 2>/dev/null; do :; done; }
 
+# THE EXIT KEY. A floating view is a nested tmux client inside the popup,
+# and the only way out used to be Ctrl-b d. Ctrl-Q detaches it — the popup
+# closes and you are back where you were, the session still running. The
+# binding is server-wide but only acts in the router's own floating
+# sessions; everywhere else Ctrl-Q goes through to the program untouched.
+# Installed on every press, so a restarted server heals itself.
+install_exit_key() {
+  T bind-key -n C-q if-shell -F \
+    '#{||:#{m:_fl-*,#{session_name}},#{m:fl-*,#{session_name}}}' \
+    'detach-client' 'send-keys C-q' 2>/dev/null
+}
+# Say so where you will be looking: the floating view's status bar.
+# (set-option takes no '=' prefix; exact session names match first.)
+float_banner() {
+  T set-option -t "$1" status-left \
+    "#[fg=#16181D,bg=#FFB224,bold] Ctrl-Q #[fg=#FFB224,bg=default,nobold] back to where you were #[default] " 2>/dev/null
+  T set-option -t "$1" status-left-length 60 2>/dev/null
+}
+
 ensure_resurrected() {
   NAME="fl-${UUID:-x}"   # uuid-keyed: labels collide
   if ! T has-session -t "=$NAME" 2>/dev/null; then
@@ -95,9 +123,11 @@ esac
 LIVE=""; [ -n "$TARGET" ] && LIVE=1
 TAKEN_DIR="${TALLYDECK_STATE:-$HOME/.tallydeck}/route-taken"
 TAKEN="$TAKEN_DIR/$(printf '%s' "${SIGID:-x}" | tr '/' '_')"
-ACTIONS="space done (mute) · q / Esc dismiss"
+# One vocabulary on every popup: "KEY label" parts, exit key last (the
+# brief renders them as key-caps, Ctrl-Q flush right).
+ACTIONS="Space done · Ctrl-Q close"
 if [ -n "$LIVE" ] || [ -n "$UUID" ]; then
-  ACTIONS="1-9 next step · i type a reply · Enter open · t tab · x close (park) · $ACTIONS"
+  ACTIONS="1-9 next step · Enter open · i reply · t tab · x park · $ACTIONS"
 fi
 ACTION_FILE=$(mktemp)
 trap 'rm -f "$ACTION_FILE"' EXIT
@@ -216,12 +246,14 @@ PY
       # malformed target; the window index must be split out first.)
       W="${TARGET#*:}"
       T select-window -t "=$GRP:${W%%.*}" 2>/dev/null
+      install_exit_key; float_banner "$GRP"
       drain_input; unset TMUX
       tmux -S "$SOCKET" attach -t "=$GRP"
       T kill-session -t "=$GRP" 2>/dev/null    # tidy on the way out
       exit 0
     elif [ -n "$UUID" ]; then
       ensure_resurrected
+      install_exit_key; float_banner "$NAME"
       drain_input; unset TMUX
       exec tmux -S "$SOCKET" attach -t "=$NAME"
     fi ;;

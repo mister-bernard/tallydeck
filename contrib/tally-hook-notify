@@ -111,11 +111,13 @@ try:
             if kind == "permission_prompt" or kind_headless:
                 state = ""
         else:
-            # Second account = a session running under its own CLAUDE_CONFIG_DIR.
-            # Set TALLY_ACCT_B_MARKER to whatever substring names yours.
-            marker = os.environ.get("TALLY_ACCT_B_MARKER", ".claude-b")
-            acct = "B" if marker in (os.environ.get("CLAUDE_CONFIG_DIR", "")
-                                     or home) else "A"
+            # Every extra account runs under a HOME named .claude-<x>, and the
+            # suffix is the badge (.claude-c → C). "Contains .claude-b → B,
+            # else A" labelled every account-C prompt as A.
+            import re
+            m = re.search(r"/\.claude-([A-Za-z0-9]{1,8})(?:/|$)",
+                          os.environ.get("CLAUDE_CONFIG_DIR", "") or home)
+            acct = m.group(1).upper() if m else "A"
         # The hook runs inside the session's process tree — if it lives in a
         # tmux pane, the pane's session name is the name the operator uses.
         label = ""

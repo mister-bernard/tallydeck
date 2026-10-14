@@ -392,7 +392,8 @@ def resume_cmd(rec: dict) -> str:
     if rec.get("harness") == "codex":
         return (f"cd {rec['cwd']} && CODEX_HOME={rec.get('codex_home', str(HOME / '.codex'))} "
                 f"codex resume {rec['uuid']} --dangerously-bypass-approvals-and-sandbox")
-    binary = "claude-b" if rec.get("account") == "B" else "claude"
+    acct = str(rec.get("account") or "A")
+    binary = "claude" if acct in ("A", "") else f"claude-{acct.lower()}"
     return f"cd {rec['cwd']} && {binary} --resume {rec['uuid']}"
 
 

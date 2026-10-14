@@ -415,5 +415,5 @@ class GrokSessionsSource(Source):
             meta={"project": cwd, "session": uuid,
                   "account": self.account, "harness": "grok",
                   "oneshot": oneshot, "exact_pane": live_here,
-                  "tmux": pane},
+                  "tmux": pane, "live": live_here},
         )

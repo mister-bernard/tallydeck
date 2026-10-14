@@ -18,6 +18,14 @@ from rich.theme import Theme
 from rich.syntax import Syntax
 
 INDIGO, AMBER, FG, DIM, GREEN = '#7B88FF', '#FFB224', '#F2F3F5', '#8B8F98', '#43B75D'
+RED = '#E5484D'
+
+# ONE way out of every tally popup, and of the floating session view a popup
+# opens (tally-route binds it there). q and Esc still dismiss a menu, but
+# they cannot leave a live Claude/Codex TUI — Ctrl-Q can, so it is the one
+# that is printed. Byte 0x11; the tty's XON handling is switched off below
+# so it arrives.
+EXIT_KEY, EXIT_BYTE = 'Ctrl-Q', '\x11'
 THEME = Theme({'markdown.h1': f'bold {AMBER}', 'markdown.h2': f'bold {AMBER}',
                'markdown.strong': f'bold {FG}', 'markdown.code': INDIGO,
                'markdown.link': INDIGO, 'table.border': DIM})
@@ -109,6 +117,40 @@ def options(opts: list[str], width: int):
     return grid
 
 
+def keybar(actions: str, width: int) -> Text:
+    """The command bar: every key as a key-cap, the exit key always last,
+    in red, flush right — the same place on every popup.
+
+    `actions` is "KEY label · KEY label …". The first word of each part is
+    the key. A bar that names no exit key gets one."""
+    parts = [p.strip() for p in str(actions or '').split(' · ') if p.strip()]
+    keys, exit_label, notes = [], 'close', []
+    for part in parts:
+        if part.startswith('» '):
+            notes.append(part[2:])         # a hint, not a key
+            continue
+        key, _, label = part.partition(' ')
+        if key.lower() in ('ctrl-q', '^q'):
+            exit_label = label.strip() or exit_label
+            continue
+        keys.append((key, label.strip()))
+    bar = Text(no_wrap=False)
+    for key, label in keys:
+        bar.append(f' {key} ', style=f'bold #16181D on {AMBER}')
+        bar.append(f' {label}   ' if label else '   ', style=FG)
+    tail = Text.assemble((f' {EXIT_KEY} ', f'bold {FG} on {RED}'),
+                         (f' {exit_label}', FG))
+    for note in notes:
+        bar.append(f'{note}   ', style=f'italic {AMBER}')
+    room = width - bar.cell_len - tail.cell_len
+    if room >= 0:
+        bar.append(' ' * room)
+    elif bar.cell_len:
+        bar.append('\n')
+    bar.append_text(tail)
+    return bar
+
+
 class Viewport:
     """A full document with a fixed, wrapped action bar. No hidden truncation."""
     def __init__(self, console: Console):
@@ -124,8 +166,9 @@ class Viewport:
             self._rows = c.render_lines(content, opts, pad=False)
             self._content, self._width = content, c.width
         rows = self._rows
-        footer = c.render_lines(Text(actions, style=INDIGO), opts, pad=False)
-        nav = f'{len(rows)}–{len(rows)}/{len(rows)} lines · j/k ↑↓ · PgUp/PgDn · Home/End'
+        bar = keybar(actions, c.width)
+        footer = c.render_lines(bar, opts, pad=False)
+        nav = f'↑↓ j/k scroll · PgUp/PgDn · {len(rows)}–{len(rows)} of {len(rows)} lines'
         nav_height = len(c.render_lines(Text(nav), opts, pad=False))
         self.page = max(1, c.height - len(footer) - nav_height - 1)
         self.total = len(rows)
@@ -135,8 +178,10 @@ class Viewport:
             c.print(Text.assemble(*[(seg.text, seg.style) for seg in row]), end='\n', soft_wrap=True)
         for _ in range(max(0, self.page - len(rows[self.offset:self.offset+self.page]))):
             c.print()
-        c.print(Text(f'{self.offset+1}–{min(self.total,self.offset+self.page)}/{self.total} lines · j/k ↑↓ · PgUp/PgDn · Home/End', style=DIM))
-        c.print(Text(actions, style=INDIGO), end='')
+        shown = f'{self.offset+1}–{min(self.total,self.offset+self.page)} of {self.total} lines'
+        more = self.total > self.page
+        c.print(Text(f'↑↓ j/k scroll · PgUp/PgDn · {shown}' if more else shown, style=DIM))
+        c.print(bar, end='')
         c.file.flush()
 
     def scroll(self, key: str) -> bool:
@@ -164,6 +209,11 @@ def choose(content, actions: str, *, console=None, gone=None, timeout=300, viewp
     deadline = time.monotonic()+timeout
     try:
         tty.setcbreak(fd)
+        # Ctrl-Q is XON: with flow control on, the tty eats it before we
+        # ever read it, and the one exit key would do nothing here.
+        attrs = termios.tcgetattr(fd)
+        attrs[0] &= ~(termios.IXON | termios.IXOFF)
+        termios.tcsetattr(fd, termios.TCSANOW, attrs)
         c.file.write('\033[?2004h\033[?25l')
         c.file.flush()
         rendered = content(c.width)
@@ -210,6 +260,8 @@ def choose(content, actions: str, *, console=None, gone=None, timeout=300, viewp
                     v.draw(rendered, actions); continue
             if v.scroll(key):
                 v.draw(rendered, actions); continue
+            if key == EXIT_BYTE:
+                return 'q'                 # the universal close, every popup
             if valid_keys is not None and key not in valid_keys:
                 continue
             return key

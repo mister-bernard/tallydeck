@@ -16,6 +16,13 @@ hide_idle = false
 # Info bar: one A/B bar (A top half, B bottom, each in its colour) with the
 # Codex lane underneath.
 
+[presence]
+# Rank sessions by what is in front of you: in view > attached > background
+# (anything asking for you still comes first). Read hub-side from tmux.
+enabled = true
+background_quiet = 10800  # a background session quiet this long leaves the deck
+client_active = 43200     # a terminal idle longer than this is not "open"
+
 [client]
 # The hub runs on your server; the deck is wherever you are. Both ends read
 # this same file, and each ignores what does not apply to it.

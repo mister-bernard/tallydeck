@@ -231,6 +231,7 @@ class CodexSessionsSource(Source):
             # Codex exec payloads are huge; a 64KB tail can drop an async
             # ask that is still unanswered. pending_ask walks past those.
             pa = pending_ask(fp, "codex")
+            asked = bool(pa)               # the harness's own "answer me"
             if pa:
                 state, ask_text = ATTENTION, pa
             if state == WORKING and (now - mtime) > self.stall:
@@ -306,7 +307,8 @@ class CodexSessionsSource(Source):
                       # The one marker every surface keys the Codex look off.
                       "harness": "codex",
                       "oneshot": is_exec,
-                      "exact_pane": bool(pane), "tmux": pane},
+                      "exact_pane": bool(pane), "tmux": pane,
+                      "live": bool(pane), "asked": asked},
             ))
         if self.sync:
             self.sync.push(titled)
@@ -333,18 +335,43 @@ class CodexSessionsSource(Source):
             return out
         days: list[Path] = []
         for year in sorted((p for p in self.root.iterdir() if p.is_dir()),
-                           reverse=True)[:1]:
+                           reverse=True)[:2]:
             for month in sorted((p for p in year.iterdir() if p.is_dir()),
                                 reverse=True)[:2]:
                 days.extend(sorted((p for p in month.iterdir() if p.is_dir()),
-                                   reverse=True)[:2])
-        for day in days[:3]:
+                                   reverse=True))
+        days.sort(key=lambda p: p.parts[-3:], reverse=True)
+        # A session that is still RUNNING in a pane stays on the deck however
+        # long it has been quiet — a Codex pane open in front of the operator
+        # is not "stale" because nobody typed for half an hour. Those are
+        # matched by thread id (it ends every rollout filename), so the
+        # older day directories cost a glob, never a stat per file.
+        live = self._live_thread_ids()
+        for i, day in enumerate(days[:14]):
             for fp in day.glob("rollout-*.jsonl"):
+                if fp.stem[-36:] in live:
+                    out.append(fp)
+                    continue
+                if i >= 3:
+                    continue
                 try:
                     if now - fp.stat().st_mtime <= self.stale:
                         out.append(fp)
                 except OSError:
                     continue
+        return out
+
+    def _live_thread_ids(self) -> set[str]:
+        """The newest thread each running interactive codex has logged."""
+        out: set[str] = set()
+        try:
+            threads = self.state.pid_threads()
+        except Exception:
+            return out
+        for pr in self._live_codex_procs():
+            rows = threads.get(int(pr[3]), [])
+            if rows:
+                out.add(rows[-1][1])
         return out
 
     def _burn_rate(self, key: str, now: float, size: int) -> float:
@@ -425,6 +452,14 @@ class CodexSessionsSource(Source):
     def _live_codex_procs(self) -> list[tuple[str, str, float, int]]:
         """[(pane target, cwd, start epoch, pid)] for every interactive
         `codex` running under a tmux pane on our socket."""
+        now = time.time()
+        if now - getattr(self, "_lp_ts", 0.0) < self._PANE_TTL:
+            return getattr(self, "_lp_cache", [])
+        self._lp_cache = self._scan_codex_procs()
+        self._lp_ts = now
+        return self._lp_cache
+
+    def _scan_codex_procs(self) -> list[tuple[str, str, float, int]]:
         out: list[tuple[str, str, float, int]] = []
         try:
             r = subprocess.run(

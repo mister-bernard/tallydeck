@@ -55,7 +55,7 @@ You decide when a key asks, from the deck, your phone, or a numbered choice.
 | 🟠 **Orange, flashing** | `attention` | The session **asked you something** — a question in its last message, a plan waiting for approval, an `AskUserQuestion` — and is waiting on the answer. Flashes for 5 minutes, then holds steady orange (still your move, done shouting). | Press it |
 | 🔴 **Red, double-pulse** | `blocked` | A hard stop: a permission prompt, a failed gate, a flag a script raised as blocked. Cannot proceed without you. Raised the instant it happens. | Press it now |
 | 🔵 **Blue** | `working` | Agent busy — running tools, thinking, writing. Needs nothing. | Enjoy |
-| 🟢 **Green** | `success` | **Finished its turn and asked for nothing.** Reads `done · 4m`. Stays until the session goes stale (30 min) or you mute it. | Nothing |
+| 🟢 **Green** | `success` | **Finished its turn and asked for nothing.** Reads `done · 4m`. Stays while the session is running in a window you have open; a background session leaves after 3 h quiet; mute it any time. | Nothing |
 | ⚫ **Gray / dark** | `idle` / `offline` | Alive but quiet, or gone stale. | Nothing |
 
 Hot attention keys show **the actual question**, wrapped across the key —
@@ -189,6 +189,29 @@ snapshot stops refreshing it says `stale` instead of a confident figure.
 - **Right = burn gauge** (cool → hot → molten), or the **page cycler** when
   there are more sessions than keys.
 
+### Which sessions get keys, in what order
+
+The deck shows **running sessions** — every Claude (all accounts: A, B, C,
+any `~/.openclaw/.claude-*` home), Codex and Grok process on the box — and
+orders them by what is in front of you:
+
+1. **Asking for you** — red, then orange — wherever it is.
+2. **In view** — its pane is in a window one of your terminals is showing.
+3. **Attached** — in a tmux session you have attached, on another window.
+4. **Background** — running, nobody looking (Telegram lanes, spawned work).
+   A background session quiet for 3 h leaves the deck.
+
+Within a band, busy beats done beats idle, then burn rate. A log with no
+running process behind it gets no key unless it is asking for you.
+Telegram lanes never turn orange from a question in their reply — that
+question went to their chat. Identity, pane and busy/idle come from
+Claude Code's own process registry (`~/.claude/sessions/<pid>.json`), so
+a quiet session in an open window never drops off.
+
+Knobs (`[presence]` in the config): `background_quiet` seconds,
+`client_active` (how recently a terminal must have been used to count),
+`enabled = false` to rank by state alone.
+
 ## Pressing a key
 
 Your terminal comes forward and a floating popup appears **over** your tmux
@@ -199,12 +222,12 @@ off, repo state, related queue tasks. Then one key routes it:
 |---|---|
 | **1–9, when shown** | Send the exact numbered choice shown in the popup. Only an explicit next-steps or options list gets shortcuts; completed-work lists do not. Native permission and question tools stay in their own session UI. |
 | **i** | Type a reply to the live session. Blank cancels. |
-| **⏎ Enter** | Open the session **floating in the popup** (resumes it first if it isn't running). Work in it; `Ctrl-b d` puts it back. |
+| **⏎ Enter** | Open the session **floating in the popup** (resumes it first if it isn't running). Work in it; **Ctrl-Q** brings you back — the status bar says so. |
 | **t** | Open it as a **tab** (window) of your current tmux session |
 | **s** | **Split** it into your current window, side by side |
 | **␣ space** | **Done** — mute the alert like archiving mail; it revives only if the session asks anew |
 | **x** | Park an inactive session after verifying its live identity and saving its resume command. Active work, running tools, shared panes and ambiguous identities are refused. The terminal shell stays available. |
-| **q / Esc** | Dismiss — nothing anywhere changed |
+| **Ctrl-Q** | **The one exit key.** Closes any tally popup — brief, decision, or the floating session view — and changes nothing. `q` / `Esc` also close a menu. Outside tally's own views Ctrl-Q passes through to the program untouched. |
 | **j / k, arrows, PgUp / PgDn, Home / End** | Scroll the complete brief. Unsupported keys and pasted text do not trigger menu actions. |
 | **long-press the deck key** | Snooze that alarm 15 min (long-press again to wake) |
 

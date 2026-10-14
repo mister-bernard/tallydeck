@@ -77,9 +77,26 @@ class Signal:
         return ((now or time.time()) - self.updated) > self.ttl
 
     def sort_key(self) -> tuple:
-        """Deck order: urgency, then priority, then recency."""
+        """Deck order.
+
+        Anything asking for the operator comes first (blocked, then
+        attention), wherever it is. Below that, WHERE a session is beats what
+        state it is in: a key in a window his terminal is showing outranks a
+        busy background lane, because the deck is for the work in front of
+        him. `meta.presence` is stamped hub-side (presence.py); signals
+        without it rank as plain background (tier 1), which is exactly the
+        old state-first order.
+        """
+        weight = _STATE_WEIGHT.get(self.state, 0)
+        urgent = weight if self.state in (BLOCKED, ATTENTION) else 0
+        try:
+            tier = int((self.meta or {}).get("presence", 1))
+        except (TypeError, ValueError):
+            tier = 1
         return (
-            -_STATE_WEIGHT.get(self.state, 0),
+            -urgent,
+            -tier,
+            -weight,
             -self.priority,
             -self.updated,
         )

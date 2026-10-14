@@ -74,7 +74,8 @@ def resolve_launch(account: str = "", harness: str = "", *, env: dict | None = N
         raise ValueError(f"cannot read account configuration: {config}") from e
     # Fallbacks for when ~/.tokenburn.json can't be read; the file is the real
     # source. O and O2 are the two Codex accounts (G calls them 1 and 2).
-    defaults = {"A": "claude", "B": "claude", "O": "codex", "O2": "codex", "X": "grok"}
+    defaults = {"A": "claude", "B": "claude", "C": "claude", "D": "claude",
+                "O": "codex", "O2": "codex", "X": "grok"}
     account = _account_alias(account, accounts) or account
     if harness not in ("", "claude", "codex", "grok"):
         raise ValueError("harness must be claude, codex or grok")
@@ -123,8 +124,9 @@ def resolve_launch(account: str = "", harness: str = "", *, env: dict | None = N
                   or str(home / ".local/bin/grok"))
         codex_home = ""
     else:
-        override = "CLAUDE_BIN_B" if account == "B" else "CLAUDE_BIN"
-        binary = env.get(override) or settings.get("claude_bin") or str(home / ".local/bin" / ("claude-b" if account == "B" else "claude"))
+        override = f"CLAUDE_BIN_{account}" if account not in ("", "A") else "CLAUDE_BIN"
+        fallback = home / ".local/bin" / (f"claude-{account.lower()}" if account not in ("", "A") else "claude")
+        binary = env.get(override) or settings.get("claude_bin") or str(fallback)
         codex_home = ""
     if not binary or not os.access(binary, os.X_OK) or not Path(binary).is_file():
         raise ValueError(f"{harness} binary not executable: {binary or '(not found)'}")

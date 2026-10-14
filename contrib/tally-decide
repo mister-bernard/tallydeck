@@ -248,7 +248,9 @@ def main(argv: list[str]) -> int:
         key = choose(lambda width: Group(_header(d, width),
                      body(str(d.get("sublabel") or ""), "DECISION", width),
                      options(opts, width), _body(d)),
-                     ("1-9 pick · " if opts else "") + "a answer in words · Enter leave raised · q / Esc dismiss" + (" · " + msg if msg else ""),
+                     (f"1-{len(opts)} pick · " if len(opts) > 1 else "1 pick · " if opts else "")
+                     + "a type an answer · Enter decide later · Ctrl-Q close"
+                     + (" · » " + msg if msg else ""),
                      console=console, viewport=viewport,
                      gone=lambda: not f.exists() or (ANSWERS / f"{sid}.json").exists())
         if key in ("", "\x1b", "q", "Q"):
@@ -274,7 +276,7 @@ def main(argv: list[str]) -> int:
             if answer:
                 break
             continue
-        msg = "1-9 picks an option · a to type" if opts else "a to type an answer"
+        msg = "pick a number, or a to type" if opts else "a to type an answer"
         # Redraw through the same viewport, retaining scroll position.
 
     ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())

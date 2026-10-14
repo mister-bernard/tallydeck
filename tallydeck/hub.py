@@ -41,8 +41,13 @@ RELOAD_CHECK = 5.0    # s between checks of our own source tree
 
 class Hub:
     def __init__(self, sources: list[Source], name: str = "tallyd",
-                 tick: float = 2.0, log=lambda m: print(m, file=sys.stderr)):
+                 tick: float = 2.0, log=lambda m: print(m, file=sys.stderr),
+                 presence=None):
         self.sources = sources
+        # Who is in front of the operator (presence.Presence): tiers every
+        # session key by the windows his terminals show, and drops logs with
+        # no live session behind them. None = rank by state alone.
+        self.presence = presence
         self.name = name
         self.tick = tick
         self.log = log
@@ -82,7 +87,13 @@ class Hub:
                 s = self._table[sid]
                 s.meta["opened"] = True
                 s.flash = False          # steady while the popup is up
-        return rank(rollup_same_pane(list(self._table.values())))
+        out = rollup_same_pane(list(self._table.values()))
+        if self.presence is not None:
+            try:
+                out = self.presence.apply(out, now)
+            except Exception as e:      # ranking aid; never take the deck down
+                self.log(f"[hub] presence error: {e}")
+        return rank(out)
 
     def snapshot_line(self, signals: list[Signal]) -> str:
         return json.dumps(

@@ -41,7 +41,12 @@ def _build_hub(cfg: dict, demo: bool) -> Hub:
         if "argv" in spec:
             spec["argv"] = [str(Path(a).expanduser()) for a in spec["argv"]]
         sources.append(make_source(kind, **spec))
-    return Hub(sources)
+    presence = None
+    pcfg = dict(cfg.get("presence", {}) or {})
+    if not demo and pcfg.pop("enabled", True):
+        from .presence import Presence
+        presence = Presence(**pcfg)
+    return Hub(sources, presence=presence)
 
 
 def _view(cfg: dict, args) -> View:
@@ -258,9 +263,9 @@ def cmd_raise(cfg, args):
     if args.account:
         meta["account"] = args.account
     elif "account" not in meta and sid:
-        marker = os.environ.get("TALLY_ACCT_B_MARKER", ".claude-b")
-        cfgdir = os.environ.get("CLAUDE_CONFIG_DIR") or os.environ.get("HOME", "")
-        meta["account"] = "B" if marker in cfgdir else "A"
+        from .paths import claude_account
+        meta["account"] = claude_account(os.environ.get("CLAUDE_CONFIG_DIR")
+                                         or os.environ.get("HOME", ""))
     if meta:
         d["meta"] = meta
     Signal.from_dict({**d, "id": args.id})     # validate before writing
@@ -306,7 +311,7 @@ def cmd_brief(cfg, args):
                 except (OSError, ValueError):
                     pass
         doc = document(**kwargs)
-        actions = args.actions or "Enter open · space mute · q dismiss"
+        actions = args.actions or "Enter open · Space done · Ctrl-Q close"
         steps = doc.get("steps", {})
         actions = actions.replace("1-9 next step · ", "")
         if steps:

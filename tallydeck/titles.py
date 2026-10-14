@@ -64,6 +64,7 @@ _SEP = "␟"                        # ␟, SYMBOL FOR UNIT SEPARATOR
 # Session names `cc` hands out when nobody chose one. Everything else —
 # c64, haystack-v5, pearlbridge, a `tally spawn` slug — was chosen.
 _AUTO_SESSION = re.compile(r"^main(-[A-Za-z0-9]{1,3}|[A-Z])?$")
+_HOME_DIR = re.compile(r"^(/home/[^/]+|/root|/Users/[^/]+|/)$")
 
 # Window names that name the program, not the work.
 _GENERIC_WINDOW = {"", "1", "bash", "zsh", "sh", "fish", "claude", "claude-b",
@@ -700,6 +701,7 @@ def resolve_label(*, harness_title: str = "", harness_prose: str = "",
     needs trimming. Everything else here — a name G typed, a window, a spawn
     slug, a directory — is a title by definition.
     """
+    shared = False
     if pane is not None:
         manual = pane.manual_title
         if manual:
@@ -708,16 +710,33 @@ def resolve_label(*, harness_title: str = "", harness_prose: str = "",
         if pane.window_panes == 1 and pane.manual_window:
             return trim(pane.manual_window, limit)
         session_name = session_name or pane.session
-    if session_name and not _AUTO_SESSION.match(session_name):
+        # The same goes for a session name: `c2` holding five Codex panes
+        # put "c2" on five keys. With company in the window, the harness's
+        # own topic is what tells the panes apart.
+        shared = (pane.window_panes or 1) > 1
+    if session_name and not shared and not _AUTO_SESSION.match(session_name):
         return trim(session_name, limit)
     for text, shorten in ((harness_title, trim), (harness_prose, headline)):
         if text:
             out = shorten(text, limit)
             if out:
                 return out
+    base = os.path.basename(cwd.rstrip("/"))
+    if shared:
+        # No topic from the harness yet (a resumed session's fresh log has
+        # none) and the window is shared, so the session name would name
+        # every pane alike. The topic we last put on THIS pane is still
+        # the best one known; failing that, its directory.
+        if pane.title_auto and pane.title == pane.title_auto:
+            return trim(pane.title_auto, limit)
+        # A project directory says what the pane is about; a home directory
+        # only says whose it is.
+        if base and not _HOME_DIR.match(cwd.rstrip("/") or "/") and \
+                os.path.realpath(cwd) != os.path.realpath(os.path.expanduser("~")):
+            return trim(base, limit)
     if session_name:
         return trim(session_name, limit)
-    return trim(os.path.basename(cwd.rstrip("/")) or cwd, limit)
+    return trim(base or cwd, limit)
 
 
 class TitleSync:
