@@ -400,3 +400,11 @@ def test_the_brief_says_what_is_running(tmp_path):
     text = summary(main)
     assert "turn ended 8m ago" in text
     assert "- VPS world collector · burning tokens" in text and "general-purpose" not in text
+
+
+def test_a_source_can_be_switched_off_from_the_user_layer():
+    from tallydeck.cli import _build_hub
+    cfg = {"sources": [{"kind": "exec", "enabled": False, "argv": ["/bin/true"]},
+                       {"kind": "watchdir", "path": "/nonexistent"}], "presence": {"enabled": False}}
+    hub = _build_hub(cfg, False)
+    assert [type(s).__name__ for s in hub.sources] == ["WatchDirSource"]

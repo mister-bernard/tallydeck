@@ -37,6 +37,11 @@ def _build_hub(cfg: dict, demo: bool) -> Hub:
     sources = []
     for spec in specs:
         spec = dict(spec)
+        if spec.get("enabled") is False and spec.get("kind") != "background-fleet":
+            # Off. Naming a kind in the user layer replaces the repo's entries
+            # of that kind, so `kind = "exec"` + `enabled = false` there turns
+            # the repo's exec boards off too.
+            continue
         kind = spec.pop("kind")
         if "argv" in spec:
             spec["argv"] = [str(Path(a).expanduser()) for a in spec["argv"]]

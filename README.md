@@ -237,6 +237,10 @@ Knobs (`[presence]` in the config): `done_grace` seconds (default 600),
 `enabled = false` to rank by state alone. Account homes are found with
 `discover = ["~/.openclaw/.claude-*"]` on the claude-sessions source.
 
+Any `[[sources]]` entry takes `enabled = false`. Because naming a kind in
+your user config replaces the repo's entries of that kind, a user entry of
+`kind = "exec"` with `enabled = false` switches the repo's exec boards off.
+
 ## Pressing a key
 
 Your terminal comes forward and a floating popup appears **over** your tmux
