@@ -230,6 +230,18 @@ def document(session: str, project: str, label: str = "",
             for title, values in zip(("FILES WRITTEN", "COMMITS", "LINKS"), module.gather(fp)):
                 if values:
                     sections.append(("RESULTS · " + title, "\n".join("- " + str(v) for v in values)))
+    if fp and kind in ("claude", "codex"):
+        # What it is doing NOW — main thread, agents, burn. First on a working
+        # key (it is the answer to "why is this blue?"); after the ask
+        # otherwise, where agents still running are worth knowing too.
+        from .activity import summary
+        try:
+            now_text = summary(fp, kind)
+        except Exception:
+            now_text = ""
+        if now_text and (state == "working" or "Agents:" in now_text):
+            at = 0 if state == "working" else min(1, len(sections))
+            sections.insert(at, ("RIGHT NOW", now_text))
     git = _git(project)
     if git: sections.append(("REPOSITORY", git))
     tasks = _tasks(project, tasks_cmd)

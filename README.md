@@ -54,7 +54,7 @@ You decide when a key asks, from the deck, your phone, or a numbered choice.
 |---|---|---|---|
 | 🟠 **Orange, flashing** | `attention` | The session **asked you something** — a question in its last message, a plan waiting for approval, an `AskUserQuestion` — and is waiting on the answer. Flashes for 5 minutes, then holds steady orange (still your move, done shouting). | Press it |
 | 🔴 **Red, double-pulse** | `blocked` | A hard stop: a permission prompt, a failed gate, a flag a script raised as blocked. Cannot proceed without you. Raised the instant it happens. | Press it now |
-| 🔵 **Blue** | `working` | Agent busy — running tools, thinking, writing. Needs nothing. | Enjoy |
+| 🔵 **Blue** | `working` | Mid-turn or its agents are running. Needs nothing. With a rate (`85k/m`) and a warm background it is **burning tokens right now**; with a tool and a time (`Bash · 4m`) it is waiting on that tool and spending nothing. | Enjoy |
 | 🟢 **Green** | `success` | **Finished its turn and asked for nothing.** Reads `done · 4m`. Stays while the session is running in a window you have open; a background session leaves after 3 h quiet; mute it any time. | Nothing |
 | ⚫ **Gray / dark** | `idle` / `offline` | Alive but quiet, or gone stale. | Nothing |
 
@@ -99,8 +99,23 @@ harness so colour can keep meaning state.
 
 - **Background warmth** — the marbled background's heat (near-black → indigo
   → violet → ember) is that session's **token burn relative to the hottest
-  session visible**. Ember = the current #1 spender. Cold black = coasting.
-- **`2m · 45k/m`** — quiet-time and burn rate (log-bytes/minute).
+  session visible**. Ember = the current #1 spender. Cold black = not
+  burning: only keys with tokens flowing right now carry any heat.
+- **What the sublabel says** while working:
+  - `85k/m` — burning: effective tokens per minute over the last 5 min,
+    main thread **plus its subagents and workflow agents**. "Effective" =
+    input-token equivalents at API price ratios (cache read ×0.1, cache
+    write ×1.25, output ×5), so 360k tokens of cached context read once do
+    not outweigh real work, and Claude and Codex compare on one scale.
+  - `85k/m · 3 agents` — burning, with agents burning too.
+  - `2 agents · 40k/m` — the conversation turn is **over**, agents it
+    launched are still burning (a background Agent call, a Workflow).
+  - `Bash · 4m` — waiting on a tool for 4 min: working, **not burning**.
+  - `stalled · 6m` — Claude's move, but no answer for longer than any
+    normal model call (5 min): not burning.
+  - `done · 4m` — **time since the conversation actually ended**, from the
+    log's own records. (Claude Code re-stamps log files without writing,
+    so file times are never used for ages.)
 - **`A` / `B` / `O` / `X` badge** — which account's quota the session is draining
   (`O` is Codex, `X` is Grok).
 - **Placement** — urgent first, then the busiest, flowing top-left ↓ then
@@ -199,18 +214,28 @@ orders them by what is in front of you:
 2. **In view** — its pane is in a window one of your terminals is showing.
 3. **Attached** — in a tmux session you have attached, on another window.
 4. **Background** — running, nobody looking (Telegram lanes, spawned work).
-   A background session quiet for 3 h leaves the deck.
 
-Within a band, busy beats done beats idle, then burn rate. A log with no
+Within a band: **burning → just done → waiting on a tool → idle**, then
+burn rate. A finished or idle session keeps its key for 10 minutes after
+its last real exchange ("just done" is about to be your move), then leaves
+the deck — in view or not. What remains is what is asking for you, what is
+burning tokens, and what is working through a long tool run. A log with no
 running process behind it gets no key unless it is asking for you.
 Telegram lanes never turn orange from a question in their reply — that
 question went to their chat. Identity, pane and busy/idle come from
 Claude Code's own process registry (`~/.claude/sessions/<pid>.json`), so
 a quiet session in an open window never drops off.
 
-Knobs (`[presence]` in the config): `background_quiet` seconds,
+A turn is open or closed according to the **transcript** (a prompt or tool
+result awaiting an answer, an open tool call, or `end_turn`). Claude Code
+keeps reporting `busy` while background agents or shells run after a turn
+has ended, so `busy` never reopens a closed turn — a question at the end of
+such a turn still turns the key orange.
+
+Knobs (`[presence]` in the config): `done_grace` seconds (default 600),
 `client_active` (how recently a terminal must have been used to count),
-`enabled = false` to rank by state alone.
+`enabled = false` to rank by state alone. Account homes are found with
+`discover = ["~/.openclaw/.claude-*"]` on the claude-sessions source.
 
 ## Pressing a key
 

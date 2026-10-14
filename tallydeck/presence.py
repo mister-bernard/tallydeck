@@ -17,9 +17,9 @@ Three filters ride on the same table:
 
   * a session with no pane and no live process is dropped unless it is
     asking for the operator — a log that stopped is history, not work;
-  * a session outside the windows on screen (ATTACHED or LIVE) that has
-    been quiet for `background_quiet` seconds is dropped — it is running,
-    but it is not what anyone is doing. Keys in view always stay;
+  * a finished or idle session is dropped `done_grace` seconds after its
+    last real exchange, in view or not — the deck is for what is burning
+    tokens or asking for the operator, plus what JUST finished;
   * a Telegraph lane (its process carries TELEGRAPH_PANE_SESSION_ID) never
     turns amber from the "ends with a question" heuristic — its questions
     are addressed to the chat it answers, not to the operator. Hook asks,
@@ -49,11 +49,14 @@ LANE_ENV = b"TELEGRAPH_PANE_SESSION_ID="
 
 class Presence:
     def __init__(self, socket: str = "/tmp/tmux-1000/cc",
-                 background_quiet: float = 3 * 3600,
+                 done_grace: float = 600.0,
                  client_active: float = 12 * 3600, ttl: float = 2.0,
                  runner=subprocess.run):
         self.socket = socket
-        self.background_quiet = float(background_quiet)
+        # A finished or idle session keeps its key this long after its last
+        # real exchange ("just done" is about to be your move), then leaves
+        # the deck — in view or not. Burning, working and asking keys stay.
+        self.done_grace = float(done_grace)
         self.client_active = float(client_active)
         self.ttl = float(ttl)
         self._run = runner
@@ -147,7 +150,7 @@ class Presence:
 
     def _quiet(self, s: Signal, now: float) -> bool:
         return s.state in (SUCCESS, IDLE, OFFLINE) and \
-            now - s.updated > self.background_quiet
+            now - s.updated > self.done_grace
 
     def apply(self, signals: list[Signal], now: float | None = None) -> list[Signal]:
         now = time.time() if now is None else now
@@ -183,9 +186,9 @@ class Presence:
             if tier == NONE and s.state != WORKING:
                 continue                       # a log, not a running session
             # Working but unresolved (two codex in one cwd before the pid map
-            # has logged) still shows — it may be running. Out of view and
-            # quiet for hours: running, but nobody's work.
-            if tier in (NONE, LIVE, ATTACHED) and self._quiet(s, now):
+            # has logged) still shows — it may be running. Finished or idle
+            # for longer than the grace: not burning, not asking — off.
+            if self._quiet(s, now):
                 continue
             out.append(s)
         return out

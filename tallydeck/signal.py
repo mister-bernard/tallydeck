@@ -83,11 +83,17 @@ class Signal:
         attention), wherever it is. Below that, WHERE a session is beats what
         state it is in: a key in a window his terminal is showing outranks a
         busy background lane, because the deck is for the work in front of
-        him. `meta.presence` is stamped hub-side (presence.py); signals
+        him. Within a band: burning > just done > working-on-a-tool > idle,
+        then real burn rate. `meta.presence` is stamped hub-side (presence.py); signals
         without it rank as plain background (tier 1), which is exactly the
         old state-first order.
         """
         weight = _STATE_WEIGHT.get(self.state, 0)
+        if self.state == WORKING and (self.meta or {}).get("burning") is False:
+            # Mid-turn on a long tool run, no tokens flowing: it needs
+            # nothing and spends nothing, so it sits below a session that
+            # just finished (which is about to be your move).
+            weight = _STATE_WEIGHT[SUCCESS] - 2
         urgent = weight if self.state in (BLOCKED, ATTENTION) else 0
         try:
             tier = int((self.meta or {}).get("presence", 1))

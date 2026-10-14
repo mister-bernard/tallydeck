@@ -32,6 +32,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..signal import Signal, WORKING, ATTENTION, SUCCESS, IDLE
+from ..activity import CodexTail, Tails, assess
 from ..paths import contrib_bin
 from ..titles import CodexState, TitleSync, resolve_label, tmux_for
 from .base import Source
@@ -208,6 +209,8 @@ class CodexSessionsSource(Source):
     def poll(self) -> list[Signal]:
         now = time.time()
         signals: list[Signal] = []
+        if not hasattr(self, "_tails"):
+            self._tails = Tails(CodexTail)   # real usage + turn shape (activity.py)
         rollouts = self._recent_rollouts(now)
         panes = self._codex_panes(rollouts, now)
         titled: list[tuple[str, str]] = []
@@ -226,6 +229,9 @@ class CodexSessionsSource(Source):
                 or meta.get("source") == "exec"
             if is_exec and not self.include_exec:
                 continue
+            tail = self._tails.get(fp)
+            act = assess(tail, [], "", now)
+            last = act.last or mtime          # record time, not mtime
             lines = _tail_lines(fp)
             state, ask_text = classify(lines)
             # Codex exec payloads are huge; a 64KB tail can drop an async
@@ -234,7 +240,7 @@ class CodexSessionsSource(Source):
             asked = bool(pa)               # the harness's own "answer me"
             if pa:
                 state, ask_text = ATTENTION, pa
-            if state == WORKING and (now - mtime) > self.stall:
+            if state == WORKING and (now - last) > self.stall and not tail.pending:
                 state = IDLE               # "working" with no output = stalled
             ended = state in (ATTENTION, SUCCESS)
             # Dwell only SUCCESS: a task_complete written a second ago may be
@@ -242,7 +248,7 @@ class CodexSessionsSource(Source):
             # request_user_input_async must flash while tools keep running;
             # dwelling it back to WORKING was how a Codex ask never lit the
             # deck (G, 2026-09-11).
-            if state == SUCCESS and (now - mtime) < self.dwell:
+            if state == SUCCESS and (now - last) < self.dwell:
                 state, ended = WORKING, False
             if is_exec and state == ATTENTION:
                 state = WORKING            # nobody answers a one-shot
@@ -250,7 +256,7 @@ class CodexSessionsSource(Source):
                 from ..paths import acked_dir
                 ack = acked_dir() / uuid
                 try:
-                    if ack.stat().st_mtime >= mtime:
+                    if ack.stat().st_mtime >= last:
                         state = IDLE
                     else:
                         ack.unlink()
@@ -270,12 +276,9 @@ class CodexSessionsSource(Source):
                                   cwd=cwd) or "codex"
             if pane and not is_exec:
                 titled.append((pane, label))   # same topic on every surface
-            rate = self._burn_rate(uuid, now, size)
-            sub = _age_str(now - mtime)
-            if rate >= 20:
-                sub += f" · {rate * 60 / 1024:.0f}k/m"
-            if state == SUCCESS:
-                sub = f"done · {_age_str(now - mtime)}"
+            burning = state == WORKING and act.burning
+            from .claude_sessions import _activity_label
+            sub = _activity_label(state, act, now)
             snip = ""
             if state == ATTENTION and ask_text:
                 if ask_text.lstrip().startswith("**"):
@@ -289,7 +292,7 @@ class CodexSessionsSource(Source):
             if state == ATTENTION and snip:
                 sub = " ".join(snip.split())[:280]
             flash = None
-            if state == ATTENTION and (now - mtime) > self.flash_for:
+            if state == ATTENTION and (now - last) > self.flash_for:
                 flash = False
             signals.append(Signal(
                 id=f"{self.group}/{signal_id(uuid)}",
@@ -299,8 +302,9 @@ class CodexSessionsSource(Source):
                 detail=snip,
                 flash=flash,
                 state=state,
-                updated=mtime,
-                priority=-10 if is_exec else int(min(rate, 1_000_000)),
+                updated=last,
+                priority=-10 if is_exec else (
+                    int(min(act.rate, 100_000_000)) if burning else 0),
                 group=self.group,
                 meta={"project": cwd, "session": uuid,
                       "account": self.account,
@@ -308,8 +312,11 @@ class CodexSessionsSource(Source):
                       "harness": "codex",
                       "oneshot": is_exec,
                       "exact_pane": bool(pane), "tmux": pane,
-                      "live": bool(pane), "asked": asked},
+                      "live": bool(pane), "asked": asked,
+                      "phase": act.phase, "burning": burning,
+                      "rate": int(act.rate)},
             ))
+        self._tails.prune(now)
         if self.sync:
             self.sync.push(titled)
         return signals

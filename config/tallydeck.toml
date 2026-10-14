@@ -20,7 +20,7 @@ hide_idle = false
 # Rank sessions by what is in front of you: in view > attached > background
 # (anything asking for you still comes first). Read hub-side from tmux.
 enabled = true
-background_quiet = 10800  # a background session quiet this long leaves the deck
+done_grace = 600          # a finished/idle session leaves the deck this long after its last turn
 client_active = 43200     # a terminal idle longer than this is not "open"
 
 [client]

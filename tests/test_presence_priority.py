@@ -45,7 +45,7 @@ def sess(sid, state, tmux="", updated=NOW - 30, group="cc", **meta):
 
 
 def presence(lanes=()):
-    p = Presence(runner=fake_tmux(CLIENTS, PANES), background_quiet=3600)
+    p = Presence(runner=fake_tmux(CLIENTS, PANES), done_grace=3600)
     p.is_lane = lambda s, snap: (s.meta.get("tmux") in lanes)
     return p
 
@@ -60,12 +60,13 @@ def test_tiers_follow_what_the_terminals_show():
     assert "ghost" not in out
 
 
-def test_quiet_background_sessions_leave_but_never_the_ones_in_view():
+def test_finished_sessions_leave_after_the_grace_in_view_or_not():
     sigs = [sess("lane-old", SUCCESS, "groups:1.1", updated=NOW - 7200),
             sess("view-old", IDLE, "mainC:1.1", updated=NOW - 86400),
+            sess("view-just-done", SUCCESS, "mainC:1.2", updated=NOW - 120),
             sess("lane-busy", WORKING, "groups:1.1", updated=NOW - 7200)]
     out = {s.id for s in presence().apply(sigs, NOW)}
-    assert out == {"view-old", "lane-busy"}
+    assert out == {"view-just-done", "lane-busy"}
 
 
 def test_urgent_survives_every_filter():
@@ -108,7 +109,7 @@ def test_quiet_cutoff_applies_off_screen_and_when_tmux_is_unreadable():
         return subprocess.CompletedProcess(argv, 1, "", "no server")
     sigs = [sess("old", IDLE, "", updated=NOW - 7200, live=True),
             sess("fresh", IDLE, "", live=True), sess("ask", ATTENTION, "", updated=0)]
-    out = {s.id for s in Presence(runner=broken, background_quiet=3600).apply(sigs, NOW)}
+    out = {s.id for s in Presence(runner=broken, done_grace=3600).apply(sigs, NOW)}
     assert out == {"fresh", "ask"}
 
 
@@ -182,13 +183,15 @@ def own_start():
     return Path("/proc/self/stat").read_text().rsplit(")", 1)[1].split()[19]
 
 
-def claude_home(tmp_path, name, uid, text, age, status, start=None):
+def claude_home(tmp_path, name, uid, text, age, status, start=None, stop="end_turn"):
     home = tmp_path / name
     proj = home / ".claude" / "projects" / "-home-u"
     proj.mkdir(parents=True)
     fp = proj / f"{uid}.jsonl"
-    fp.write_text(json.dumps({"type": "assistant", "cwd": "/home/u", "message": {
-        "content": [{"type": "text", "text": text}]}}) + "\n")
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - age))
+    fp.write_text(json.dumps({"type": "assistant", "cwd": "/home/u", "timestamp": stamp,
+                              "message": {"id": "msg_1", "stop_reason": stop,
+                                          "content": [{"type": "text", "text": text}]}}) + "\n")
     os.utime(fp, (time.time() - age, time.time() - age))
     reg = home / ".claude" / "sessions"; reg.mkdir()
     (reg / f"{os.getpid()}.json").write_text(json.dumps({
@@ -208,15 +211,20 @@ def source(tmp_path, monkeypatch, **opts):
 UID = "5e1f0c2a-0000-4000-8000-000000000001"
 
 
-@pytest.mark.parametrize("status,text,state", [
-    ("busy", "Do you want X?", WORKING),       # mid-turn: a '?' is not a question yet
-    ("waiting", "Working on it.", ATTENTION),  # a dialog is holding for the human
-    ("idle", "All done.", SUCCESS),
-    ("idle", "Should I ship it?", ATTENTION),
+@pytest.mark.parametrize("status,text,stop,state", [
+    # mid-turn: a text block that leads into a tool call is not a question
+    ("busy", "Do you want X?", "tool_use", WORKING),
+    # the turn CLOSED with a question while background work keeps the
+    # process "busy": the question stands (stale busy must not hide it)
+    ("busy", "Should I ship it?", "end_turn", ATTENTION),
+    ("busy", "All done.", "end_turn", SUCCESS),
+    ("waiting", "Working on it.", "tool_use", ATTENTION),  # a dialog holds for the human
+    ("idle", "All done.", "end_turn", SUCCESS),
+    ("idle", "Should I ship it?", "end_turn", ATTENTION),
 ])
 def test_live_session_survives_quiet_and_uses_claudes_status(tmp_path, monkeypatch,
-                                                            status, text, state):
-    home = claude_home(tmp_path, ".claude-c", UID, text, age=7200, status=status)
+                                                            status, text, stop, state):
+    home = claude_home(tmp_path, ".claude-c", UID, text, age=7200, status=status, stop=stop)
     src = source(tmp_path, monkeypatch, discover=[str(tmp_path / ".claude-*")])
     sigs = src.poll()
     assert [s.id for s in sigs] == [f"cc/C-{UID[:8]}"]

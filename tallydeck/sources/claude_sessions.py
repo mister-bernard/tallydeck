@@ -47,6 +47,7 @@ from dataclasses import replace
 
 from ..signal import Signal, WORKING, ATTENTION, SUCCESS, IDLE, BLOCKED, _STATE_WEIGHT
 from ..paths import signals_dir, acked_dir, contrib_bin, claude_account
+from ..activity import ClaudeTail, Tails, assess
 from ..titles import (TitleSync, claude_ai_title, registry_target,
                       resolve_label, tmux_for)
 from .base import Source
@@ -321,6 +322,9 @@ class ClaudeSessionsSource(Source):
         # Titles: the pane table both session sources share, and the writer
         # that pushes the resolved title back into tmux for the manager.
         self.tmux = tmux_for(self.socket)
+        # Incremental transcript readers (main + subagent + workflow agent
+        # logs): real token usage and the shape of the turn — see activity.py.
+        self._tails = Tails(ClaudeTail)
         self.sync = TitleSync(self.tmux, opts.get("sync_every")) \
             if opts.get("sync_titles", True) else None
         self._titled: list[tuple[str, str]] = []
@@ -391,6 +395,11 @@ class ClaudeSessionsSource(Source):
         # process is running owns the pane.
         self._live: dict[tuple, dict] = {}
         self._claimed: dict[str, tuple] = {}
+        # Where the registry exists, a session missing from it has no process:
+        # nothing of it can be in flight. Without one (older Claude Code, test
+        # fixtures) liveness is unknown and the transcript stands alone.
+        self._has_registry = {str(r): (r.parent / "sessions").is_dir()
+                              for _, r in self.roots}
         for _, root in self.roots:
             if root.is_dir():
                 for uuid, rec in self._registry(root).items():
@@ -402,6 +411,7 @@ class ClaudeSessionsSource(Source):
             if not root.is_dir():
                 continue
             signals.extend(self._scan(root, acct, now))
+        self._tails.prune(now)
         if self.sync:
             self.sync.push(self._titled)
         return signals
@@ -432,59 +442,76 @@ class ClaudeSessionsSource(Source):
                     continue
                 me = (str(root), fp.stem)
                 live = registry.get(me)
+                # mtime is a safe PRE-filter only: Claude Code re-stamps logs
+                # without writing (utimes), which makes files look newer,
+                # never older. Freshness itself comes from record times.
                 if now - mtime > self.stale and not live:
                     continue
                 from ..park import is_parked
                 if is_parked(uuid=fp.stem):
                     continue
+                tail = self._tails.get(fp)
+                subs = self._tails.subagents(fp, now)
+                status = (live or {}).get("status", "") if live else (
+                    "dead" if self._has_registry.get(str(root)) else "")
+                act = assess(tail, subs, status, now)
+                if act.phase == "generating" and tail.last_role == "assistant" \
+                        and tail.last_stop is None and tail.last_kind != "tool_use" \
+                        and now - (tail.last_t or mtime) >= self.dwell:
+                    # Old logs carry no stop_reason: a non-tool tail that has
+                    # stayed quiet for the dwell is a closed turn.
+                    act.phase = "background" if act.agents else "ended"
+                    act.burning = act.burning and bool(act.agents_burning)
+                last = act.last or mtime        # the last real exchange
+                newest = max(last, act.newest)  # …anywhere, agents included
+                if not live and now - newest > self.stale:
+                    continue                    # touched, not written: history
                 lines = _tail_lines(fp)
                 exact = (live or {}).get("target") or self._exact_pane(fp.stem)
                 if exact and claimed.get(exact, me) != me:
                     exact = ""              # that pane runs another session now
                 oneshot = bool(exact) and \
                     exact.split(":", 1)[0] in self.oneshot_sessions
-                state, final = classify(lines)
-                if state == WORKING and (now - mtime) > self.stall:
-                    state = IDLE               # "working" for 15 min with no output = stalled
-                status = (live or {}).get("status", "")
+                # The text decides ask-vs-done for a closed turn; the activity
+                # decides whether the turn is closed at all.
+                said, _final = classify(lines)
                 # A question the harness itself is holding open (a dialog,
                 # AskUserQuestion) — as opposed to prose that ends in '?'.
                 asked = status == "waiting" or _ask_tool_pending(lines)
-                if status in ("busy", "shell"):
-                    # Claude says it is mid-turn: a long tool run is working,
-                    # not stalled, and a '?' in a mid-turn message is not a
-                    # question yet. A pending AskUserQuestion still asks.
-                    if not asked:
-                        state, final = WORKING, True
-                elif status == "waiting":
-                    state, final = ATTENTION, True   # a dialog wants the human
-                elif status == "idle":
-                    final = True               # turn over: no dwell needed
-                    if state == WORKING:
-                        state = IDLE           # interrupted or killed mid-turn
+                ph = act.phase
+                if ph == "waiting" or asked:
+                    state = ATTENTION
+                elif ph in ("generating", "tool", "agents"):
+                    state = WORKING
+                elif ph == "background":
+                    state = ATTENTION if said == ATTENTION else WORKING
+                elif ph == "ended":
+                    state = ATTENTION if said == ATTENTION else SUCCESS
+                    if status == "busy" and now - last < self.dwell:
+                        state = WORKING     # a Stop hook may continue the turn
+                else:
+                    state = IDLE
+                if state == WORKING and not act.burning and \
+                        status not in ("busy", "shell") and now - newest > self.stall:
+                    state = IDLE      # Claude's move, nothing for 15 min: stalled
                 ended = state in (ATTENTION, SUCCESS)
-                # Dwell: tool results log as "user" records, so mid-turn the
-                # tail flaps. A fresh assistant tail with no end-of-turn
-                # marker is still Claude working.
-                if ended and not final and (now - mtime) < self.dwell:
-                    state, ended = WORKING, False
                 if ended and self._snooze.get(fp.stem, 0) > now:
                     state = IDLE               # snoozed: quiet, still listed
                 askf = signals_dir() / f"ask-{fp.stem[:8]}.json"
                 if askf.is_file():
                     try:
-                        if mtime > askf.stat().st_mtime + 5:
+                        if last > askf.stat().st_mtime + 5:
                             askf.unlink()   # session moved on: stale ask dies
                         elif ended:
                             state = WORKING  # the hook's key owns this alarm
                     except OSError:
                         pass
                 if ended:
-                    # Inbox-done (space in the popup): quiet until the log
-                    # MOVES again — a fresh ask revives the alert on its own.
+                    # Inbox-done (space in the popup): quiet until the session
+                    # SPEAKS again — a fresh ask revives the alert on its own.
                     ackf = acked_dir() / fp.stem[:8]
                     try:
-                        if ackf.stat().st_mtime >= mtime:
+                        if ackf.stat().st_mtime >= last:
                             state = IDLE
                         else:
                             ackf.unlink()      # session spoke again: rearm
@@ -497,12 +524,8 @@ class ClaudeSessionsSource(Source):
                 # Real cwd from the records; munged-name reconstruction only
                 # as a fallback for logs that never carried one.
                 full = _last_cwd(lines) or _resolve_munged(proj_dir.name)
-                rate = self._burn_rate(fp.stem, now, size)   # bytes/sec
-                sub = _age_str(now - mtime)
-                if rate >= 20:
-                    sub += f" · {rate * 60 / 1024:.0f}k/m"
-                if state == SUCCESS:
-                    sub = f"done · {_age_str(now - mtime)}"
+                burning = state == WORKING and act.burning
+                sub = _activity_label(state, act, now)
                 snip = _snippet(lines)
                 if state == ATTENTION and snip:
                     # 96px answers "what do I do?" — the ask beats a rate.
@@ -511,7 +534,7 @@ class ClaudeSessionsSource(Source):
                     import re as _re
                     sub = _re.sub(r"[*_`#]+", "", snip)[:280]
                 flash = None
-                if state == ATTENTION and (now - mtime) > self.flash_for:
+                if state == ATTENTION and (now - last) > self.flash_for:
                     flash = False
                 # Exact pane via the session's own pid — unique even when many
                 # sessions share a cwd. The directory-match fallback is only a
@@ -557,15 +580,21 @@ class ClaudeSessionsSource(Source):
                     flash=flash,
                     detail=snip,
                     state=state,
-                    updated=mtime,
-                    # Hotter sessions outrank within the same state, so the
-                    # busiest work funnels toward the top of the deck.
-                    priority=-10 if oneshot else int(min(rate, 1_000_000)),
+                    # Recency is the last real exchange — or, while working,
+                    # the newest record anywhere (an agent counts).
+                    updated=newest if state == WORKING else last,
+                    # Real burn ranks and heats keys: effective tokens/min, and
+                    # only while tokens are flowing. A session parked on a long
+                    # tool run is working, not burning — no heat, no rate.
+                    priority=-10 if oneshot else (
+                        int(min(act.rate, 100_000_000)) if burning else 0),
                     group=self.group,
                     meta={"project": full, "session": fp.stem,
                           "account": acct, "exact_pane": bool(exact),
                           "oneshot": oneshot, "live": bool(live),
-                          "asked": asked,
+                          "asked": asked, "phase": ph,
+                          "burning": burning, "rate": int(act.rate),
+                          "agents": act.agents,
                           # Resolved hub-side because only the hub can see
                           # tmux. Without it the deck machine would have to
                           # re-derive the pane over ssh on every press.
@@ -758,6 +787,36 @@ class ClaudeSessionsSource(Source):
                     self._snooze[sid] = time.time() + self.snooze_for
                 return True
         return False
+
+def _rate(rate: float) -> str:
+    """Effective tokens/min, deck-sized: 850/m · 12k/m · 1.4M/m."""
+    if rate >= 1e6:
+        return f"{rate / 1e6:.1f}M/m"
+    if rate >= 1e3:
+        return f"{rate / 1e3:.0f}k/m"
+    return f"{rate:.0f}/m"
+
+
+def _activity_label(state: str, act, now: float) -> str:
+    """What a non-asking key says under its title."""
+    if state == SUCCESS:
+        return f"done · {_age_str(now - act.last)}"
+    if state != WORKING:
+        return _age_str(now - (act.last or now))
+    n = act.agents_burning if act.burning else act.agents
+    crew = f"{n} agent{'s' if n != 1 else ''}" if n else ""
+    if act.burning:
+        if act.phase == "background":
+            return f"{crew} · {_rate(act.rate)}"
+        return f"{_rate(act.rate)} · {crew}" if crew else _rate(act.rate)
+    # working, not burning: say what it is waiting on, and for how long
+    waited = _age_str(now - (act.since or act.last or now))
+    if act.phase == "tool":
+        return f"{act.tool} · {waited}"
+    if act.phase in ("agents", "background") and crew:
+        return f"{crew} · {waited}"
+    return f"stalled · {waited}"
+
 
 def _registry_record(d: dict) -> dict | None:
     """One registry file → the fields we use, or None if it is not one."""
