@@ -184,6 +184,8 @@ def rollup_same_pane(signals: list[Signal]) -> list[Signal]:
             extra += f" · {n_run} running"
         sub = extra if not primary.sublabel else f"{extra} · {primary.sublabel}"
         meta = dict(primary.meta or {})
+        if any((m.meta or {}).get("burning") for m in members):
+            meta["burning"] = True       # burn belongs to the pane, not its face
         # A hook question (sig/ask-*) folded into its session's key is the
         # harness asking, whatever the session key itself concluded.
         if hottest.state == ATTENTION and (
@@ -196,6 +198,7 @@ def rollup_same_pane(signals: list[Signal]) -> list[Signal]:
             state=hottest.state,
             sublabel=sub,
             updated=max(m.updated for m in members),
+            priority=max(m.priority for m in members),
             meta=meta,
         ))
     return out

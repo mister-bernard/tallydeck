@@ -232,3 +232,171 @@ def test_burning_then_just_done_then_waiting_on_a_tool_then_idle():
 def test_rate_labels_fit_a_key():
     from tallydeck.sources.claude_sessions import _rate
     assert [_rate(850), _rate(12_400), _rate(1_400_000)] == ["850/m", "12k/m", "1.4M/m"]
+
+
+# ── review round: the cases that slipped through ────────────────────────────
+
+def agent_tail(tmp_path, records, name="agent-w.jsonl"):
+    t = ClaudeTail(write(tmp_path / name, records), agent=True)
+    t.refresh()
+    return t
+
+
+def structured_output(age, tid="toolu_so"):
+    return assistant(age, [tool_use("StructuredOutput", tid)], "tool_use", mid="m_so")
+
+
+def test_a_workflow_agent_that_returned_its_structured_output_is_done(tmp_path):
+    agent = agent_tail(tmp_path, [prompt(300), structured_output(130), tool_result(120, "toolu_so")])
+    assert agent.ended and not agent.in_flight(time.time())
+    main = tail(tmp_path, [assistant(60, [{"type": "text"}], "end_turn")], "main.jsonl")
+    a = assess(main, [agent], "busy")
+    assert a.phase == "ended" and not a.burning and a.agents == 0
+
+
+def test_idle_status_means_no_background_work(tmp_path):
+    agent = agent_tail(tmp_path, [prompt(200), assistant(150, [tool_use()], "tool_use"), tool_result(140)])
+    main = tail(tmp_path, [assistant(100, [{"type": "text"}], "end_turn")], "main.jsonl")
+    assert assess(main, [agent], "busy").phase == "background"     # could still be running
+    a = assess(main, [agent], "idle")                               # the process says no
+    assert a.phase == "ended" and not a.burning and a.agents == 0
+
+
+def test_answered_meta_records_open_a_turn_and_echoes_do_not(tmp_path):
+    peer = {"type": "user", "timestamp": stamp(3), "isMeta": True, "origin": {"kind": "peer"},
+            "message": {"content": "message from another session"}}
+    t = tail(tmp_path, [assistant(1200, [{"type": "text"}], "end_turn"), peer])
+    assert assess(t, [], "busy").phase == "generating"
+    echo = {"type": "user", "timestamp": stamp(3),
+            "message": {"content": "<command-name>/clear</command-name>"}}
+    t2 = tail(tmp_path, [assistant(1200, [{"type": "text"}], "end_turn"), echo], "e.jsonl")
+    assert assess(t2, [], "busy").phase == "ended"
+    stop = {"type": "user", "timestamp": stamp(3),
+            "message": {"content": [{"type": "text", "text": "[Request interrupted by user]"}]}}
+    t3 = tail(tmp_path, [assistant(30, [tool_use()], "tool_use"), stop], "i.jsonl")
+    a = assess(t3, [], "busy")
+    assert a.phase == "idle" and not a.burning
+
+
+def test_a_session_killed_mid_tool_is_idle_not_done(tmp_path):
+    t = tail(tmp_path, [assistant(400, [tool_use("Bash")], "tool_use")])
+    assert assess(t, [], "dead").phase == "idle"
+    assert assess(t, [], "idle").phase == "idle"
+
+
+def test_codex_task_started_opens_the_turn(tmp_path):
+    recs = [{"timestamp": stamp(2000), "type": "event_msg", "payload": {"type": "task_complete"}},
+            {"timestamp": stamp(4), "type": "event_msg", "payload": {"type": "task_started"}},
+            {"timestamp": stamp(3), "type": "response_item",
+             "payload": {"type": "message", "role": "user", "content": [{"text": "go"}]}}]
+    t = CodexTail(write(tmp_path / "rollout-y.jsonl", recs)); t.refresh()
+    a = assess(t, [], "")
+    assert a.phase == "generating" and a.burning and time.time() - a.last < 10
+    assert not assess(t, [], "dead").burning                       # crashed: nothing in flight
+
+
+def test_codex_abort_after_a_tool_output_closes_the_turn(tmp_path):
+    recs = [{"timestamp": stamp(60), "type": "response_item",
+             "payload": {"type": "function_call_output", "call_id": "c1"}},
+            {"timestamp": stamp(50), "type": "event_msg", "payload": {"type": "turn_aborted"}}]
+    t = CodexTail(write(tmp_path / "rollout-z.jsonl", recs)); t.refresh()
+    assert assess(t, [], "").phase == "ended"
+
+
+def test_a_fork_agent_repeating_its_parents_message_counts_once(tmp_path):
+    main = tail(tmp_path, [assistant(20, [tool_use("Agent")], "tool_use", mid="fork", out=1000)])
+    agent = agent_tail(tmp_path, [assistant(20, [tool_use("Agent")], "tool_use", mid="fork", out=1000)])
+    a = assess(main, [agent], "busy")
+    assert a.rate == pytest.approx(effective(2, 0, 0, 1000) * 60 / 300)
+
+
+def test_the_closing_question_is_found_past_a_wall_of_attachments(tmp_path, monkeypatch):
+    big = {"type": "attachment", "timestamp": stamp(5), "attachment": {"x": "y" * 4000}}
+    recs = [assistant(120, [{"type": "text", "text": "Built it. Should I deploy to beta?"}], "end_turn")]
+    recs += [big] * 40                                    # ~160 KB after the question
+    s, = session(tmp_path, monkeypatch, recs, status="idle")
+    assert s.state == ATTENTION
+
+
+def test_ask_tool_beside_a_parallel_call_still_asks(tmp_path, monkeypatch):
+    recs = [assistant(20, [tool_use("AskUserQuestion", "q1"), tool_use("Bash", "b1")], "tool_use"),
+            tool_result(19, "b1")]
+    s, = session(tmp_path, monkeypatch, recs, status="busy")
+    assert s.state == ATTENTION
+
+
+def test_reader_edges(tmp_path):
+    # backfill that starts exactly at a line start keeps that record
+    fp = write(tmp_path / "s.jsonl", [prompt(50), assistant(40, [{"type": "text"}], "end_turn")])
+    first_len = len(json.dumps(prompt(50))) + 1
+    t = ClaudeTail(fp, backfill=fp.stat().st_size - first_len); t.refresh()
+    assert t.ended and t.last_role == "assistant"
+    # a tail of pure bookkeeping larger than the window: the reader looks further
+    filler = [{"type": "attachment", "timestamp": stamp(1), "attachment": {"x": "z" * 1000}}] * 50
+    fp2 = write(tmp_path / "b.jsonl", [assistant(60, [{"type": "text"}], "end_turn")] + filler)
+    t2 = ClaudeTail(fp2, backfill=4096); t2.refresh()
+    assert t2.ended
+    # a replaced file (new inode) starts over; an odd record does not stop the read
+    fresh = write(tmp_path / "s.new", [prompt(5)])
+    with fresh.open("a") as f:
+        f.write('{"type": "assistant", "message": {"content": 7, "usage": "bad"}}\n')
+        f.write(json.dumps(assistant(1, [{"type": "text"}], "end_turn", mid="m3")) + "\n")
+    os.replace(fresh, fp)
+    t.refresh()
+    assert t.ended and set(t.usage) == {"m3"}
+    # a truncated file starts over too
+    write(fp, [prompt(2)])
+    t.refresh()
+    assert t.last_kind == "prompt" and not t.usage
+
+
+def test_rollups_burn_when_any_pane_burns():
+    from tallydeck.signal import rollup_same_pane
+    from tallydeck.sources.claude_sessions import _rollup_by_tmux
+    face = Signal(id="cc/x", label="slater", state=WORKING, priority=0, group="cc",
+                  meta={"tmux": "slater:1.1", "burning": False})
+    worker = Signal(id="cc/y", label="w", state=WORKING, priority=900, group="cc",
+                    meta={"tmux": "slater:1.2", "burning": True})
+    tile, = _rollup_by_tmux([face, worker])
+    assert tile.meta["burning"] and tile.priority == 900
+    same = Signal(id="gk/z", label="z", state=WORKING, priority=500, group="gk",
+                  meta={"tmux": "slater:1.1", "burning": True})
+    tile2, = rollup_same_pane([face, same])
+    assert tile2.meta["burning"] and tile2.priority == 500
+
+
+def test_labels_never_start_with_a_separator_and_age_falls_back():
+    from tallydeck.activity import Activity
+    from tallydeck.sources.claude_sessions import _activity_label
+    now = time.time()
+    a = Activity(phase="background", burning=True, rate=85_000, agents=1, agents_burning=0)
+    assert _activity_label(WORKING, a, now) == "1 agent · 85k/m"
+    assert _activity_label(SUCCESS, Activity(), now, last=now - 240) == "done · 4m"
+
+
+def test_a_snoozed_key_outlives_the_grace():
+    from tallydeck.presence import Presence
+    import subprocess
+    def run(argv, **kw):
+        out = "mainC|@1|%d\n" % time.time() if "list-clients" in argv else "mainC:1.1|%1|@1|mainC|1\n"
+        return subprocess.CompletedProcess(argv, 0, out, "")
+    p = Presence(runner=run); p.is_lane = lambda s, snap: False
+    old = time.time() - 3600
+    snoozed = Signal(id="cc/s", label="s", state=IDLE, updated=old, group="cc",
+                     meta={"session": "s", "tmux": "mainC:1.1", "snoozed": True})
+    gone = Signal(id="cc/g", label="g", state=SUCCESS, updated=old, group="cc",
+                  meta={"session": "g", "tmux": "mainC:1.1"})
+    assert [s.id for s in p.apply([snoozed, gone])] == ["cc/s"]
+    assert p.done_grace == 600
+
+
+def test_the_brief_says_what_is_running(tmp_path):
+    from tallydeck.activity import summary
+    main = write(tmp_path / "proj" / "sess.jsonl", [assistant(500, [{"type": "text"}], "end_turn")])
+    agent = write(tmp_path / "proj" / "sess" / "subagents" / "agent-a1.jsonl",
+                  [prompt(100), assistant(5, [tool_use()], "tool_use", mid="m4")])
+    (agent.parent / "agent-a1.meta.json").write_text(json.dumps(
+        {"description": "VPS world collector", "agentType": "general-purpose"}))
+    text = summary(main)
+    assert "turn ended 8m ago" in text
+    assert "- VPS world collector · burning tokens" in text and "general-purpose" not in text

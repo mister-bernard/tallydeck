@@ -213,6 +213,10 @@ class CodexSessionsSource(Source):
             self._tails = Tails(CodexTail)   # real usage + turn shape (activity.py)
         rollouts = self._recent_rollouts(now)
         panes = self._codex_panes(rollouts, now)
+        # Which threads a running codex process is on: a rollout none of them
+        # owns has no process behind it, so nothing of it can be in flight.
+        procs = self._live_codex_procs()
+        live_threads = self._live_thread_ids() if procs else set()
         titled: list[tuple[str, str]] = []
         for fp in rollouts:
             try:
@@ -230,7 +234,8 @@ class CodexSessionsSource(Source):
             if is_exec and not self.include_exec:
                 continue
             tail = self._tails.get(fp)
-            act = assess(tail, [], "", now)
+            alive = bool(panes.get(uuid)) or uuid in live_threads
+            act = assess(tail, [], "" if alive or not procs else "dead", now)
             last = act.last or mtime          # record time, not mtime
             lines = _tail_lines(fp)
             state, ask_text = classify(lines)
@@ -240,8 +245,11 @@ class CodexSessionsSource(Source):
             asked = bool(pa)               # the harness's own "answer me"
             if pa:
                 state, ask_text = ATTENTION, pa
-            if state == WORKING and (now - last) > self.stall and not tail.pending:
+            if state == WORKING and (now - last) > self.stall and not (
+                    tail.pending and alive):
                 state = IDLE               # "working" with no output = stalled
+            if state == WORKING and act.phase == "ended" and not alive:
+                state = IDLE               # the turn closed and nobody is running it
             ended = state in (ATTENTION, SUCCESS)
             # Dwell only SUCCESS: a task_complete written a second ago may be
             # followed by the next turn's task_started. An unanswered
@@ -278,7 +286,7 @@ class CodexSessionsSource(Source):
                 titled.append((pane, label))   # same topic on every surface
             burning = state == WORKING and act.burning
             from .claude_sessions import _activity_label
-            sub = _activity_label(state, act, now)
+            sub = _activity_label(state, act, now, last)
             snip = ""
             if state == ATTENTION and ask_text:
                 if ask_text.lstrip().startswith("**"):

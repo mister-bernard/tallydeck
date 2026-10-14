@@ -149,7 +149,9 @@ class Presence:
     # ── the pass ─────────────────────────────────────────────────────────────
 
     def _quiet(self, s: Signal, now: float) -> bool:
+        # A snoozed key stays: long-press again must be able to wake it.
         return s.state in (SUCCESS, IDLE, OFFLINE) and \
+            not (s.meta or {}).get("snoozed") and \
             now - s.updated > self.done_grace
 
     def apply(self, signals: list[Signal], now: float | None = None) -> list[Signal]:

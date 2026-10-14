@@ -6,8 +6,8 @@ is three kinds of wrong at once:
   * bytes are not tokens — tool output, hook summaries and bookkeeping
     records grow the log; a 360k-token cache read grows it by 4 KB;
   * subagents burn in their OWN transcripts (<session>/subagents/
-    agent-*.jsonl), so a session whose background agents were working
-    flat out read "done";
+    agent-*.jsonl, workflow agents one level down), so a session whose
+    background agents were working flat out read "done";
   * Claude Code re-stamps log mtimes without writing anything (utimes,
     millisecond precision), so a conversation that ended an hour ago read
     "done · 4m" and passed every freshness test.
@@ -16,15 +16,17 @@ This module reads what the transcripts actually say:
 
   usage    tokens per API message, deduplicated by message id (a message is
            logged once per content block and every record repeats the full
-           usage), across the main transcript AND every subagent's;
-  shape    whose move it is, which tool calls are still open, when the last
-           real exchange happened (record timestamps — never mtime).
+           usage; a fork agent repeats its parent's fork message too), across
+           the main transcript AND every agent's;
+  shape    whose move it is, which tool calls are still open, the closing
+           message's text, when the last real exchange happened (record
+           timestamps — never mtime).
 
 and turns it into one `Activity` per session:
 
   phase    generating · tool · agents · background · waiting · ended · idle
   burning  tokens are flowing NOW: a model call is in flight, or usage
-           landed in the last ACTIVE seconds (main thread or any subagent)
+           landed in the last ACTIVE seconds (main thread or any agent)
   rate     effective tokens/min over RATE_WINDOW. "Effective" = input-token
            equivalents at API price ratios (cache read 0.1, cache write
            1.25, output 5), so cached context does not dwarf real work and
@@ -46,23 +48,39 @@ from pathlib import Path
 
 # Tunables (seconds), measured on this box 2026-10-14 over 4,917 model calls
 # (main p99 66 s / p99.9 253 s; agents p99 114 s / p99.9 368 s):
-# ACTIVE      usage this recent means tokens are flowing — one tool step of
-#             a tight loop, not a long tool run;
-# GEN_CAP     a call "in flight" longer than this is a stall (p99.9), and an
-#             agent whose last record handed it the turn this long ago was
-#             aborted, not thinking;
-# TOOL_STALL  an agent inside an open tool call this long has stopped;
-# RATE_WINDOW the burn rate is averaged over this; KEEP: usage history kept.
+# ACTIVE         usage this recent means tokens are flowing — one step of a
+#                tight tool loop, not a long tool run;
+# GEN_CAP        a main-thread call "in flight" longer than this is a stall;
+# AGENT_GEN_CAP  the same for agents (their calls run longer), and how long
+#                an agent whose last record handed it the turn counts as alive
+#                when nothing else says it finished;
+# TOOL_STALL     an agent inside an open tool call this long has stopped;
+# RATE_WINDOW    the burn rate is averaged over this; KEEP: usage history.
 ACTIVE = 60.0
 GEN_CAP = 300.0
+AGENT_GEN_CAP = 420.0
 TOOL_STALL = 900.0
 RATE_WINDOW = 300.0
 KEEP = 900.0
 BACKFILL = 2_000_000
+BACKFILL_MAX = 16_000_000
 AGENT_TOOLS = ("Agent", "Task")
-# stop_reasons that close a turn (surveyed over 13k live records: every
-# assistant record carries one; stop_sequence is always followed by a prompt).
+ASK_TOOLS = ("AskUserQuestion", "ExitPlanMode")
+# An agent's last act in a Workflow: a call to StructuredOutput. Its result
+# is the final record of the transcript (227 of 246 workflow agents here) —
+# the agent is DONE, not waiting on the model.
+FINAL_TOOLS = ("StructuredOutput",)
+# stop_reasons that close a turn (13k live records: every main-thread record
+# carries one; stop_sequence is always followed by a fresh prompt).
 TURN_ENDS = ("end_turn", "stop_sequence", "refusal")
+# User records that never get an answer: slash-command echoes and caveats
+# (85 of 85 surveyed went unanswered). Everything else a user record carries —
+# a prompt, tool results, task notifications, peer messages, meta text,
+# auto-continuations — hands the model the turn.
+NO_TURN = ("<local-command-caveat>", "<command-name>", "<command-message>",
+           "<local-command-stdout>", "<local-command-stderr>",
+           "<bash-input>", "<bash-stdout>", "<bash-stderr>")
+INTERRUPTED = "[Request interrupted"
 WEIGHTS = {"input": 1.0, "cache_write": 1.25, "cache_read": 0.1, "output": 5.0}
 
 
@@ -81,21 +99,36 @@ def _epoch(ts) -> float | None:
         return None
 
 
+def _lead_text(content) -> str:
+    if isinstance(content, str):
+        return content.lstrip()[:40]
+    if isinstance(content, list):
+        for b in content:
+            if isinstance(b, dict) and b.get("type") == "text":
+                return str(b.get("text") or "").lstrip()[:40]
+    return ""
+
+
 class _Tail:
     """Incremental JSONL reader. Subclasses implement `_record`."""
 
     def __init__(self, path: Path, backfill: int = BACKFILL):
         self.path = Path(path)
-        self.off = -1
-        self.partial = b""
         self.backfill = backfill
+        self._reset()
+
+    def _reset(self) -> None:
+        self.off = -1
+        self.ino = None
+        self.partial = b""
         self.usage: dict[str, tuple[float, float]] = {}   # key → (t, effective)
         self.pending: dict[str, tuple[str, float]] = {}   # call id → (tool, t)
         self.last_t = 0.0          # last conversational record
-        self.last_role = ""        # "user" | "assistant"
+        self.last_role = ""        # "user" | "assistant" | "" (interrupted)
         self.last_kind = ""        # prompt · tool_result · text · thinking · tool_use
         self.ended = False         # the last turn closed (end_turn / task_complete)
         self.last_stop = ""        # stop_reason of the last assistant record (None: old log)
+        self.last_text = ""        # text of the last assistant MESSAGE
         self.touched = 0.0         # when this reader was last refreshed
         self._mtime = 0.0          # time for records that carry none (old logs)
 
@@ -106,37 +139,58 @@ class _Tail:
         except OSError:
             return
         size, self._mtime = st.st_size, st.st_mtime
-        first = self.off < 0
-        if first or size < self.off:            # new reader, or truncated
-            self.off = max(0, size - self.backfill)
-            self.partial = b""
-            skip_first = self.off > 0
-        else:
-            skip_first = False
-        if size == self.off:
+        if self.off >= 0 and (size < self.off or st.st_ino != self.ino):
+            self._reset()                        # truncated or replaced
+            self._mtime = st.st_mtime
+        self.ino = st.st_ino
+        if self.off < 0:
+            self._backfill(size)
             return
+        if size > self.off:
+            self._read(self.off, size)
+
+    def _backfill(self, size: int) -> None:
+        window = self.backfill
+        while True:
+            start = max(0, size - window)
+            self._read(start, size, first=True)
+            if self.last_t or start == 0 or window >= BACKFILL_MAX:
+                return
+            # The tail held no conversational record at all (one record can
+            # exceed the window, or the tail is all bookkeeping): look further.
+            window *= 4
+            keep_mtime, keep_ino = self._mtime, self.ino
+            self._reset()
+            self._mtime, self.ino = keep_mtime, keep_ino
+
+    def _read(self, start: int, end: int, first: bool = False) -> None:
         try:
             with self.path.open("rb") as f:
-                f.seek(self.off)
-                data = self.partial + f.read(size - self.off)
+                skip = False
+                if first and start > 0:
+                    f.seek(start - 1)
+                    skip = f.read(1) != b"\n"        # began mid-line
+                else:
+                    f.seek(start)
+                data = (b"" if first else self.partial) + f.read(end - start)
         except OSError:
             return
-        self.off = size
+        self.off = end
         lines = data.split(b"\n")
         self.partial = lines.pop()               # an unterminated line waits
-        if skip_first and lines:
-            lines = lines[1:]                    # backfill began mid-line
+        if skip and lines:
+            lines = lines[1:]
         for ln in lines:
             if not ln.strip():
                 continue
             try:
                 rec = json.loads(ln)
-            except (ValueError, UnicodeError):
+                if isinstance(rec, dict):
+                    self._record(rec)
+            except Exception:      # one odd record must not blank the deck
                 continue
-            if isinstance(rec, dict):
-                self._record(rec)
-        cut = time.time() - KEEP
         if len(self.usage) > 64:
+            cut = time.time() - KEEP
             self.usage = {k: v for k, v in self.usage.items() if v[0] >= cut}
 
     def _record(self, rec: dict) -> None:
@@ -148,25 +202,39 @@ class _Tail:
     def used_within(self, seconds: float, now: float) -> bool:
         return any(now - t <= seconds for t, _ in self.usage.values())
 
-    def in_flight(self, now: float) -> bool:
+    def in_flight(self, now: float, cap: float = GEN_CAP) -> bool:
         """The model owes this thread an answer: the last record handed it
         the turn (a prompt or a tool result) and nothing came back yet."""
-        return (self.last_role == "user" and not self.pending
-                and 0 <= now - self.last_t < GEN_CAP)
+        return (self.last_role == "user" and not self.pending and not self.ended
+                and 0 <= now - self.last_t < cap)
+
+    def asking_tool(self) -> bool:
+        return any(name in ASK_TOOLS for name, _ in self.pending.values())
 
 
 class ClaudeTail(_Tail):
-    """A Claude Code transcript (main session or subagent)."""
+    """A Claude Code transcript (main session, subagent or workflow agent)."""
+
+    def __init__(self, path: Path, backfill: int = BACKFILL, agent: bool = False):
+        self.agent = agent
+        super().__init__(path, backfill)
+
+    def _reset(self) -> None:
+        super()._reset()
+        self._cur_mid = None
+        self._texts: list[str] = []
 
     def _record(self, rec: dict) -> None:
         typ = rec.get("type")
         if typ not in ("user", "assistant"):
             return
+        if rec.get("isSidechain") and not self.agent:
+            return              # older logs embedded agent turns in the main file
         t = _epoch(rec.get("timestamp")) or self._mtime
         msg = rec.get("message") if isinstance(rec.get("message"), dict) else {}
         content = msg.get("content")
         blocks = content if isinstance(content, list) else (
-            [{"type": "text"}] if isinstance(content, str) else [])
+            [{"type": "text", "text": content}] if isinstance(content, str) else [])
         if typ == "assistant":
             u = msg.get("usage")
             mid = msg.get("id") or rec.get("requestId")
@@ -176,6 +244,8 @@ class ClaudeTail(_Tail):
                     int(u.get("cache_creation_input_tokens") or 0),
                     int(u.get("cache_read_input_tokens") or 0),
                     int(u.get("output_tokens") or 0)))
+            if mid != self._cur_mid:
+                self._cur_mid, self._texts = mid, []
             kind = ""
             for b in blocks:
                 if not isinstance(b, dict):
@@ -183,23 +253,38 @@ class ClaudeTail(_Tail):
                 kind = b.get("type") or kind
                 if b.get("type") == "tool_use" and b.get("id"):
                     self.pending[str(b["id"])] = (str(b.get("name") or "tool"), t)
+                elif b.get("type") == "text" and b.get("text"):
+                    self._texts.append(str(b["text"]))
+            self.last_text = "\n\n".join(self._texts)[-20000:]
             self.last_role, self.last_kind, self.last_t = "assistant", kind, t
             stop = msg.get("stop_reason")
             self.last_stop = stop
-            # No stop_reason (older logs): undecided here — the source applies
-            # its dwell (a quiet non-tool tail is a closed turn).
+            # No stop_reason (older logs, agents' mid-stream records):
+            # undecided here — the source applies its dwell.
             self.ended = kind != "tool_use" and stop in TURN_ENDS
             if self.ended:
                 self.pending.clear()
             return
-        # user: tool results close calls; anything else is a prompt
+        lead = _lead_text(content)
+        if lead.startswith(INTERRUPTED):
+            # The operator stopped the turn: nothing in flight, nothing done.
+            self.pending.clear()
+            self.last_role, self.last_kind, self.last_t, self.ended = "", "interrupted", t, False
+            return
+        if lead.startswith(NO_TURN):
+            return              # slash-command echoes: nobody answers these
         results = [b for b in blocks if isinstance(b, dict) and b.get("type") == "tool_result"]
-        for b in results:
-            self.pending.pop(str(b.get("tool_use_id") or ""), None)
         if results:
+            final = False
+            for b in results:
+                name, _ = self.pending.pop(str(b.get("tool_use_id") or ""), ("", 0))
+                final = final or name in FINAL_TOOLS
+            if final and self.agent:
+                # A workflow agent's StructuredOutput result is its last word.
+                self.pending.clear()
+                self.last_role, self.last_kind, self.last_t, self.ended = "assistant", "final", t, True
+                return
             self.last_kind = "tool_result"
-        elif rec.get("isMeta"):
-            return              # caveats, local-command echoes: not a turn
         else:
             self.pending.clear()          # a new prompt supersedes open calls
             self.last_kind = "prompt"
@@ -210,8 +295,8 @@ class CodexTail(_Tail):
     """A Codex rollout. Usage comes from token_count events: each one that
     advances the cumulative total is one model call."""
 
-    def __init__(self, path: Path, backfill: int = BACKFILL):
-        super().__init__(path, backfill)
+    def _reset(self) -> None:
+        super()._reset()
         self._total = -1
 
     def _record(self, rec: dict) -> None:
@@ -235,13 +320,15 @@ class CodexTail(_Tail):
             return
         if typ == "event_msg" and kind in ("task_complete", "turn_aborted"):
             self.ended, self.pending = True, {}
+            self.last_role, self.last_kind = "assistant", kind
             self.last_t = max(self.last_t, t)
             return
         if typ == "event_msg" and kind in ("task_started", "user_message"):
-            self.ended = False
-            if kind == "user_message":
-                self.pending.clear()
-                self.last_role, self.last_kind, self.last_t = "user", "prompt", t
+            # A turn opens. Interactive rollouts carry the prompt as a
+            # role-user response_item (ignored: indistinguishable from
+            # injected context), so task_started is the reliable mark.
+            self.pending.clear()
+            self.last_role, self.last_kind, self.last_t, self.ended = "user", "prompt", t, False
             return
         if typ != "response_item":
             return
@@ -256,11 +343,15 @@ class CodexTail(_Tail):
             self.pending.pop(str(p.get("call_id") or ""), None)
             self.last_role, self.last_kind, self.last_t = "user", "tool_result", t
         elif kind in ("message", "reasoning"):
-            role = "assistant" if p.get("role", "assistant") == "assistant" else "user"
-            if role == "user":
+            if p.get("role", "assistant") != "assistant":
                 return          # injected context (AGENTS.md, env): not a turn
             self.last_role, self.last_kind, self.last_t = "assistant", (
                 "text" if kind == "message" else "thinking"), t
+            if kind == "message":
+                texts = [str(c.get("text") or "") for c in (p.get("content") or [])
+                         if isinstance(c, dict) and c.get("text")]
+                if texts:
+                    self.last_text = "\n\n".join(texts)[-20000:]
 
 
 @dataclass
@@ -269,11 +360,20 @@ class Activity:
     burning: bool = False
     rate: float = 0.0        # effective tokens/min over RATE_WINDOW
     last: float = 0.0        # last conversational record, main thread
-    newest: float = 0.0      # newest record anywhere (main or a subagent)
+    newest: float = 0.0      # newest record anywhere (main or an agent)
     tool: str = ""           # the open call, for phase "tool"
     since: float = 0.0       # when the current phase began
-    agents: int = 0          # subagents still running
+    agents: int = 0          # agents still running
     agents_burning: int = 0  # …of which tokens are flowing now
+
+
+def _agent_alive(s: _Tail, now: float) -> tuple[bool, bool]:
+    """(running, burning) for one agent transcript, ignoring liveness hints."""
+    hot = s.used_within(ACTIVE, now) or s.in_flight(now, AGENT_GEN_CAP)
+    quiet = now - s.last_t
+    running = hot or (not s.ended and 0 <= quiet < (
+        TOOL_STALL if s.pending else AGENT_GEN_CAP))
+    return running, hot
 
 
 def assess(main: _Tail, subs: list[_Tail], status: str = "",
@@ -286,25 +386,32 @@ def assess(main: _Tail, subs: list[_Tail], status: str = "",
     may only add what the transcript cannot know:
 
       waiting   a dialog is holding for the human
-      idle      the process is between turns — an "open" transcript turn
-                was interrupted or killed, so nothing is in flight
-      dead      no live process: nothing can be in flight either
+      idle      the process is between turns with NO background work: an
+                "open" transcript turn was interrupted or killed, and no
+                agent of it can still be running
+      dead      no live process: nothing can be in flight
       busy/shell/''  no override. Claude Code keeps reporting `busy` while
                 background agents or shells run after the turn ended — the
                 stale-busy that kept a finished GX10 session blue — so busy
                 is never allowed to reopen a closed turn.
     """
     now = time.time() if now is None else now
-    dead = status == "dead"
+    quiet = status in ("idle", "dead")
     a = Activity(last=main.last_t)
     a.newest = max([main.last_t] + [s.last_t for s in subs])
-    a.rate = (main.tokens(RATE_WINDOW, now)
-              + sum(s.tokens(RATE_WINDOW, now) for s in subs)) * 60.0 / RATE_WINDOW
+    # One API message can appear in two transcripts (a fork agent repeats its
+    # parent's fork message): count each message id once.
+    usage = dict(main.usage)
     for s in subs:
-        hot = s.used_within(ACTIVE, now) or (not dead and s.in_flight(now))
-        quiet = now - s.last_t
-        running = hot or (not dead and not s.ended and 0 <= quiet < (
-            TOOL_STALL if s.pending else GEN_CAP))
+        usage.update(s.usage)
+    a.rate = sum(e for t, e in usage.values() if now - t <= RATE_WINDOW) * 60.0 / RATE_WINDOW
+    for s in subs:
+        running, hot = _agent_alive(s, now)
+        if quiet:
+            # No process, or one that says it is between turns with no
+            # background work: only usage that already landed counts.
+            hot = s.used_within(ACTIVE, now)
+            running = hot
         a.agents += int(running)
         a.agents_burning += int(hot)
     if main.pending:
@@ -314,16 +421,17 @@ def assess(main: _Tail, subs: list[_Tail], status: str = "",
             a.phase, a.since = "agents", newest[1]
         else:
             a.phase, a.tool, a.since = "tool", newest[0], newest[1]
-    elif main.last_role == "user":
-        a.phase, a.since = "generating", main.last_t
-    elif main.last_role == "assistant" and not main.ended:
-        a.phase, a.since = "generating", main.last_t   # more blocks on the way
     elif main.ended:
         a.phase, a.since = "ended", main.last_t
+    elif main.last_role == "user":
+        a.phase, a.since = "generating", main.last_t
+    elif main.last_role == "assistant":
+        a.phase, a.since = "generating", main.last_t   # more blocks on the way
     if status == "waiting":
         a.phase = "waiting"
-    elif status in ("idle", "dead") and a.phase in ("generating", "tool", "agents"):
-        a.phase = "ended" if main.last_role == "assistant" else "idle"
+    elif quiet and a.phase in ("generating", "tool", "agents"):
+        # Interrupted or killed with the turn open: not done, not running.
+        a.phase = "idle"
     elif status == "shell" and a.phase == "generating":
         a.phase, a.tool = "tool", "shell"
     if a.phase in ("ended", "idle") and a.agents:
@@ -331,7 +439,12 @@ def assess(main: _Tail, subs: list[_Tail], status: str = "",
         # going (background Agent calls, a Workflow): working, not done.
         a.phase, a.since = "background", main.last_t
     in_flight = a.phase == "generating" and 0 <= now - (a.since or now) < GEN_CAP
-    a.burning = bool(in_flight or main.used_within(ACTIVE, now) or a.agents_burning)
+    # The main thread's own recent usage only means "burning" while its turn
+    # is open — a call that landed just before an interrupt or end_turn is
+    # spent, not flowing. After the turn, only agents can burn.
+    open_turn = a.phase in ("generating", "tool", "agents")
+    a.burning = bool(in_flight or (open_turn and main.used_within(ACTIVE, now))
+                     or a.agents_burning)
     return a
 
 
@@ -352,11 +465,12 @@ class Tails:
         self._readers: dict[str, _Tail] = {}
         self._sub_ls: dict[str, tuple[float, list[str]]] = {}
 
-    def get(self, path) -> _Tail:
+    def get(self, path, agent: bool = False) -> _Tail:
         key = str(path)
         r = self._readers.get(key)
         if r is None:
-            r = self._readers[key] = self.factory(Path(key))
+            r = self._readers[key] = (self.factory(Path(key), agent=True)
+                                      if agent else self.factory(Path(key)))
         r.refresh()
         return r
 
@@ -381,13 +495,17 @@ class Tails:
             cached = self._sub_ls[d] = (now, names)
         out = []
         for p in cached[1]:
-            if p not in self._readers:
+            r = self._readers.get(p)
+            if r is None:
                 try:
                     if now - os.path.getmtime(p) > KEEP:
                         continue                 # long finished: not worth a read
                 except OSError:
                     continue
-            out.append(self.get(p))
+            elif r.ended and now - r.last_t > KEEP:
+                self._readers.pop(p, None)       # finished long ago: stop reading
+                continue
+            out.append(self.get(p, agent=True))
         return out
 
     def prune(self, now: float | None = None) -> None:
@@ -406,7 +524,8 @@ def _agent_label(agent_path: str) -> str:
         return ""
     desc = str(d.get("description") or "").strip()
     kind = str(d.get("agentType") or "").strip()
-    return desc + (f" ({kind})" if kind and kind != "general-purpose" else "")
+    generic = ("", "general-purpose", "workflow-subagent")
+    return desc + (f" ({kind})" if kind not in generic else "")
 
 
 def _fmt_age(s: float) -> str:
@@ -426,10 +545,7 @@ def summary(path, kind: str = "claude", now: float | None = None) -> str:
     blue key, with no hint why it was blue."""
     now = time.time() if now is None else now
     pool = Tails(CodexTail if kind == "codex" else ClaudeTail)
-    try:
-        main = pool.get(path)
-    except OSError:
-        return ""
+    main = pool.get(path)
     subs = pool.subagents(path, now) if kind == "claude" else []
     a = assess(main, subs, "", now)
     lines = []
@@ -439,16 +555,14 @@ def summary(path, kind: str = "claude", now: float | None = None) -> str:
         lines.append(f"Conversation: waiting on {a.tool} for {_fmt_age(now - a.since)}.")
     elif a.phase == "agents":
         lines.append(f"Conversation: waiting on its agents ({_fmt_age(now - a.since)}).")
-    elif a.phase in ("ended", "background"):
+    elif a.phase in ("ended", "background") and a.last:
         lines.append(f"Conversation: turn ended {_fmt_age(now - a.last)} ago.")
     running = []
     for s in subs:
-        hot = s.used_within(ACTIVE, now) or s.in_flight(now)
-        alive = hot or (not s.ended and 0 <= now - s.last_t < (
-            TOOL_STALL if s.pending else GEN_CAP))
+        alive, hot = _agent_alive(s, now)
         if alive:
             label = _agent_label(str(s.path)) or Path(s.path).stem
-            running.append(f"- {label} · {'burning' if hot else 'running a tool'}")
+            running.append(f"- {label} · {'burning tokens' if hot else 'working, not burning'}")
     if running:
         lines.append(f"Agents: {len(running)} still running")
         lines.extend(running[:8])

@@ -99,7 +99,13 @@ def _rollup_by_tmux(signals: list[Signal]) -> list[Signal]:
         sub = extra if not primary.sublabel else f"{extra} · {primary.sublabel}"
         meta = dict(primary.meta or {})
         meta["rolled"] = len(members)
-        out.append(replace(primary, sublabel=sub, meta=meta))
+        # Burn belongs to the session, not to whichever pane names it: any
+        # burning pane makes the tile burn, at the hottest pane's rate.
+        burners = [m for m in members if (m.meta or {}).get("burning")]
+        if burners:
+            meta["burning"] = True
+        out.append(replace(primary, sublabel=sub, meta=meta,
+                           priority=max(m.priority for m in members)))
     return out
 MAX_LINES = 200
 
@@ -472,12 +478,20 @@ class ClaudeSessionsSource(Source):
                     exact = ""              # that pane runs another session now
                 oneshot = bool(exact) and \
                     exact.split(":", 1)[0] in self.oneshot_sessions
-                # The text decides ask-vs-done for a closed turn; the activity
-                # decides whether the turn is closed at all.
-                said, _final = classify(lines)
+                # The closing message decides ask-vs-done for a closed turn;
+                # the activity decides whether the turn is closed at all. The
+                # reader holds the whole closing message (the 64 KB tail can be
+                # all attachment records after a long turn); the tail is only
+                # a fallback for readers that saw no assistant text.
+                if tail.last_text:
+                    said = ATTENTION if asks_question(tail.last_text) else SUCCESS
+                else:
+                    said, _final = classify(lines)
                 # A question the harness itself is holding open (a dialog,
-                # AskUserQuestion) — as opposed to prose that ends in '?'.
-                asked = status == "waiting" or _ask_tool_pending(lines)
+                # AskUserQuestion — even beside a parallel Bash call) — as
+                # opposed to prose that ends in '?'.
+                asked = (status == "waiting" or tail.asking_tool()
+                         or _ask_tool_pending(lines))
                 ph = act.phase
                 if ph == "waiting" or asked:
                     state = ATTENTION
@@ -495,7 +509,8 @@ class ClaudeSessionsSource(Source):
                         status not in ("busy", "shell") and now - newest > self.stall:
                     state = IDLE      # Claude's move, nothing for 15 min: stalled
                 ended = state in (ATTENTION, SUCCESS)
-                if ended and self._snooze.get(fp.stem, 0) > now:
+                snoozed = ended and self._snooze.get(fp.stem, 0) > now
+                if snoozed:
                     state = IDLE               # snoozed: quiet, still listed
                 askf = signals_dir() / f"ask-{fp.stem[:8]}.json"
                 if askf.is_file():
@@ -525,8 +540,12 @@ class ClaudeSessionsSource(Source):
                 # as a fallback for logs that never carried one.
                 full = _last_cwd(lines) or _resolve_munged(proj_dir.name)
                 burning = state == WORKING and act.burning
-                sub = _activity_label(state, act, now)
+                sub = _activity_label(state, act, now, last)
                 snip = _snippet(lines)
+                if not snip and tail.last_text:
+                    from ..decisions import decision_text
+                    text = tail.last_text.split("<thinking>")[0].strip()
+                    snip = " ".join((decision_text(text) or text).split())[:300]
                 if state == ATTENTION and snip:
                     # 96px answers "what do I do?" — the ask beats a rate.
                     # Markdown chrome (**bold** etc.) is noise at this size;
@@ -594,7 +613,7 @@ class ClaudeSessionsSource(Source):
                           "oneshot": oneshot, "live": bool(live),
                           "asked": asked, "phase": ph,
                           "burning": burning, "rate": int(act.rate),
-                          "agents": act.agents,
+                          "agents": act.agents, "snoozed": snoozed,
                           # Resolved hub-side because only the hub can see
                           # tmux. Without it the deck machine would have to
                           # re-derive the pane over ssh on every press.
@@ -797,20 +816,22 @@ def _rate(rate: float) -> str:
     return f"{rate:.0f}/m"
 
 
-def _activity_label(state: str, act, now: float) -> str:
-    """What a non-asking key says under its title."""
+def _activity_label(state: str, act, now: float, last: float = 0.0) -> str:
+    """What a non-asking key says under its title. `last` is the last real
+    exchange (record time, else the file time for a reader that saw none)."""
+    last = act.last or last or now
     if state == SUCCESS:
-        return f"done · {_age_str(now - act.last)}"
+        return f"done · {_age_str(now - last)}"
     if state != WORKING:
-        return _age_str(now - (act.last or now))
-    n = act.agents_burning if act.burning else act.agents
+        return _age_str(now - last)
+    n = act.agents_burning or act.agents
     crew = f"{n} agent{'s' if n != 1 else ''}" if n else ""
     if act.burning:
         if act.phase == "background":
             return f"{crew} · {_rate(act.rate)}"
         return f"{_rate(act.rate)} · {crew}" if crew else _rate(act.rate)
     # working, not burning: say what it is waiting on, and for how long
-    waited = _age_str(now - (act.since or act.last or now))
+    waited = _age_str(now - (act.since or last))
     if act.phase == "tool":
         return f"{act.tool} · {waited}"
     if act.phase in ("agents", "background") and crew:
