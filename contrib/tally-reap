@@ -393,7 +393,10 @@ def resume_cmd(rec: dict) -> str:
         return (f"cd {rec['cwd']} && CODEX_HOME={rec.get('codex_home', str(HOME / '.codex'))} "
                 f"codex resume {rec['uuid']} --dangerously-bypass-approvals-and-sandbox")
     acct = str(rec.get("account") or "A")
-    binary = "claude" if acct in ("A", "") else f"claude-{acct.lower()}"
+    binary = "claude"
+    if acct not in ("A", ""):
+        cand = HOME / ".local" / "bin" / f"claude-{acct.lower()}"
+        binary = str(cand) if cand.is_file() else "claude"
     return f"cd {rec['cwd']} && {binary} --resume {rec['uuid']}"
 
 

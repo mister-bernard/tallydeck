@@ -94,7 +94,7 @@ drain_input() { while read -r -s -n 10000 -t 0.05 _ 2>/dev/null; do :; done; }
 # Installed on every press, so a restarted server heals itself.
 install_exit_key() {
   T bind-key -n C-q if-shell -F \
-    '#{||:#{m:_fl-*,#{session_name}},#{m:fl-*,#{session_name}}}' \
+    '#{||:#{m:_fl-*,#{session_name}},#{m:fl-*-*-*-*-*,#{session_name}}}' \
     'detach-client' 'send-keys C-q' 2>/dev/null
 }
 # Say so where you will be looking: the floating view's status bar.

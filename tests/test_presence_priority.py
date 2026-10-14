@@ -52,7 +52,7 @@ def presence(lanes=()):
 
 def test_tiers_follow_what_the_terminals_show():
     sigs = [sess("view", IDLE, "mainC:1.2"), sess("attached", IDLE, "mainB:2.1"),
-            sess("bg", WORKING, "groups:1.1"), sess("ghost", WORKING, ""),
+            sess("bg", WORKING, "groups:1.1"), sess("ghost", SUCCESS, ""),
             sess("outside", WORKING, "", live=True)]
     out = {s.id: s.meta["presence"] for s in presence().apply(sigs, NOW)}
     assert out == {"view": VIEW, "attached": ATTACHED, "bg": LIVE, "outside": LIVE}
@@ -89,7 +89,37 @@ def test_non_session_keys_and_meters_pass_untouched():
     board = Signal(id="hunt/cars", label="cars", state=SUCCESS, group="exec")
     out = presence().apply([flag, meter, board], NOW)
     assert [s.id for s in out] == ["sig/x", "burn/session", "hunt/cars"]
-    assert board.meta["presence"] == NONE
+    # no tier: they rank as plain background, not below every idle session
+    assert "presence" not in board.meta and "presence" not in flag.meta
+    idle_bg = sess("bg", IDLE, "groups:1.1")
+    working_flag = Signal(id="sig/deploy", label="d", state=WORKING, group="sig")
+    assert ranked(*presence().apply([idle_bg, working_flag], NOW))[0] == "sig/deploy"
+
+
+def test_a_working_session_without_a_resolved_pane_still_shows():
+    out = {s.id for s in presence().apply([sess("cx-unresolved", WORKING, "")], NOW)}
+    assert out == {"cx-unresolved"}
+
+
+def test_quiet_cutoff_applies_off_screen_and_when_tmux_is_unreadable():
+    old_attached = sess("attached-old", SUCCESS, "mainB:2.1", updated=NOW - 7200)
+    assert presence().apply([old_attached], NOW) == []
+    def broken(argv, **kw):
+        return subprocess.CompletedProcess(argv, 1, "", "no server")
+    sigs = [sess("old", IDLE, "", updated=NOW - 7200, live=True),
+            sess("fresh", IDLE, "", live=True), sess("ask", ATTENTION, "", updated=0)]
+    out = {s.id for s in Presence(runner=broken, background_quiet=3600).apply(sigs, NOW)}
+    assert out == {"fresh", "ask"}
+
+
+def test_a_hook_question_rolled_into_a_lane_key_still_asks():
+    from tallydeck.signal import rollup_same_pane
+    lane_key = sess("cc/B-lane", SUCCESS, "groups:1.1")
+    hook = Signal(id="sig/ask-1234", label="ask", state=ATTENTION, group="sig",
+                  updated=NOW, meta={"tmux": "groups:1.1"})
+    rolled = rollup_same_pane([lane_key, hook])
+    out = presence(lanes={"groups:1.1"}).apply(rolled, NOW)
+    assert [s.state for s in out] == [ATTENTION]
 
 
 def test_unreadable_tmux_fails_open():
@@ -97,6 +127,7 @@ def test_unreadable_tmux_fails_open():
         return subprocess.CompletedProcess(argv, 1, "", "no server")
     sigs = [sess("ghost", WORKING, "")]
     assert Presence(runner=broken).apply(sigs, NOW) == sigs
+    assert "presence" not in sigs[0].meta
 
 
 # ── ranking ─────────────────────────────────────────────────────────────────
@@ -200,6 +231,41 @@ def test_a_recycled_pid_is_not_a_live_session(tmp_path, monkeypatch):
     assert src.poll() == []                     # stale log, no process: dropped
 
 
+def test_registry_cache_holds_one_entry_per_file(tmp_path, monkeypatch):
+    home = claude_home(tmp_path, ".claude-c", UID, "ok", age=10, status="idle")
+    src = source(tmp_path, monkeypatch, discover=[str(tmp_path / ".claude-*")])
+    reg = home / ".claude" / "sessions" / f"{os.getpid()}.json"
+    for i, status in enumerate(["busy", "idle", "busy", "idle"]):
+        d = json.loads(reg.read_text()); d["status"] = status
+        reg.write_text(json.dumps(d)); os.utime(reg, ns=(i * 10**9, (i + 1) * 10**9))
+        src.poll()
+    assert len(src._reg_cache) == 1
+
+
+def test_a_pane_id_from_another_tmux_server_is_not_ours(tmp_path, monkeypatch):
+    src = source(tmp_path, monkeypatch)
+    monkeypatch.setattr(src.tmux, "target_for_id", lambda pid: "mainA:1.2")
+    assert src._registry_target({"pane_id": "%5", "tmux_session": "scratch"}) == ""
+    assert src._registry_target({"pane_id": "%5", "tmux_session": "mainA"}) == "mainA:1.2"
+
+
+def test_a_session_copied_to_another_account_is_live_only_where_it_runs(tmp_path, monkeypatch):
+    claude_home(tmp_path, ".claude-b", UID, "All done.", age=7200, status="idle")
+    c = tmp_path / ".claude-c" / ".claude" / "projects" / "-home-u"
+    c.mkdir(parents=True)                      # the handoff copy: same id, no process
+    (c / f"{UID}.jsonl").write_text((tmp_path / ".claude-b/.claude/projects/-home-u" /
+                                     f"{UID}.jsonl").read_text())
+    os.utime(c / f"{UID}.jsonl", (time.time() - 7200,) * 2)
+    src = source(tmp_path, monkeypatch, discover=[str(tmp_path / ".claude-*")])
+    assert [(s.id, s.meta["live"]) for s in src.poll()] == [(f"cc/B-{UID[:8]}", True)]
+
+
+def test_discovery_skips_homes_that_are_not_accounts(tmp_path, monkeypatch):
+    claude_home(tmp_path, ".claude-c.bak", UID, "ok", age=10, status="idle")
+    src = source(tmp_path, monkeypatch, discover=[str(tmp_path / ".claude-*")])
+    assert [label for label, _ in src.roots] == [""]          # only the default root
+
+
 def test_discovery_adds_accounts_and_explicit_roots_keep_their_label(tmp_path, monkeypatch):
     b = claude_home(tmp_path, ".claude-b", UID, "ok", age=10, status="idle")
     src = source(tmp_path, monkeypatch, discover=[str(tmp_path / ".claude-*")],
@@ -218,6 +284,10 @@ def test_a_session_name_does_not_label_five_panes_alike():
                          pane=pane(5), cwd="/home/u") != "c2"
     assert resolve_label(harness_prose="Fix the wallet send flow please",
                          pane=pane(1), cwd="/home/u") == "c2"
+
+
+def test_a_session_name_is_never_carried_forward_as_a_pane_topic():
+    assert resolve_label(pane=pane(5, "c2", "c2"), cwd="/home/u/projects/wallet") == "wallet"
 
 
 def test_shared_window_without_a_topic_keeps_the_panes_known_title():

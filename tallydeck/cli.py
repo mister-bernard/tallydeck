@@ -44,8 +44,10 @@ def _build_hub(cfg: dict, demo: bool) -> Hub:
     presence = None
     pcfg = dict(cfg.get("presence", {}) or {})
     if not demo and pcfg.pop("enabled", True):
+        import inspect
         from .presence import Presence
-        presence = Presence(**pcfg)
+        known = set(inspect.signature(Presence).parameters) - {"runner"}
+        presence = Presence(**{k: v for k, v in pcfg.items() if k in known})
     return Hub(sources, presence=presence)
 
 

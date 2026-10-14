@@ -727,7 +727,8 @@ def resolve_label(*, harness_title: str = "", harness_prose: str = "",
         # none) and the window is shared, so the session name would name
         # every pane alike. The topic we last put on THIS pane is still
         # the best one known; failing that, its directory.
-        if pane.title_auto and pane.title == pane.title_auto:
+        if pane.title_auto and pane.title == pane.title_auto \
+                and pane.title_auto != session_name:
             return trim(pane.title_auto, limit)
         # A project directory says what the pane is about; a home directory
         # only says whose it is.

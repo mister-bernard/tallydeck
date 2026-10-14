@@ -17,8 +17,9 @@ Three filters ride on the same table:
 
   * a session with no pane and no live process is dropped unless it is
     asking for the operator — a log that stopped is history, not work;
-  * a background session (LIVE) that has been quiet for `background_quiet`
-    seconds is dropped — it is running, but it is not what anyone is doing;
+  * a session outside the windows on screen (ATTACHED or LIVE) that has
+    been quiet for `background_quiet` seconds is dropped — it is running,
+    but it is not what anyone is doing. Keys in view always stay;
   * a Telegraph lane (its process carries TELEGRAPH_PANE_SESSION_ID) never
     turns amber from the "ends with a question" heuristic — its questions
     are addressed to the chat it answers, not to the operator. Hook asks,
@@ -26,7 +27,8 @@ Three filters ride on the same table:
 
 Real terminals are the ones `tally-popup-route` already trusts: attached,
 active in the last 12 h, and not one of the router's own floating
-sessions. Fail open: when tmux cannot be read, signals pass untouched.
+sessions. Fail open: when tmux cannot be read, nothing is tiered and only
+the quiet cutoff applies.
 """
 
 from __future__ import annotations
@@ -35,7 +37,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from .signal import Signal, ATTENTION, BLOCKED, SUCCESS, IDLE, OFFLINE
+from .signal import Signal, ATTENTION, BLOCKED, SUCCESS, IDLE, OFFLINE, WORKING
 
 VIEW, ATTACHED, LIVE, NONE = 3, 2, 1, 0
 URGENT = (BLOCKED, ATTENTION)
@@ -88,7 +90,8 @@ class Presence:
         for ln in clients:
             sess, _, rest = ln.partition("|")
             win, _, act = rest.partition("|")
-            if not sess or sess.startswith(("_fl-", "fl-")):
+            if not sess or sess.startswith("_fl-") or (
+                    sess.startswith("fl-") and sess.count("-") >= 5):
                 continue
             try:
                 if now - float(act or 0) > self.client_active:
@@ -142,23 +145,31 @@ class Presence:
 
     # ── the pass ─────────────────────────────────────────────────────────────
 
+    def _quiet(self, s: Signal, now: float) -> bool:
+        return s.state in (SUCCESS, IDLE, OFFLINE) and \
+            now - s.updated > self.background_quiet
+
     def apply(self, signals: list[Signal], now: float | None = None) -> list[Signal]:
         now = time.time() if now is None else now
         snap = self.snapshot(now)
-        if snap is None:
-            return signals                     # fail open
         out: list[Signal] = []
         for s in signals:
             m = s.meta
-            if m.get("meter"):
+            session_key = s.group in SESSION_GROUPS and bool(m.get("session"))
+            if m.get("meter") or not session_key:
+                # Flags, boards, fleets, meters: not sessions. No tier is
+                # stamped, so they rank as plain background (sort_key's
+                # default) rather than below every idle session.
                 out.append(s)
+                continue
+            if snap is None:
+                # tmux unreadable: no tiers, but live sessions no longer have
+                # the 30-min stale cutoff — keep quiet ones off the deck.
+                if s.state in URGENT or not self._quiet(s, now):
+                    out.append(s)
                 continue
             tier = self.tier(s, snap)
             m["presence"] = tier
-            session_key = s.group in SESSION_GROUPS and bool(m.get("session"))
-            if not session_key:
-                out.append(s)
-                continue
             lane = self.is_lane(s, snap)
             if lane:
                 m["lane"] = True
@@ -169,11 +180,13 @@ class Presence:
             if s.state in URGENT:
                 out.append(s)
                 continue
-            if tier == NONE:
+            if tier == NONE and s.state != WORKING:
                 continue                       # a log, not a running session
-            if tier == LIVE and s.state in (SUCCESS, IDLE, OFFLINE) \
-                    and now - s.updated > self.background_quiet:
-                continue                       # running, but nobody's work
+            # Working but unresolved (two codex in one cwd before the pid map
+            # has logged) still shows — it may be running. Out of view and
+            # quiet for hours: running, but nobody's work.
+            if tier in (NONE, LIVE, ATTACHED) and self._quiet(s, now):
+                continue
             out.append(s)
         return out
 

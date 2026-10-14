@@ -178,6 +178,11 @@ def rollup_same_pane(signals: list[Signal]) -> list[Signal]:
             extra += f" · {n_run} running"
         sub = extra if not primary.sublabel else f"{extra} · {primary.sublabel}"
         meta = dict(primary.meta or {})
+        # A hook question (sig/ask-*) folded into its session's key is the
+        # harness asking, whatever the session key itself concluded.
+        if hottest.state == ATTENTION and (
+                group_of_sig(hottest) == "sig" or (hottest.meta or {}).get("asked")):
+            meta["asked"] = True
         meta["rolled"] = len(members)
         meta["tmux"] = pane
         out.append(replace(
@@ -188,6 +193,10 @@ def rollup_same_pane(signals: list[Signal]) -> list[Signal]:
             meta=meta,
         ))
     return out
+
+
+def group_of_sig(s: Signal) -> str:
+    return (s.group or s.id.split("/", 1)[0] or "").lower()
 
 
 def _pane_primary(members: list[Signal]) -> Signal:

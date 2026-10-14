@@ -276,6 +276,8 @@ class ClaudeSessionsSource(Source):
         for pattern in opts.get("discover", []) or []:
             import glob
             for home in sorted(glob.glob(os.path.expanduser(str(pattern)))):
+                if not re.search(r"/\.claude-[A-Za-z0-9]{1,8}/?$", home):
+                    continue                   # .claude-c.bak is not an account
                 proj = Path(home) / ".claude" / "projects"
                 if proj.is_dir() and os.path.realpath(proj) not in known:
                     known.add(os.path.realpath(proj))
@@ -340,31 +342,62 @@ class ClaudeSessionsSource(Source):
             return out
         for fp in entries:
             try:
-                key = (str(fp), fp.stat().st_mtime_ns)
+                mtime = fp.stat().st_mtime_ns
             except OSError:
                 continue
-            rec = cache.get(key)
-            if rec is None:
+            hit = cache.get(str(fp))
+            if hit is None or hit[0] != mtime:   # rewritten on every state change
                 try:
                     d = json.loads(fp.read_text())
                 except (OSError, ValueError):
                     continue
-                rec = _registry_record(d)
-                cache[key] = rec
+                hit = cache[str(fp)] = (mtime, _registry_record(d))
+            rec = hit[1]
             if rec and _alive(rec["pid"], rec["start"]):
                 prev = out.get(rec["session"])
                 if prev is None or rec["updated"] > prev["updated"]:
-                    out[rec["session"]] = rec
-        if len(cache) > 4 * max(1, len(entries)):
-            live = {(str(fp)) for fp in entries}
-            for k in [k for k in cache if k[0] not in live]:
+                    out[rec["session"]] = dict(rec)
+        if len(cache) > len(entries) + 64:
+            present = {str(fp) for fp in entries}
+            for k in [k for k in cache if k not in present]:
                 cache.pop(k, None)
         return out
+
+    def _registry_target(self, rec: dict) -> str:
+        """The registry's pane, if it is a pane of OUR tmux server.
+
+        `%54` is only unique per server: a Claude on another socket would
+        otherwise claim whatever cc pane has that id. The record also names
+        the session ("mainC:@50.%54"); a pane id only counts when it sits in
+        that session here."""
+        if not rec.get("pane_id"):
+            return ""
+        tgt = self.tmux.target_for_id(rec["pane_id"])
+        want = rec.get("tmux_session", "")
+        if tgt and want and tgt.split(":", 1)[0] != want:
+            return ""
+        return tgt
 
     def poll(self) -> list[Signal]:
         signals: list[Signal] = []
         now = time.time()
         self._titled = []
+        # A pane belongs to the session its live process says it is running —
+        # across ALL accounts, since lanes move between them (B ↔ C). After
+        # /clear or a handoff the old log still names the pane through the
+        # sticky memo; it must not keep a key (or a stale question) there.
+        # Keyed by (account root, uuid): a lane handed from B to C leaves the
+        # SAME session id in both accounts' logs, and only the account whose
+        # process is running owns the pane.
+        self._live: dict[tuple, dict] = {}
+        self._claimed: dict[str, tuple] = {}
+        for _, root in self.roots:
+            if root.is_dir():
+                for uuid, rec in self._registry(root).items():
+                    rec["target"] = self._registry_target(rec)
+                    self._live[(str(root), uuid)] = rec
+                    if rec["target"]:
+                        self._claimed[rec["target"]] = (str(root), uuid)
         for acct, root in self.roots:
             if not root.is_dir():
                 continue
@@ -386,16 +419,8 @@ class ClaudeSessionsSource(Source):
 
     def _scan(self, root, acct: str, now: float) -> list[Signal]:
         signals: list[Signal] = []
-        registry = self._registry(root)
-        # A pane belongs to the session its live process says it is running.
-        # After /clear the old log still names the same pane through the
-        # sticky memo; it must not keep a key (or a stale question) there.
-        claimed: dict[str, str] = {}
-        for uuid, rec in registry.items():
-            tgt = self.tmux.target_for_id(rec["pane_id"]) if rec["pane_id"] else ""
-            rec["target"] = tgt
-            if tgt:
-                claimed[tgt] = uuid
+        registry = getattr(self, "_live", {})
+        claimed = getattr(self, "_claimed", {})
         for proj_dir in root.iterdir():
             if not proj_dir.is_dir():
                 continue
@@ -405,7 +430,8 @@ class ClaudeSessionsSource(Source):
                     mtime, size = st.st_mtime, st.st_size
                 except OSError:
                     continue
-                live = registry.get(fp.stem)
+                me = (str(root), fp.stem)
+                live = registry.get(me)
                 if now - mtime > self.stale and not live:
                     continue
                 from ..park import is_parked
@@ -413,7 +439,7 @@ class ClaudeSessionsSource(Source):
                     continue
                 lines = _tail_lines(fp)
                 exact = (live or {}).get("target") or self._exact_pane(fp.stem)
-                if exact and claimed.get(exact, fp.stem) != fp.stem:
+                if exact and claimed.get(exact, me) != me:
                     exact = ""              # that pane runs another session now
                 oneshot = bool(exact) and \
                     exact.split(":", 1)[0] in self.oneshot_sessions
@@ -745,6 +771,7 @@ def _registry_record(d: dict) -> dict | None:
     tm = str(d.get("tmux") or "")          # "mainC:@50.%54"
     pane_id = tm[tm.rfind("%"):] if "%" in tm else ""
     return {"pid": pid, "session": session, "pane_id": pane_id,
+            "tmux_session": tm.split(":", 1)[0] if ":" in tm else "",
             "start": str(d.get("procStart") or ""),
             "status": str(d.get("status") or ""),
             "updated": float(d.get("updatedAt") or 0) / 1000.0}
