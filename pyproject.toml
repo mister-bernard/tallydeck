@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tallydeck"
-version = "0.1.0"
+version = "0.2.0"
 description = "Project the attention state of many running agents onto a Stream Deck — tally lights for your fleet."
 readme = "README.md"
 requires-python = ">=3.11"
